@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- [D3] Start screens naming the game's own data folder Download/Torchlight2Mobile (from the DOOM 2016 port, d89997e: its 13
+     languages, "DOOM Mobile" replaced); the shared dmAndroid* texts name d2r's Download/S2X/D2R Mobile. -->
+<resources>
+    <string name="d3_start_permission">Zezwól na dostęp do plików, aby gra mogła odczytać swoje pliki w Download/Torchlight2Mobile. Stuknij tutaj, zezwól na dostęp i wróć.</string>
+    <string name="d3_start_missing_data">Nie znaleziono plików gry w Download/Torchlight2Mobile. Na komputerze uruchom setup z własnymi plikami gry i skopiuj utworzony folder „Torchlight2Mobile” do folderu Download w telefonie.</string>
+    <string name="d3_start_missing_modules">Brak spatchowanych modułów gry (Download/Torchlight2Mobile/dm/out). Uruchom ponownie setup na komputerze i skopiuj jeszcze raz cały folder „Torchlight2Mobile” do folderu Download w telefonie.</string>
+    <string name="d3_start_missing_shaders">Brak shaderów (Download/Torchlight2Mobile/dm/shaders). Uruchom ponownie setup na komputerze i skopiuj jeszcze raz cały folder „Torchlight2Mobile” do folderu Download w telefonie.</string>
+</resources>
