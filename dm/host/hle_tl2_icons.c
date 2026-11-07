@@ -94,7 +94,19 @@ void dm_tl2_icons_poll(void) {
             rd(s + S_CODE, &code, 4); rd(s + S_HASH, &hash, 8);
             uint64_t ic = rq(s + S_ICON), cl = rq(s + S_COOL); float fill = 0;
             vis = !loading && ic && drawn_chain(ic) && rd(ic + E_RECT, r, 16) && r[2] > r[0] && r[3] > r[1];
-            if (cl && drawn_chain(cl) && rd(cl + COOL_FILL, &fill, 4) && fill > 0.01f) cool = 1;
+            // +0x30 is the same icon drawn through the radial mask HUD_Action_Icon_Mask_02 with fill +0x134: 0 = no sweep (ready), between
+            // = cooldown sweep, 1 = fully covered (cannot be used now: 0x127540 sets 1.0 then). Capture a ready one; a fully covered one only
+            // when nothing better came for 2 s (it shows dimmed, still the right skill).
+            if (cl && drawn_chain(cl) && rd(cl + COOL_FILL, &fill, 4)) {
+                static uint64_t covered_since[NSLOT];
+                if (fill <= 0.001f) covered_since[i] = 0;
+                else if (fill >= 0.999f) { if (!covered_since[i]) covered_since[i] = now; cool = now - covered_since[i] < 2000000000ull || g_meta[i][1] == 1; }
+                else { covered_since[i] = 0; cool = 1; }
+            }
+            // the HUD slides / scales in (0x1295e0): only a rectangle that stayed put for 3 polls (150 ms)
+            static float last_r[NSLOT][4]; static int same[NSLOT];
+            if (memcmp(last_r[i], r, 16)) { memcpy(last_r[i], r, 16); same[i] = 0; } else if (same[i] < 100) same[i]++;
+            if (same[i] < 3) cool = 1;
         }
         g_slot[i].code = code; g_slot[i].hash = hash; memcpy(g_slot[i].r, r, 16); g_slot[i].vis = vis; g_slot[i].cool = cool;
         int empty = i < n && (hash == -1 || hash == 0x499602d2ll);
@@ -115,6 +127,32 @@ void dm_tl2_icons_poll(void) {
     pthread_mutex_unlock(&g_mu);
 }
 
+// ---- canvas <-> game picture, the one mapping for the pointer (hle_tl2_ui.c) and the icon crop. The PUI canvas (manager +0x2f8 / +0x2fc,
+// 1920 x 1080) is stretched over the whole picture today: fx = cx / cw. Code that puts the UI into a band (widescreen 16:9 UI) calls
+// dm_tl2_ui_set_canvas_map(scale x, scale y, offset x, offset y) in picture fractions: fx = ox + sx * cx / cw, fy = oy + sy * cy / ch.
+static _Atomic uint64_t g_map_s = 0x3f8000003f800000ull, g_map_o = 0;   // two floats each: (sx, sy), (ox, oy)
+static void map_get(float *sx, float *sy, float *ox, float *oy) {
+    uint64_t s = atomic_load(&g_map_s), o = atomic_load(&g_map_o); uint32_t v;
+    v = (uint32_t)s; memcpy(sx, &v, 4); v = (uint32_t)(s >> 32); memcpy(sy, &v, 4); v = (uint32_t)o; memcpy(ox, &v, 4); v = (uint32_t)(o >> 32); memcpy(oy, &v, 4);
+}
+void dm_tl2_ui_set_canvas_map(float sx, float sy, float ox, float oy);
+void dm_tl2_ui_set_canvas_map(float sx, float sy, float ox, float oy) {
+    if (!(sx > 0 && sy > 0)) { sx = sy = 1; ox = oy = 0; }
+    uint32_t a, b; memcpy(&a, &sx, 4); memcpy(&b, &sy, 4); atomic_store(&g_map_s, (uint64_t)b << 32 | a);
+    memcpy(&a, &ox, 4); memcpy(&b, &oy, 4); atomic_store(&g_map_o, (uint64_t)b << 32 | a);
+    LOG("[tl2icons] UI canvas -> picture: x %.4f + %.4f * cx/cw, y %.4f + %.4f * cy/ch", ox, sx, oy, sy);
+}
+void dm_tl2_ui_canvas_to_frame(float cx, float cy, float cw, float ch, float *fx, float *fy);
+void dm_tl2_ui_canvas_to_frame(float cx, float cy, float cw, float ch, float *fx, float *fy) {
+    float sx, sy, ox, oy; map_get(&sx, &sy, &ox, &oy);
+    *fx = ox + sx * cx / (cw > 0 ? cw : 1920.f); *fy = oy + sy * cy / (ch > 0 ? ch : 1080.f);
+}
+void dm_tl2_ui_frame_to_canvas(float fx, float fy, float cw, float ch, float *cx, float *cy);
+void dm_tl2_ui_frame_to_canvas(float fx, float fy, float cw, float ch, float *cx, float *cy) {
+    float sx, sy, ox, oy; map_get(&sx, &sy, &ox, &oy);
+    *cx = (fx - ox) / sx * (cw > 0 ? cw : 1920.f); *cy = (fy - oy) / sy * (ch > 0 ? ch : 1080.f);
+}
+
 // ---- translation thread (vulkan_present.cpp present())
 // Rectangles to copy, in source pixels of the picture (x, y, w, h); 0 = nothing this frame. Rate: at most one batch per 250 ms.
 static int icon_want(int32_t px, int32_t py, int32_t pw, int32_t ph, int32_t out[][4], int max) {
@@ -123,9 +161,9 @@ static int icon_want(int32_t px, int32_t py, int32_t pw, int32_t ph, int32_t out
     pthread_mutex_lock(&g_mu);
     if (g_req.n && !g_req.taken && now - last >= 250000000ull) {
         for (int k = 0; k < g_req.n && n < max; k++) {
-            const float *r = g_req.r[k];
-            int x0 = px + (int)(r[0] * pw / g_req.cw + .5f), y0 = py + (int)(r[1] * ph / g_req.ch + .5f);
-            int x1 = px + (int)(r[2] * pw / g_req.cw + .5f), y1 = py + (int)(r[3] * ph / g_req.ch + .5f);
+            const float *r = g_req.r[k]; float a, b, c, d;
+            dm_tl2_ui_canvas_to_frame(r[0], r[1], g_req.cw, g_req.ch, &a, &b); dm_tl2_ui_canvas_to_frame(r[2], r[3], g_req.cw, g_req.ch, &c, &d);
+            int x0 = px + (int)(a * pw + .5f), y0 = py + (int)(b * ph + .5f), x1 = px + (int)(c * pw + .5f), y1 = py + (int)(d * ph + .5f);
             if (x0 < px) x0 = px; if (y0 < py) y0 = py; if (x1 > px + pw) x1 = px + pw; if (y1 > py + ph) y1 = py + ph;
             int w = x1 - x0, h = y1 - y0;
             if (w < 4 || h < 4 || w > MAXPX || h > MAXPX) continue;

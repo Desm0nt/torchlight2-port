@@ -485,10 +485,11 @@ static int dialog_click(uint64_t dlg, float ux, float uy) {
     return 1;
 }
 
+void dm_tl2_ui_frame_to_canvas(float fx, float fy, float cw, float ch, float *cx, float *cy);   // hle_tl2_icons.c: the one canvas <-> picture mapping
 static void click(float fx, float fy) {
     int top; uint64_t menu = top_menu(&top);
     float cw, ch; int n = snapshot(0, &cw, &ch);
-    float ux = fx * cw, uy = fy * ch; int best = -1, row = -1, radial = -1;
+    float ux, uy; dm_tl2_ui_frame_to_canvas(fx, fy, cw, ch, &ux, &uy); int best = -1, row = -1, radial = -1;
     uint64_t modal = rq(img(U_MGR) + U_MODAL);
     if (modal && r8(modal + E_DRAWN) && rq(modal) == img(VT_DIALOG)) { dialog_click(modal, ux, uy); return; }   // HandleInput 0x143884: the modal first
     if (!menu) { LOG("[tl2ui] tap %.3f,%.3f: no menu on the console UI stack (top %d): nothing", fx, fy, top); return; }

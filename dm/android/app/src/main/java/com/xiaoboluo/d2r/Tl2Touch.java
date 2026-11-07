@@ -130,17 +130,19 @@ final class Tl2Touch {
         if (!side) {   // D2R dm_tc_layout_make: main W - 86 + 12, H - 88 - 24 + 28
             final float mx = -74, my = -84;
             add("A", K_A, KIND_MAIN, "fan", A_BR, mx, my, 40);
-            float[] dx = {-96, -84, -34, 34}, dy = {18, -50, -92, -92}; String[] l = {"B", "X", "Y", "R"}; int[] kk = {K_B, K_X, K_Y, K_R};
-            for (int i = 0; i < 4; i++) add(l[i], kk[i], KIND_SKILL, "fan", A_BR, mx + dx[i], my + dy[i], 26);
-            float zx = mx + 34, zy = my - 92 - 26 - 12 - 26;   // D2R's portal: straight above skill 4
-            add("ZR", K_ZR, KIND_SKILL, "fan", A_BR, zx, zy, 26);
-            float px = 34, py = zy - my, cs = (float) Math.cos(.46f), sn = (float) Math.sin(.46f);
-            add("II", 0, KIND_SWAP, "fan", A_BR, mx + px * cs + py * sn, my - px * sn + py * cs, 22);
+            // all eight HUD action-bar slots (A B X Y R ZR L ZL) around A, D2R style: an inner arc of four at 88 dp and an outer arc
+            // of three at 150 dp (angles from the right, counter-clockwise; the thumb sweeps from lower left to top), II at the outer top
+            String[] l = {"B", "X", "Y", "R", "ZL", "L", "ZR"}; int[] kk = {K_B, K_X, K_Y, K_R, K_ZL, K_L, K_ZR};
+            float[] ang = {200, 155, 110, 70, 190, 158, 126}, rad = {88, 88, 88, 88, 150, 150, 150};
+            for (int i = 0; i < l.length; i++) {
+                double a = Math.toRadians(ang[i]);
+                add(l[i], kk[i], KIND_SKILL, "fan", A_BR, mx + rad[i] * (float) Math.cos(a), my - rad[i] * (float) Math.sin(a), 26);
+            }
+            double ia = Math.toRadians(95);
+            add("II", 0, KIND_SWAP, "fan", A_BR, mx + 150 * (float) Math.cos(ia), my - 150 * (float) Math.sin(ia), 22);
             add("-", K_MINUS, KIND_PLAIN, "tr", A_TR, -30, 30, 22);   // D2R's map spot
             add("R3", K_R3, KIND_PLAIN, "tr", A_TR, -80, 30, 19);
-            add("ZL", K_ZL, KIND_PLAIN, "tl", A_TL, 32, 30, 22);
-            add("L", K_L, KIND_PLAIN, "tl", A_TL, 82, 30, 22);
-            add("L3", K_L3, KIND_PLAIN, "tl", A_TL, 128, 30, 19);
+            add("L3", K_L3, KIND_PLAIN, "tr", A_TR, -124, 30, 19);   // kept (not a HUD slot), next to R3 instead of the top-left row
             add("⚙", 0, KIND_GEAR, "top", A_TOP, 0, 30, 20);
             String[] bl = {"←", "↑", "↓", "→", "+"}; int[] bk = {K_LEFT, K_UP, K_DOWN, K_RIGHT, K_PLUS};   // D2R belt cells 1..5
             for (int i = 0; i < 5; i++) add(bl[i], bk[i], KIND_PLAIN, "belt", A_BELT, (120 * (i + 1) - 344) / 120f, 0, 19);
@@ -152,6 +154,9 @@ final class Tl2Touch {
             }
             String[] ll = {"L", "ZL", "↑", "←", "→", "↓"}; int[] lk = {K_L, K_ZL, K_UP, K_LEFT, K_RIGHT, K_DOWN};
             for (int i = 0; i < 6; i++) add(ll[i], lk[i], KIND_PLAIN, "left", A_LEFT, 30, 40 + 56 * i, 25).square = true;
+            // L and ZL are HUD slots too: their set-II cells next to them, like the right edge's
+            add(modName + "+L", K_L, KIND_COMBO, "left", A_LEFT, 88, 40, 25).square = true;
+            add(modName + "+ZL", K_ZL, KIND_COMBO, "left", A_LEFT, 88, 96, 25).square = true;
             add("L3", K_L3, KIND_PLAIN, "top", A_TOP, -110, 30, 19); add("-", K_MINUS, KIND_PLAIN, "top", A_TOP, -55, 30, 22);
             add("⚙", 0, KIND_GEAR, "top", A_TOP, 0, 30, 20);
             add("+", K_PLUS, KIND_PLAIN, "top", A_TOP, 55, 30, 22); add("R3", K_R3, KIND_PLAIN, "top", A_TOP, 110, 30, 19);
@@ -489,7 +494,7 @@ final class Tl2Touch {
             if (b.square) { cell.set(b.x - ir, b.y - ir, b.x + ir, b.y + ir); clip.addRoundRect(cell, 6 * dp, 6 * dp, android.graphics.Path.Direction.CW); }
             else clip.addCircle(b.x, b.y, ir, android.graphics.Path.Direction.CW);
             iconDst.set(b.x - ir, b.y - ir, b.x + ir, b.y + ir);
-            c.save(); c.clipPath(clip); fill.setColor(0xffffffff); fill.setAlpha(Math.round((on ? 0xff : 0xd0) * Math.max(kk, 0.6f)));
+            c.save(); c.clipPath(clip); fill.setColor(0xffffffff); fill.setAlpha(on ? 0xff : Math.round(0xff * Math.max(kk, 0.85f)));   // the icon stays readable at low overlay opacity
             c.drawBitmap(ic, null, iconDst, fill); c.restore();
             float bs = Math.max(9 * dp, 0.32f * b.r); text.setTextSize(bs); text.setColor(0xffffffff); text.setAlpha(Math.round(0xe0 * kk));
             float bx = b.x + b.r * 0.55f, by = b.y + b.r * 0.62f;
