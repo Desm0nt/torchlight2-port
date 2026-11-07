@@ -418,7 +418,11 @@ public class DmActivity extends Activity implements SurfaceHolder.Callback, Disp
                 Os.setenv("DM_OPMODE", startedHandheld ? "0" : "1", true);
                 // Picture shape 2 = widescreen (hle_d3.c DM_D3_WIDE: the game renders at the screen's aspect, Hor+; next launch)
                 startedAspect = p.getInt("aspect", D3_ASPECT_DEFAULT);
-                if (TL2) Os.setenv("DM_TL2_WIDE", startedAspect == 2 ? "1" : "0", true);   // [TL2] hle_tl2_wide.c (W x 1080, Hor+), default on
+                if (TL2) {   // [TL2] hle_tl2_wide.c (W x 1080, Hor+), default on. The width comes from the display, not the SurfaceView: the view may
+                    // still be laid out 16:9 (before startedAspect is known) or portrait (started with the screen off), which made the game start 16:9
+                    int[] sc = screenSize(); long ww = sc[1] > 0 ? Math.round(1080.0 * sc[0] / sc[1] / 16) * 16 : 0;
+                    Os.setenv("DM_TL2_WIDE", startedAspect != 2 ? "0" : ww > 1920 ? Long.toString(ww) : "1", true);
+                }
                 else if (startedAspect == 2) Os.setenv("DM_D3_WIDE", "1", true); else Os.unsetenv("DM_D3_WIDE");
                 // Widescreen only: loading screens' 16:9 art presented alone, stretched to the screen (hle_d3.c ls_present_crop)
                 // [TL2] the other way round: loading screens pillarboxed 16:9 by default, stretched only when asked (hle_tl2_wide.c)
@@ -1160,7 +1164,8 @@ public class DmActivity extends Activity implements SurfaceHolder.Callback, Disp
         runOnUiThread(() -> {
             int fw = gameFrame.getWidth(), fh = gameFrame.getHeight();
             int mode = XC2 && startedAspect == 2 ? 2 : doomPrefs().getInt("aspect", XC2 ? ASPECT_DEFAULT : D3_ASPECT_DEFAULT);
-            if (D3) mode = startedAspect == 2 ? 2 : mode == 2 ? 0 : mode;   // [D3] widescreen = whole screen only when the game was started with it
+            if (D3) mode = startedAspect == 2 ? 2 : (TL2 && startedAspect < 0 && mode == 2) ? 2 : mode == 2 ? 0 : mode;   // [D3] widescreen = whole screen only when the game was started with it;
+            // [TL2] before the host starts the saved choice is what it will start with (a 16:9 view here made the first surface 16:9)
             FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(-1, -1, android.view.Gravity.CENTER);
             if (mode == 0 && fw > 0 && fh > 0 && fw * 9 > fh * 16) lp.width = fh * 16 / 9;
             else if (mode == 0 && fw > 0 && fh > 0 && fw * 9 < fh * 16) lp.height = fw * 9 / 16;
