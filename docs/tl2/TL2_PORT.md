@@ -167,6 +167,12 @@ InitializeNpad → InitializeTouchScreen → SetSupportedNpadStyleSet(7) → Set
 тап меню); `DM_TL2_UIDUMP=1|2` + файл `dm/ui-dump-now` → `dm/tl2-ui-dump.tsv` (дерево PUI); файл `dm/ui-tap-now` с «x y» = тап без фронта.
 Все места сверяются по словам (+ GOT и vtable), другая сборка → выкл.
 Не покрыто: элементы `UserDrawn` (сетка инвентаря, дерево навыков и т. п. — если они такие), радиальные меню, прокрутка списка пальцем.
-Java (не подключено, Tl2Touch.java правится параллельно): `static native boolean nativeTl2UiTap(float x, float y);` в DmActivity; в
-Tl2Touch, режим меню, короткий тап: вместо `pulse(K_A, 0, 0, 0, false)` —
-`if (!DmActivity.nativeTl2UiTap(f.x0 / view.getWidth(), f.y0 / view.getHeight())) pulse(K_A, 0, 0, 0, false);` (картинка TL2 = весь view).
+**«Меню открыто»** (`dm_tl2_menu_open`, публикуется на каждом чтении пада; тапы и шаги — только пока оно верно, в игре крестовина =
+зелья / хоткеи): стек менеджера консольного UI (`0x74cfe70`: `+0x58` массив, `+0x60` верх, −1 = пуст) не пуст **или** нарисован модальный
+`+0x50` (`+0x74`), и не поднят экран загрузки `+0x90`. Основание: HandleInput `0x143800` отдаёт событие игровому HUD `+0x80` только при пустом
+стеке (`0x1438f8`), модальному `+0x50` — первым (`0x143884`). Меню закрылось посреди шагов → остановка без нажатий. Переходы — в лог
+`[tl2ui] menu open / closed (stack top N)`.
+Java: `DmActivity.nativeTl2MenuOpen()` / `nativeTl2UiTap(x, y)`; Tl2Touch: палец не на кнопке оверлея при открытом меню ждёт (`T_MENU`):
+короткий неподвижный тап (< TAP_MS, ≤ MOVE_DP) → `nativeTl2UiTap(x0/w, y0/h)`, сдвинулся — становится стиком / мировым пальцем, как без
+меню (стик берётся от точки касания). Шестерёнка: «Тап по пунктам меню (эксперимент)», по умолчанию выкл. → `DM_TL2_POINTER=1|0`
+(prefs `tl2_pointer`); `DM_TL2_UIDUMP` — только из dm/env.

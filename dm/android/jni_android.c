@@ -629,13 +629,25 @@ JNIEXPORT jboolean JNICALL Java_com_xiaoboluo_d2r_DmActivity_nativeD3UiTap(JNIEn
 // [TL2] Tap on a console menu item (hle_tl2_ui.c, DM_TL2_POINTER): x / y = fractions of the game picture (0..1, top left origin; the
 // picture fills the view in both TL2 picture shapes). Queued only; the game's input thread steps the game's own focus to the item under
 // the point with the d-pad and presses A once the game shows it focused. Java: `static native boolean nativeTl2UiTap(float x, float y);`
-// -> false when DM_TL2_POINTER is off / not this build / the point is outside 0..1 (then the caller does what it did before, e.g. A).
+// -> false when DM_TL2_POINTER is off / not this build / no menu is open / the point is outside 0..1 (the caller keeps the touch).
 JNIEXPORT jboolean JNICALL Java_com_xiaoboluo_d2r_DmActivity_nativeTl2UiTap(JNIEnv *env, jclass cls, jfloat x, jfloat y) {
     (void)env; (void)cls;
 #ifdef DM_GAME_TL2
     int dm_tl2_ui_tap(float x, float y); return dm_tl2_ui_tap(x, y) ? JNI_TRUE : JNI_FALSE;
 #else
     (void)x; (void)y; return JNI_FALSE;
+#endif
+}
+
+// [TL2] Is a console menu / panel up (hle_tl2_ui.c dm_tl2_menu_open: the console UI stack is not empty or its modal is drawn, no loading
+// screen), as the game's input thread published it at its last npad read; false while DM_TL2_POINTER is off.
+// Java: `static native boolean nativeTl2MenuOpen();`
+JNIEXPORT jboolean JNICALL Java_com_xiaoboluo_d2r_DmActivity_nativeTl2MenuOpen(JNIEnv *env, jclass cls) {
+    (void)env; (void)cls;
+#ifdef DM_GAME_TL2
+    int dm_tl2_menu_open(void); return dm_tl2_menu_open() ? JNI_TRUE : JNI_FALSE;
+#else
+    return JNI_FALSE;
 #endif
 }
 

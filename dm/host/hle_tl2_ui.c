@@ -21,6 +21,11 @@
 //                  +0xc3 greyed (0x1a05060).
 //   PUI::Radial    vtable main+0x2365628: radial quick menus are stick-driven; a tap on one is logged, not handled.
 //
+// "A menu is open" (dm_tl2_menu_open, published every npad read; taps and steps happen only while it holds, never in plain gameplay where
+// the d-pad fires potions / hotkeys): the console UI manager (static main+0x74cfe70, GOT 0x23a3590) keeps its menu stack at +0x58 (array)
+// with the top index at +0x60 (-1 = empty; pop 0x111e10, popped all by 0x143d10). Its HandleInput 0x143800 gives the event to +0x80 (the
+// gameplay HUD receiver) only while the stack is empty (0x1438f8), and first to the modal element +0x50 while that is drawn (+0x74, ->
+// 0x738e70). So: open = stack not empty or the modal drawn, and the loading screen (+0x90, drawn +0x74) not up.
 //   DM_TL2_POINTER=1   dm_tl2_ui_tap(x, y) (fractions of the game picture, top left origin, any thread) queues a tap; the npad poll (the
 //                      game's input update 0x13fd40 -> 0x13ea60, main thread) runs the navigation: d-pad held 50 ms / released 70 ms per
 //                      step, at most 24 steps or 3 s, then A for 60 ms. A tap on the item already focused = A at once.
@@ -46,6 +51,7 @@ enum {
     P_MGR = 0x927a970, P_GOT_MGR = 0x23a3678,
     P_VT_ELEM = 0x23651f8, P_VT_LIST = 0x23656d8, P_VT_BUTTON = 0x2365838, P_VT_RADIAL = 0x2365628,
     P_LIST_DRAW = 0x1a01ab0, P_ELEM_DRAW = 0x19f5de0, P_BUTTON_DTOR = 0x1a046c0, P_RADIAL_DRAW = 0x19fce90,
+    U_MGR = 0x74cfe70, U_GOT_MGR = 0x23a3590, U_STACK = 0x58, U_TOP = 0x60, U_MODAL = 0x50, U_LOADING = 0x90, U_HUD = 0x80,
     M_W = 0x2f8, M_H = 0x2fc, M_ROOT = 0x308,
     E_PARENT = 0x38, E_FIRST = 0x40, E_NEXT = 0x58, E_RECT = 0x60, E_DRAWN = 0x74, E_LAYER = 0x80,
     L_AREA = 0x84, L_ROWH = 0x100, L_COUNT = 0x104, L_SEL = 0x108, L_SCROLL = 0x10c, L_SHOWSEL = 0x116,
@@ -63,6 +69,9 @@ static const struct { uint32_t off, n, w[14]; } k_sites[] = {
     {0x19f5ac0, 4, {0x1e252842, 0x2d431c05, 0xbd006002 /* str s2,[x0,#0x60] */, 0xbd400022}},
     {0x19ff3d8, 2, {0xb902fab4 /* str w20,[x21,#0x2f8] */, 0xb902feb3 /* str w19,[x21,#0x2fc] */}},
     {0x19ff450, 1, {0xf90186b6 /* str x22,[x21,#0x308] */}},
+    {0x143884, 3, {0xf9402a60 /* ldr x0,[x19,#0x50] */, 0x3941d008 /* ldrb w8,[x0,#0x74] */, 0x34000108}},
+    {0x1438f8, 4, {0xf9404260 /* ldr x0,[x19,#0x80] */, 0xb4000140, 0xb9406268 /* ldr w8,[x19,#0x60] */, 0x3100051f /* cmn w8,#1 */}},
+    {0x143930, 2, {0xf9402e68 /* ldr x8,[x19,#0x58] */, 0xf8767900 /* ldr x0,[x8,x22,lsl #3] */}},
 };
 
 static uint8_t *g_base; static size_t g_size; static int g_ok = -1, g_mode, g_dump;
@@ -92,7 +101,7 @@ static int setup(void) {
     for (size_t i = 0; i < sizeof k_sites / sizeof *k_sites; i++)
         if (memcmp(g_base + k_sites[i].off, k_sites[i].w, 4 * k_sites[i].n)) {
             LOG("【红】[tl2ui] main+%#x differs: not TL2 v5 main (build a0c6c2d2), pointer / dump off", k_sites[i].off); return 0; }
-    if (rq(img(P_GOT_MGR)) != img(P_MGR) || rq(img(P_VT_LIST + 0x10)) != img(P_LIST_DRAW) || rq(img(P_VT_ELEM + 0x10)) != img(P_ELEM_DRAW) ||
+    if (rq(img(P_GOT_MGR)) != img(P_MGR) || rq(img(U_GOT_MGR)) != img(U_MGR) || rq(img(P_VT_LIST + 0x10)) != img(P_LIST_DRAW) || rq(img(P_VT_ELEM + 0x10)) != img(P_ELEM_DRAW) ||
         rq(img(P_VT_BUTTON + 8)) != img(P_BUTTON_DTOR) || rq(img(P_VT_RADIAL + 0x10)) != img(P_RADIAL_DRAW)) {
         LOG("【红】[tl2ui] PUI vtables / GOT do not match: pointer / dump off"); return 0; }
     e = getenv("DM_RUNTIME_DIR"); snprintf(g_dir, sizeof g_dir, "%s", e && *e ? e : "dm");
@@ -196,12 +205,26 @@ static void dump(void) {
     LOG("[tl2ui] dump: %d elements -> %s", n, p);
 }
 
+// ---- "a menu is open", published by the input thread every npad read
+static _Atomic int g_menu_open;
+static int menu_open_now(int *top_out) {
+    uint64_t m = img(U_MGR); int32_t top = -1; rd(m + U_TOP, &top, 4); *top_out = top;
+    uint64_t load = rq(m + U_LOADING); uint8_t v = 0;
+    if (load && rd(load + E_DRAWN, &v, 1) && v) return 0;
+    if (top >= 0 && top < 64 && rq(m + U_STACK) && rq(rq(m + U_STACK) + 8ull * top)) return 1;
+    uint64_t modal = rq(m + U_MODAL); v = 0;
+    return modal && rd(modal + E_DRAWN, &v, 1) && v;
+}
+int dm_tl2_menu_open(void);
+int dm_tl2_menu_open(void) { return g_ok > 0 && g_mode > 0 && atomic_load_explicit(&g_menu_open, memory_order_acquire); }
+
 // ---- tap queue (any thread -> the game's input thread)
 static _Atomic uint64_t g_tap_xy; static _Atomic int g_tap_pending;
 int dm_tl2_ui_tap(float x, float y);
 int dm_tl2_ui_tap(float x, float y) {
     static int mode = -1; if (mode < 0) { const char *e = getenv("DM_TL2_POINTER"); mode = e && *e ? atoi(e) : 0; }   // before the first poll too
     if (g_ok == 0 || mode <= 0 || !(x >= 0 && x <= 1 && y >= 0 && y <= 1)) return 0;
+    if (g_ok > 0 && !atomic_load_explicit(&g_menu_open, memory_order_acquire)) return 0;   // plain gameplay: the caller keeps the touch
     uint32_t xb, yb; memcpy(&xb, &x, 4); memcpy(&yb, &y, 4);
     atomic_store(&g_tap_xy, (uint64_t)yb << 32 | xb); atomic_store_explicit(&g_tap_pending, 1, memory_order_release);
     return 1;
@@ -285,6 +308,7 @@ static void nav_tick(uint64_t *buttons) {
     uint64_t now = now_ns();
     const uint64_t mask = DM_BTN_A | DM_BTN_UP | DM_BTN_DOWN | DM_BTN_LEFT | DM_BTN_RIGHT;
     if (g_nav.st == S_IDLE) return;
+    if (g_nav.st != S_A_UP && !atomic_load(&g_menu_open)) { nav_end("the menu closed: stopped, no more presses"); return; }
     *buttons &= ~mask;   // the sequence owns A and the d-pad while it runs
     if (now - g_nav.t0 > MAX_NS && g_nav.st != S_A_DOWN && g_nav.st != S_A_UP) { nav_end("timeout, no A"); return; }
     switch (g_nav.st) {
@@ -327,9 +351,15 @@ void dm_tl2_ui_pump(uint64_t *buttons);
 void dm_tl2_ui_pump(uint64_t *buttons) {
     if (g_ok < 0) setup();
     if (g_ok <= 0) return;
+    if (g_mode > 0) {
+        int top, open = menu_open_now(&top); static int was = -1, said;
+        if (open != was && said < 2000) { said++; LOG("[tl2ui] menu %s (console UI stack top %d)", open ? "open: taps go to menu items" : "closed: taps stay with the touch layout", top); }
+        was = open; atomic_store_explicit(&g_menu_open, open, memory_order_release);
+    }
     if (g_mode > 0 && atomic_exchange_explicit(&g_tap_pending, 0, memory_order_acquire)) {
         uint64_t xy = atomic_load(&g_tap_xy); float x, y; uint32_t xb = (uint32_t)xy, yb = (uint32_t)(xy >> 32); memcpy(&x, &xb, 4); memcpy(&y, &yb, 4);
-        if (g_nav.st == S_A_DOWN || g_nav.st == S_A_UP) LOG("[tl2ui] tap %.3f,%.3f while A is pressed: dropped", x, y);
+        if (!atomic_load(&g_menu_open)) LOG("[tl2ui] tap %.3f,%.3f: no menu open any more, dropped", x, y);
+        else if (g_nav.st == S_A_DOWN || g_nav.st == S_A_UP) LOG("[tl2ui] tap %.3f,%.3f while A is pressed: dropped", x, y);
         else { if (g_nav.st != S_IDLE) LOG("[tl2ui] new tap: the previous one is abandoned"); g_nav.st = S_IDLE; start_tap(x, y); }
     }
     if (g_mode > 0) nav_tick(buttons);

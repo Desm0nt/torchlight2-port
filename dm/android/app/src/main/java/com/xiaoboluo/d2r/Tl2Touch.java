@@ -65,8 +65,8 @@ final class Tl2Touch {
             this.label = label; this.key = key; this.kind = kind; this.group = group; this.anchor = anchor; this.bx = bx; this.by = by; this.br = br;
         }
     }
-    private static final int T_NONE = -1, T_JOY = -2, T_AIM = -3, T_WORLD = -4;
-    private static final class Finger { int target = T_NONE; float x, y, x0, y0; long t0, keyT; boolean keyDown, cancelled, moved, walking; long seq; }
+    private static final int T_NONE = -1, T_JOY = -2, T_AIM = -3, T_WORLD = -4, T_MENU = -5;   // T_MENU: a console menu is up (DmActivity.nativeTl2MenuOpen), tap or not yet decided
+    private static final class Finger { int target = T_NONE, zone; float x, y, x0, y0; long t0, keyT; boolean keyDown, cancelled, moved, walking; long seq; }
     private static final class Pulse { final int key; final long start, end; final float ax, ay; final boolean mod;
         Pulse(int key, long start, long end, float ax, float ay, boolean mod) { this.key = key; this.start = start; this.end = end; this.ax = ax; this.ay = ay; this.mod = mod; } }
     private static final class Stick { int ptr = -1; float tx, ty, bx, by, rx, ry; }
@@ -309,6 +309,10 @@ final class Tl2Touch {
         if (b != null && b.kind == KIND_GEAR) { openSettings.run(); return; }
         if (b != null && b.kind == KIND_SWAP) { setII = !setII; return; }
         if (b != null) f.target = btns.indexOf(b);
+        // [TL2] pointer (hle_tl2_ui.c, gear "tap on menu items", DM_TL2_POINTER): while a console menu is up a finger off the overlay buttons
+        // waits: a short still tap goes to the menu item under it; moving it first makes it the stick / world finger it would have been
+        else if (DmActivity.nativeTl2MenuOpen()) { f.target = T_MENU; f.zone = move.ptr < 0 && moveZone(x, y) ? T_JOY : aim.ptr < 0 && aimZone(x, y) ? T_AIM
+                                                  : y > 60 * k && !moveZone(x, y) && !aimZone(x, y) ? T_WORLD : T_NONE; }
         else if (move.ptr < 0 && moveZone(x, y)) { f.target = T_JOY; grab(move, id, x, y); }
         else if (aim.ptr < 0 && aimZone(x, y)) { f.target = T_AIM; grab(aim, id, x, y); }
         else if (y > 60 * k && !moveZone(x, y) && !aimZone(x, y)) f.target = T_WORLD;
@@ -318,6 +322,11 @@ final class Tl2Touch {
         Finger f = fingers.get(id); if (f == null) return;
         f.x = x; f.y = y;
         if (dist(f) > MOVE_DP * dp) f.moved = true;
+        if (f.target == T_MENU && f.moved) {   // not a tap: the finger becomes what it would have been without the menu, from where it went down
+            if (f.zone == T_JOY && move.ptr < 0) { f.target = T_JOY; grab(move, id, f.x0, f.y0); }
+            else if (f.zone == T_AIM && aim.ptr < 0) { f.target = T_AIM; grab(aim, id, f.x0, f.y0); }
+            else f.target = f.zone == T_WORLD ? T_WORLD : T_NONE;
+        }
         Btn b = btnOf(f);
         if (b != null && aimMode != AIM_OFF && (b.kind == KIND_MAIN || b.kind == KIND_SKILL)) {
             if (inMinus(x, y)) f.cancelled = true;   // D2R: dragging a skill onto the map button cancels it
@@ -341,6 +350,12 @@ final class Tl2Touch {
             else if (b.kind == KIND_PLAIN && held < KEY_MIN_MS) pulse(b.key, 0, 0, 0, false);
         }
         if (f.target == T_WORLD && held < TAP_MS && dist(f) <= MOVE_DP * dp) worldTap(f.x0, f.y0);
+        if (f.target == T_MENU && held < TAP_MS && dist(f) <= MOVE_DP * dp) {
+            // the view is the whole game picture (TL2 widescreen and 16:9 both fill it; menus are never on the pillarboxed loading screen)
+            int w = view.getWidth(), h = view.getHeight();
+            boolean took = w > 0 && h > 0 && DmActivity.nativeTl2UiTap(f.x0 / w, f.y0 / h);
+            if (!took && f.zone == T_WORLD) worldTap(f.x0, f.y0);
+        }
     }
     void releaseAll() {
         fingers.clear(); pulses.clear(); move.ptr = aim.ptr = -1; faceUntil = 0;
