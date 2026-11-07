@@ -43,7 +43,8 @@ import java.util.Map;
 public class D3PadView extends View implements FrontMenu.Pad {
     static final int PAD_DEVICE = DoomPadView.PAD_DEVICE;
     static final int SETTINGS = -1, MENU_TOGGLE = -2;   // not keys: open the gear dialog / switch menu mode
-    static final String LAYOUT_TOUCH = "touch", LAYOUT_GAMEPAD = "gamepad", LAYOUT_DEFAULT = LAYOUT_GAMEPAD;
+    static final String LAYOUT_TOUCH = "touch", LAYOUT_GAMEPAD = "gamepad", LAYOUT_TL2 = "tl2",
+        LAYOUT_DEFAULT = DmActivity.TL2 ? LAYOUT_TL2 : LAYOUT_GAMEPAD;   // [TL2] its own touch layout after D2R Mobile (Tl2Touch), not D3's
     static final int OPACITY_MIN = 10, OPACITY_MAX = 100, OPACITY_DEFAULT = 100;   // % (gear dialog sliders)
     static final int SCALE_MIN = 60, SCALE_MAX = 160, SCALE_DEFAULT = 100;
     static final int MENU_SWIPE_STICK = 0, MENU_SWIPE_DPAD = 1;
@@ -123,13 +124,15 @@ public class D3PadView extends View implements FrontMenu.Pad {
     private boolean iconsOn = true, padVisible = true, hostResumed = true, hideSticks = true;
     private final Paint iconPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
     private final Path clip = new Path(); private final RectF iconDst = new RectF();
+    private Tl2Touch tl2;   // [TL2] the "tl2" layout: touches and drawing are Tl2Touch's
+    private boolean tl2() { return tl2 != null && LAYOUT_TL2.equals(layout); }
 
     public D3PadView(Context c) {
         super(c);
         dp = c.getResources().getDisplayMetrics().density;
         line.setStyle(Paint.Style.STROKE); line.setStrokeWidth(2 * dp);
         text.setTextAlign(Paint.Align.CENTER);
-        icons = c instanceof DmActivity ? new D3SkillIcons((DmActivity) c, this::invalidate) : null;
+        icons = c instanceof DmActivity && !DmActivity.TL2 ? new D3SkillIcons((DmActivity) c, this::invalidate) : null;   // [TL2] D3SkillIcons reads D3's HUD slots: not TL2's
         reloadSettings();
     }
 
@@ -173,6 +176,10 @@ public class D3PadView extends View implements FrontMenu.Pad {
         addBtn("R3", K_R3, "r3", 0.87f, 0.09f, 0, 0, 0, 0, 20, false);
     }
     private boolean touch() { return LAYOUT_TOUCH.equals(layout); }
+    private void buildTl2() {   // [TL2] D3PadView only keeps a placeholder stick; Tl2Touch has the controls
+        left = new Stick("lstick", 0.12f, 0.68f, 64, K_L3, 1.4f, 0.18f, 0.30f); right = null;
+        if (tl2 == null) tl2 = new Tl2Touch(this, this::openSettings);
+    }
     private List<Ctl> all() { List<Ctl> a = new ArrayList<>(btns); a.add(left); if (right != null) a.add(right); return a; }
     private String posKey(String group) { return "d3_pos_" + layout + "_" + group; }
 
@@ -196,11 +203,14 @@ public class D3PadView extends View implements FrontMenu.Pad {
         iconsOn = p.getBoolean("d3_icons", true);
         hideSticks = p.getBoolean("d3_hide_sticks", true);
         skinPack = p.getString("skin", PadSkin.CLASSIC);   // [front] PadSkin pack or classic
-        String want = LAYOUT_TOUCH.equals(p.getString("d3_layout", LAYOUT_DEFAULT)) ? LAYOUT_TOUCH : LAYOUT_GAMEPAD;
+        String saved = p.getString("d3_layout", LAYOUT_DEFAULT);
+        String want = DmActivity.TL2 ? (LAYOUT_GAMEPAD.equals(saved) ? LAYOUT_GAMEPAD : LAYOUT_TL2)   // [TL2] tl2 / gamepad only
+            : LAYOUT_TOUCH.equals(saved) ? LAYOUT_TOUCH : LAYOUT_GAMEPAD;
         if (!want.equals(layout)) {
             releaseAll(); menuMode = false; layout = want; btns.clear();
-            if (touch()) buildTouch(); else buildGamepad();
+            if (LAYOUT_TL2.equals(layout)) buildTl2(); else if (touch()) buildTouch(); else buildGamepad();
         }
+        if (tl2()) tl2.reload(ui, p, op, scale);
         pos.clear();
         for (Ctl k : all()) {
             String v = p.getString(posKey(k.group), null);
@@ -212,7 +222,7 @@ public class D3PadView extends View implements FrontMenu.Pad {
     }
 
     // ---------------- skill icons ----------------
-    private void iconGate() { if (icons != null) icons.setGate(iconsOn && padVisible && hostResumed && !menuMode && !controllerMode && !editMode); }
+    private void iconGate() { if (icons != null && !tl2()) icons.setGate(iconsOn && padVisible && hostResumed && !menuMode && !controllerMode && !editMode); }
     // DmActivity.onResume / onPause: no read-back of a surface that is going away; a resume samples again soon.
     void setHostResumed(boolean on) { hostResumed = on; iconGate(); }
     @Override public void onVisibilityAggregated(boolean visible) { super.onVisibilityAggregated(visible); padVisible = visible; iconGate(); }
@@ -225,6 +235,7 @@ public class D3PadView extends View implements FrontMenu.Pad {
     void setControllerMode(boolean on) {
         if (on == controllerMode) return;
         controllerMode = on;   // first: no axes from releaseAll (they would make the touch pad the active controller in front_android.c)
+        if (tl2 != null) tl2.setControllerMode(on);
         if (on) releaseAll();
         iconGate(); invalidate();
     }
@@ -371,11 +382,13 @@ public class D3PadView extends View implements FrontMenu.Pad {
         } else if (!cancel) pulse(K_A);
     }
     void setMenuMode(boolean on) {
+        if (tl2()) { tl2.setMenuMode(on); return; }
         releaseAll(); menuMode = on; axes(); iconGate(); invalidate();
     }
 
     // Lets go of everything this pad holds (focus lost, layout / mode switch, a controller took over, edit mode).
     @Override public void releaseAll() {
+        if (tl2 != null) tl2.releaseAll();
         boolean any = false;
         for (Btn b : btns) if (b.pointer >= 0) { if (b.key >= 0) key(b.key, false); b.pointer = -1; any = true; }
         if (left != null && left.pointer >= 0) { release(left, false); any = true; }
@@ -393,10 +406,10 @@ public class D3PadView extends View implements FrontMenu.Pad {
     private void openSettings() { if (getContext() instanceof FrontMenu.Owner && ((FrontMenu.Owner) getContext()).frontMenu() != null) ((FrontMenu.Owner) getContext()).frontMenu().open(); else if (getContext() instanceof DmActivity) ((DmActivity) getContext()).showDoomSettings(); }
     // ---- [front] FrontMenu.Pad
     private Runnable editDone;
-    @Override public void startEdit(Runnable done) { editDone = done; startEdit(); }
-    @Override public boolean editing() { return editMode; }
-    @Override public void endEdit(boolean save) { endEdit(); }   // D3's editor keeps every drag at once ("Reset" / "Done" on its panel)
-    @Override public void resetLayout() { resetPlaces(); }
+    @Override public void startEdit(Runnable done) { if (tl2()) { tl2.startEdit(done); return; } editDone = done; startEdit(); }
+    @Override public boolean editing() { return tl2() ? tl2.editing() : editMode; }
+    @Override public void endEdit(boolean save) { if (tl2()) { if (tl2.editing()) tl2.endEdit(); return; } endEdit(); }   // D3's editor keeps every drag at once ("Reset" / "Done" on its panel)
+    @Override public void resetLayout() { if (tl2()) tl2.resetLayout(); else resetPlaces(); }
     @Override public String prefsName() { return "doom_controls"; }
     @Override public String[] sliderKeys() { return new String[] {"d3_opacity", "d3_scale"}; }
     @Override public int[] sliderDefaults() { return new int[] {OPACITY_DEFAULT, SCALE_DEFAULT}; }
@@ -412,7 +425,7 @@ public class D3PadView extends View implements FrontMenu.Pad {
     // ---------------- edit mode ----------------
     private int editPtr = -1; private Ctl editCtl; private float editAx, editAy, editX0, editY0;
     private final RectF resetRect = new RectF(), doneRect = new RectF(), panelRect = new RectF();
-    void startEdit() { releaseAll(); editMode = true; iconGate(); invalidate(); }
+    void startEdit() { if (tl2()) { tl2.startEdit(null); return; } releaseAll(); editMode = true; iconGate(); invalidate(); }
     private void endEdit() { editPtr = -1; editMode = false; iconGate(); invalidate(); Runnable d = editDone; editDone = null; if (d != null) d.run(); }
     private void resetPlaces() {
         SharedPreferences.Editor e = getContext().getSharedPreferences("doom_controls", Context.MODE_PRIVATE).edit();
@@ -452,6 +465,7 @@ public class D3PadView extends View implements FrontMenu.Pad {
 
     // ---------------- touches ----------------
     @Override public boolean onTouchEvent(MotionEvent e) {
+        if (tl2()) return tl2.onTouch(e);   // [TL2]
         int a = e.getActionMasked(), i = e.getActionIndex(), id = e.getPointerId(i);
         float x = e.getX(i), y = e.getY(i);
         if (editMode) { editTouch(e, a, id, x, y); return true; }
@@ -511,6 +525,7 @@ public class D3PadView extends View implements FrontMenu.Pad {
     @Override protected void onDraw(Canvas c) {
         super.onDraw(c);
         drawFps(c);
+        if (tl2()) { tl2.draw(c); return; }   // [TL2]
         if (editMode) {
             c.drawColor(0x50000000);
             drawStick(c, left); if (right != null) drawStick(c, right);

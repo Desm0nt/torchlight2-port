@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- [TL2] Torchlight II touch layout (Tl2Touch.java, after D2R Mobile) -->
+<resources>
+    <string name="tl2_pad_game">ИГРА</string>
+    <string name="tl2_layout_touch">Сенсорная (как D2R Mobile)</string>
+    <string name="tl2_layout_note">Сенсорная: стик появляется под пальцем внизу слева; навыки справа (A основной, вокруг B X Y R, над ними ZR), перетаскивание навыка — прицел, II — второй набор навыков (держит модификатор, пока навык в ходу); нижний ряд — крестовина и +, сверху ZL L L3, − R3. Тап по миру = A, коснуться и держать — идти туда. МЕНЮ включает жесты меню (тап = A, долгое нажатие = удержание A, свайп = крестовина, два пальца = B); + и − включают их сами.</string>
+    <string name="tl2_touch">Сенсорная раскладка</string>
+    <string name="tl2_iso">Поправка диагонали: %1$d%%</string>
+    <string name="tl2_iso_note">Чтобы герой шёл туда, куда показывает палец. Толкните стик под 45°: если герой идёт положе пальца — увеличьте.</string>
+    <string name="tl2_tap">Тап по миру</string>
+    <string name="tl2_tap_a">A (атака / подобрать / говорить)</string>
+    <string name="tl2_tap_face">Повернуться к точке, затем A</string>
+    <string name="tl2_hold_walk">Коснуться мира и держать = идти к пальцу</string>
+    <string name="tl2_aim">Перетаскивание навыка целится</string>
+    <string name="tl2_aim_right">правым стиком</string>
+    <string name="tl2_aim_left">левым стиком</string>
+    <string name="tl2_mod">Модификатор второго набора (II)</string>
+    <string name="tl2_nav">Режим меню: свайп нажимает</string>
+    <string name="tl2_auto_nav">+ и − включают режим меню</string>
+    <string name="tl2_nav_note">Своего тача у игры нет: меню управляются кнопками геймпада. Для круглых (радиальных) меню выберите свайп стиком.</string>
+</resources>

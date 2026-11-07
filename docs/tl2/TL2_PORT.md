@@ -110,3 +110,21 @@ bash tools/run.sh <имя> [сек] [ENV=…]                                # �
 2. Видео: MP4/H.264 через Android MediaCodec (сейчас ролики пропускаются).
 3. Тач: игра импортирует `GetTouchScreenState` — проверить, принимает ли меню тач (фронт D3 сейчас шлёт только пад).
 4. DLC Yapper (AOC 1), иконка, своя раскладка.
+
+## Тач (07.11.2026)
+**Статика: у Switch-TL2 тача нет.** `nn::hid::GetTouchScreenState<16>` вызывается ровно один раз — в init hid (main 0x13e9d0:
+InitializeNpad → InitializeTouchScreen → SetSupportedNpadStyleSet(7) → SetSupportedNpadIdType → `GetTouchScreenState(this+0x278)` 0x13ea04),
+опрос пада (0x13ea60, GetNpadStyleSet / GetNpadState ×3 стиля) тач не читает; других вызовов (bl / b на PLT 0x1df97c0) нет. Мыши/клавиатуры в
+импортах нет. CEGUI 0.6.2 внутри, но имена событий мыши вырезаны (нет строк `MouseClick` / `MouseButtonDown` / `Clicked`), cvar
+`input_forceGamepad` регистрируется (0x6b940c) и больше нигде не читается. Меню — консольные фокусные / радиальные
+(`CConsoleUIMenu`, `CConsoleUIButtonMenu`, `CConsoleUIRadialMenu`, `CConsoleUIMainMenu`, `CConsoleUIStartMenu`, `CMenuController`).
+Итого тач в игру слать некуда (hle_tl2.c отдаёт touch_fill честно, но читается он один раз при старте); весь тач — во фронтенде → npad.
+Тап по конкретному пункту меню = RE `CMenuController` / CEGUI-дерева окон (по образцу D3 hle_d3_ui.c) — следующий шаг, не сделан.
+
+**Раскладка `tl2` (по D2R Mobile, `Tl2Touch.java`; D3PadView только передаёт ей касания/рисование, по умолчанию для TL2):** плавающий стик
+(левые 40% × нижние 55%, от точки касания, 60 dp полный ход, 6 dp мёртвая зона, поправка диагонали `tl2_iso`), веер справа как у D2R
+(A основной, B X Y R, ZR на месте портала, II = второй набор: модификатор `tl2_mod` за 170 мс до навыка), перетаскивание навыка = прицел
+(`tl2_aim` правый / левый стик / выкл), короткий тап = импульс с направлением, увод пальца на «−» = отмена; нижний ряд D2R-«пояса» = ←↑↓→ +,
+сверху ZL L L3 / − R3 / ⚙ / МЕНЮ. Мир: тап = `tl2_tap` (выкл / A / повернуться+A), держать = идти к пальцу (`tl2_hold_walk`, якорь героя
+`tl2_hero_y`). Режим меню (как панельный режим D2R): тап = A, долгое = держать A, два пальца = B, свайп = шаги крестовины (`tl2_nav_swipe` 0)
+или левый стик (1, радиальные меню); игра стартует в нём, + / − включают его сами (`tl2_auto_nav`). Иконки навыков D3 (D3SkillIcons) для TL2 выключены.
