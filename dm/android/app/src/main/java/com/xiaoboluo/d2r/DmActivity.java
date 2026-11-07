@@ -417,7 +417,9 @@ public class DmActivity extends Activity implements SurfaceHolder.Callback, Disp
                 if (TL2) Os.setenv("DM_TL2_WIDE", startedAspect == 2 ? "1" : "0", true);   // [TL2] hle_tl2_wide.c (W x 1080, Hor+), default on
                 else if (startedAspect == 2) Os.setenv("DM_D3_WIDE", "1", true); else Os.unsetenv("DM_D3_WIDE");
                 // Widescreen only: loading screens' 16:9 art presented alone, stretched to the screen (hle_d3.c ls_present_crop)
-                Os.setenv("DM_D3_WIDE_STRETCH_LOADING", p.getBoolean("d3_stretch_loading", true) ? "1" : "0", true);
+                // [TL2] the other way round: loading screens pillarboxed 16:9 by default, stretched only when asked (hle_tl2_wide.c)
+                if (TL2) Os.setenv("DM_TL2_WIDE_LOADSTRETCH", p.getBoolean(STRETCH_LOADING_KEY, STRETCH_LOADING_DEFAULT) ? "1" : "0", true);
+                else Os.setenv("DM_D3_WIDE_STRETCH_LOADING", p.getBoolean(STRETCH_LOADING_KEY, STRETCH_LOADING_DEFAULT) ? "1" : "0", true);
             } else {
             if (p.getBoolean("drs", false)) Os.setenv("DM_DOOM_DRS", "1", true); else Os.unsetenv("DM_DOOM_DRS");
             int res = p.getInt("res", 0);
@@ -858,6 +860,9 @@ public class DmActivity extends Activity implements SurfaceHolder.Callback, Disp
     // rounded to 16 (max 3200; not wider than 1600 = no widescreen), handheld (W x 4/5 rounded to 16) x 720. 2400x1080 -> 2000x900 / 1600x720.
     // [TL2] picture shape default: widescreen (hle_tl2_wide.c DM_TL2_WIDE); D3 keeps 16:9 with bars
     static final int D3_ASPECT_DEFAULT = TL2 ? 2 : 0;
+    // Widescreen loading screens: D3 stretches them by default (DM_D3_WIDE_STRETCH_LOADING), TL2 keeps them 16:9 with bars (DM_TL2_WIDE_LOADSTRETCH)
+    static final String STRETCH_LOADING_KEY = TL2 ? "tl2_stretch_loading" : "d3_stretch_loading";
+    static final boolean STRETCH_LOADING_DEFAULT = !TL2;
     static int[] d3RenderSize(boolean wide, boolean handheld, int sw, int sh) {
         if (TL2) {   // [TL2] docked 1920x1080, handheld 1280x720; widescreen W x 1080 (1080 x screen aspect, rounded to 16, max 3840), handheld W*2/3 x 720
             int w = 1920;
@@ -934,7 +939,7 @@ public class DmActivity extends Activity implements SurfaceHolder.Callback, Disp
             heading(box, when(ui, R.string.d3_aspect, true));
             RadioGroup aspG = radios(box, new String[] {ui.getString(R.string.d3_aspect_bars), ui.getString(R.string.d3_aspect_stretch), ui.getString(R.string.d3_aspect_wide)}, 8000, p.getInt("aspect", D3_ASPECT_DEFAULT), false);
             note(box, ui.getString(R.string.d3_aspect_wide_note));
-            CheckBox stretchL = new CheckBox(this); stretchL.setText(when(ui, R.string.d3_stretch_loading, false)); stretchL.setChecked(p.getBoolean("d3_stretch_loading", true)); box.addView(stretchL);
+            CheckBox stretchL = new CheckBox(this); stretchL.setText(when(ui, R.string.d3_stretch_loading, false)); stretchL.setChecked(p.getBoolean(STRETCH_LOADING_KEY, STRETCH_LOADING_DEFAULT)); box.addView(stretchL);
             aspG.setOnCheckedChangeListener((g, id) -> d3ModeLabels(modeG, ui, id == 8002));
             heading(box, when(ui, R.string.d3_sharpen, false));
             RadioGroup sh = radios(box, texts(ui, D3_SHARPEN_LABELS), 2000, p.getInt("sharpen", 0), true);
@@ -1043,7 +1048,7 @@ public class DmActivity extends Activity implements SurfaceHolder.Callback, Disp
                     .putBoolean("handheld", picked(modeG, 1000, 2) == 1).putInt("aspect", picked(aspG, 8000, 3))
                     .putInt("sharpen", picked(sh, 2000, SHARPEN_STOPS.length)).putInt("fps_limit", D3_FPS_LIMITS[picked(fpsLim, 8500, D3_FPS_LIMITS.length)])
                     .putString("driver", drvPick > 0 ? drvNames[drvPick - 1] : "").putBoolean("rumble", rumble.isChecked())
-                    .putBoolean("d3_stretch_loading", stretchL.isChecked()).apply();
+                    .putBoolean(STRETCH_LOADING_KEY, stretchL.isChecked()).apply();
                 cp.edit().putBoolean("fps", fps.isChecked()).putBoolean("d3_icons", iconsC.isChecked()).putBoolean("d3_hide_sticks", hideSt.isChecked()).putFloat("move_dz", DEADZONES[picked(dz, 4000, DEADZONES.length)])
                     .putInt("gear_mode", picked(gearG, 9000, D3_GEAR_LABELS.length)).putInt("d3_menu_swipe", picked(swG, 9300, 2)).apply();
                 if (TL2) cp.edit().putInt("tl2_tap", picked(tapF, 9400, 3)).putBoolean("tl2_hold_walk", walkF.isChecked()).putInt("tl2_aim", picked(aimF, 9500, 3))

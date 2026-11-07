@@ -273,6 +273,9 @@ bool record(VkCommandBuffer cmd,unsigned f,VkImage source,VkFormat format,uint32
     return true;
 }
 }
+#ifdef DM_GAME_TL2
+extern "C" int (*dm_present_pillarbox)(void);   // [TL2] hle_tl2_wide.c registers it (translation thread, at the present); null = never
+#endif
 int present(void*,void*,VkImage source,VkFormat source_format,uint32_t width,uint32_t height,const int32_t crop[4],int32_t){
     std::lock_guard<std::mutex> render_lock(render_mutex);
     pin_update();
@@ -323,7 +326,14 @@ int present(void*,void*,VkImage source,VkFormat source_format,uint32_t width,uin
     // TOP_OF_PIPE as the source stage it does not wait for the semaphore and can happen before the presentation engine has
     // finished reading the image (synchronization validation: SYNC-HAZARD-WRITE-AFTER-READ).
     vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT,0,0,nullptr,0,nullptr,1,&barrier);
-    double scale=std::min(double(extent.width)/w,double(extent.height)/h);int dw=std::max(1,int(w*scale)),dh=std::max(1,int(h*scale)),dx=(int(extent.width)-dw)/2,dy=(int(extent.height)-dh)/2;
+    double aw=w,ah=h;   // the shape the picture is shown at (normally the source's)
+#ifdef DM_GAME_TL2
+    // [TL2] hle_tl2_wide.c: while a loading screen is up in widescreen, the W x 1080 window (its 1920x1080 UI canvas stretched to W) is
+    // shown at 16:9, centred with black side bars (pillarbox); squeezing back to 16:9 samples linearly when the format allows it
+    bool pillar=dm_present_pillarbox && w*9>h*16 && dm_present_pillarbox();
+    if(pillar)aw=h*16.0/9.0;
+#endif
+    double scale=std::min(double(extent.width)/aw,double(extent.height)/ah);int dw=std::max(1,int(aw*scale)),dh=std::max(1,int(ah*scale)),dx=(int(extent.width)-dw)/2,dy=(int(extent.height)-dh)/2;
     if(dx || dy || dw!=int(extent.width) || dh!=int(extent.height)){   // letterbox bars only where the blit leaves part of the image
         VkClearColorValue black{};vkCmdClearColorImage(cmd,images[index],VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,&black,1,&barrier.subresourceRange);
         barrier.oldLayout=barrier.newLayout;barrier.srcAccessMask=barrier.dstAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT;vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT,0,0,nullptr,0,nullptr,1,&barrier);}
@@ -333,6 +343,9 @@ int present(void*,void*,VkImage source,VkFormat source_format,uint32_t width,uin
     VkFilter filter=VK_FILTER_NEAREST;
 #ifdef __OHOS__
     if(sp.optimalTilingFeatures&VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT)filter=VK_FILTER_LINEAR;
+#endif
+#ifdef DM_GAME_TL2
+    if(pillar && (sp.optimalTilingFeatures&VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT))filter=VK_FILTER_LINEAR;
 #endif
     const bool sharpened=rcas::record(cmd,f,source,source_format,width,height);
     vkCmdBlitImage(cmd,sharpened?rcas::image:source,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,images[index],VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,1,&blit,filter);

@@ -64,6 +64,53 @@ static unsigned tw_auto_width(void) {
     return (unsigned)(llround(1080.0 * w / h / 16) * 16);
 }
 
+// ---- Loading screens 16:9 with black side bars in widescreen (default; DM_TL2_WIDE_LOADSTRETCH=1 keeps them stretched to the screen)
+// The loading screen is the console UI node CConsoleUILoading (vtable main+0x2304530, built once by 0xc1e40 from the UI setup 0x141020,
+// pointer kept at UI manager +0x90; the UI manager is the static main+0x74cfe70, GOT 0x23a3590). Its art (SPLASH_HINT_BG / SPLASH_GLOW,
+// full-screen 1920x1080 panels) is laid out on the 1920x1080 canvas, which the widened window stretches to W x 1080. Node byte +0x74 =
+// drawn (the base Render 0x19f57b0 returns at once while it is 0), +0x75 = updated: Show 0xc2a30 sets both (0xc2ae4 strh #0x101),
+// its Update 0xc30f0 clears both when the fade-out ends (0xc3168 strh wzr); the game itself tests it (0x112718: no X while loading).
+// While it is drawn the presenter (vulkan_present.cpp, dm_present_pillarbox, translation thread) shows the whole W x 1080 window at
+// 16:9 centred with black bars: the canvas squeezed back to its own shape. One present behind the game at worst (fades in / out).
+enum { TL_UIMGR = 0x74cfe70, TL_GOT_UIMGR = 0x23a3590, TL_SHOW = 0xc2ad8, TL_TEST = 0x112708, TL_HIDE = 0xc3164 };
+static const uint32_t k_tl_show[4] = {0x52802028 /* mov w8,#0x101 */, 0xb9008a7f, 0xb9018a7f, 0x7900ea68 /* strh w8,[x19,#0x74] */};
+static const uint32_t k_tl_test[6] = {0xb0011488, 0xf942c908 /* ldr x8,[GOT 0x23a3590] */, 0xf9404908 /* ldr x8,[x8,#0x90] */, 0xb4000068,
+                                      0x3941d108 /* ldrb w8,[x8,#0x74] */, 0x350017c8};
+static const uint32_t k_tl_hide[2] = {0xd61f0100, 0x7900ea7f /* strh wzr,[x19,#0x74] */};
+static const tw_site k_tl_sites[] = {{TL_SHOW, 4, k_tl_show}, {TL_TEST, 6, k_tl_test}, {TL_HIDE, 2, k_tl_hide}};
+static const uint8_t *g_tl_uimgr;
+int (*dm_present_pillarbox)(void);   // vulkan_present.cpp present(): nonzero = show this frame at 16:9 with side bars
+#include <sys/uio.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+static int tl_loading_up(void) {
+    static int was = -1, nth;
+    uint64_t node = *(const volatile uint64_t *)(g_tl_uimgr + 0x90); uint8_t vis = 0;
+    if (node >= 0x10000 && node < (1ull << 48)) {   // a heap object: read through the kernel (a stale pointer gives EFAULT, never a fault)
+        struct iovec l = {&vis, 1}, r = {(void *)(uintptr_t)(node + 0x74), 1};
+        if (syscall(SYS_process_vm_readv, getpid(), &l, 1UL, &r, 1UL, 0UL) != 1) vis = 0;
+    }
+    int on = vis != 0;
+    if (on != was && nth < 400) { nth++; LOG("[wide] loading screen %s (CConsoleUILoading %#llx +0x74 = %u): %s", on ? "up" : "down", (unsigned long long)node, vis,
+                                            on ? "presented 16:9 with black side bars" : "whole width again"); }
+    was = on;
+    return on;
+}
+static void tl_install(module_t *m, int ui) {
+    const char *e = getenv("DM_TL2_WIDE_LOADSTRETCH");
+    if (e && *e && !(*e == '0' && !e[1])) { LOG("[wide] DM_TL2_WIDE_LOADSTRETCH=%s: loading screens stretched to the screen", e); return; }
+    if (ui) { LOG("[wide] DM_TL2_WIDE_UI=1: the UI canvas is wide, loading screens are not pillarboxed"); return; }
+    for (size_t i = 0; i < sizeof k_tl_sites / sizeof k_tl_sites[0]; i++)
+        if (m->text_end < k_tl_sites[i].off + 4 * k_tl_sites[i].n || memcmp(m->base + k_tl_sites[i].off, k_tl_sites[i].want, 4 * k_tl_sites[i].n)) {
+            LOG("【红】[wide] main+%#x differs: loading screens stay stretched", k_tl_sites[i].off); return; }
+    if (m->size < TL_UIMGR + 0x98 || *(const uint64_t *)(m->base + TL_GOT_UIMGR) != (uint64_t)(uintptr_t)(m->base + TL_UIMGR)) {
+        LOG("【红】[wide] GOT main+%#x does not point at the UI manager main+%#x: loading screens stay stretched", TL_GOT_UIMGR, TL_UIMGR); return; }
+    g_tl_uimgr = m->base + TL_UIMGR;
+    dm_present_pillarbox = tl_loading_up;
+    LOG("[wide] loading screens: 16:9 with black side bars while CConsoleUILoading (UI manager main+%#x +0x90) is drawn; "
+        "DM_TL2_WIDE_LOADSTRETCH=1 stretches them", TL_UIMGR);
+}
+
 void dm_tl2_wide_install(void);   // main.c host_preload, right after load_modules (before any guest code runs)
 void dm_tl2_wide_install(void) {
     const char *e = getenv("DM_TL2_WIDE");
@@ -93,5 +140,6 @@ void dm_tl2_wide_install(void) {
         "video settings WIDTH/HEIGHT the same (main+%#x / +%#x), display-mode snap main+%#x off; console UI canvas %s",
         w, wh, w / 1080.0, TW_INIT + 16, TW_MSG_DK + 20, TW_SNAP,
         ui ? "widened too (DM_TL2_WIDE_UI=1)" : "kept 1920x1080 (scaled to the window; DM_TL2_WIDE_UI=1 widens it)");
+    tl_install(m, ui);
 }
 #endif
