@@ -43,7 +43,7 @@ import java.util.Map;
 public class D3PadView extends View implements FrontMenu.Pad {
     static final int PAD_DEVICE = DoomPadView.PAD_DEVICE;
     static final int SETTINGS = -1, MENU_TOGGLE = -2;   // not keys: open the gear dialog / switch menu mode
-    static final String LAYOUT_TOUCH = "touch", LAYOUT_GAMEPAD = "gamepad", LAYOUT_TL2 = "tl2",
+    static final String LAYOUT_TOUCH = "touch", LAYOUT_GAMEPAD = "gamepad", LAYOUT_TL2 = "tl2", LAYOUT_TL2_SIDE = "tl2_side",
         LAYOUT_DEFAULT = DmActivity.TL2 ? LAYOUT_TL2 : LAYOUT_GAMEPAD;   // [TL2] its own touch layout after D2R Mobile (Tl2Touch), not D3's
     static final int OPACITY_MIN = 10, OPACITY_MAX = 100, OPACITY_DEFAULT = 100;   // % (gear dialog sliders)
     static final int SCALE_MIN = 60, SCALE_MAX = 160, SCALE_DEFAULT = 100;
@@ -125,7 +125,7 @@ public class D3PadView extends View implements FrontMenu.Pad {
     private final Paint iconPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
     private final Path clip = new Path(); private final RectF iconDst = new RectF();
     private Tl2Touch tl2;   // [TL2] the "tl2" layout: touches and drawing are Tl2Touch's
-    private boolean tl2() { return tl2 != null && LAYOUT_TL2.equals(layout); }
+    private boolean tl2() { return tl2 != null && (LAYOUT_TL2.equals(layout) || LAYOUT_TL2_SIDE.equals(layout)); }
 
     public D3PadView(Context c) {
         super(c);
@@ -204,13 +204,13 @@ public class D3PadView extends View implements FrontMenu.Pad {
         hideSticks = p.getBoolean("d3_hide_sticks", true);
         skinPack = p.getString("skin", PadSkin.CLASSIC);   // [front] PadSkin pack or classic
         String saved = p.getString("d3_layout", LAYOUT_DEFAULT);
-        String want = DmActivity.TL2 ? (LAYOUT_GAMEPAD.equals(saved) ? LAYOUT_GAMEPAD : LAYOUT_TL2)   // [TL2] tl2 / gamepad only
+        String want = DmActivity.TL2 ? (LAYOUT_GAMEPAD.equals(saved) || LAYOUT_TL2_SIDE.equals(saved) ? saved : LAYOUT_TL2)   // [TL2] tl2 / tl2_side / gamepad only
             : LAYOUT_TOUCH.equals(saved) ? LAYOUT_TOUCH : LAYOUT_GAMEPAD;
         if (!want.equals(layout)) {
             releaseAll(); menuMode = false; layout = want; btns.clear();
-            if (LAYOUT_TL2.equals(layout)) buildTl2(); else if (touch()) buildTouch(); else buildGamepad();
+            if (LAYOUT_TL2.equals(layout) || LAYOUT_TL2_SIDE.equals(layout)) buildTl2(); else if (touch()) buildTouch(); else buildGamepad();
         }
-        if (tl2()) tl2.reload(ui, p, op, scale);
+        if (tl2()) tl2.reload(ui, p, op, scale, LAYOUT_TL2_SIDE.equals(layout));
         pos.clear();
         for (Ctl k : all()) {
             String v = p.getString(posKey(k.group), null);
@@ -382,7 +382,7 @@ public class D3PadView extends View implements FrontMenu.Pad {
         } else if (!cancel) pulse(K_A);
     }
     void setMenuMode(boolean on) {
-        if (tl2()) { tl2.setMenuMode(on); return; }
+        if (tl2()) return;   // [TL2] no menu mode (per-item menu touch waits for CEGUI mouse events)
         releaseAll(); menuMode = on; axes(); iconGate(); invalidate();
     }
 

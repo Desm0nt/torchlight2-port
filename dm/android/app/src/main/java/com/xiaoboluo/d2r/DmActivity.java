@@ -975,13 +975,17 @@ public class DmActivity extends Activity implements SurfaceHolder.Callback, Disp
             // On-screen controls (D3PadView): layout touch / gamepad (applies when picked, the pad is visible behind the dialog), opacity and
             // size of the whole layout (live sliders), and the edit mode for positions (kept per layout).
             heading(box, when(ui, R.string.d3_layout, true));
-            // [TL2] touch = the D2R Mobile-style layout (Tl2Touch, "tl2"), or the gamepad; D3's touch layout is not offered
-            final String touchId = TL2 ? D3PadView.LAYOUT_TL2 : D3PadView.LAYOUT_TOUCH;
+            // [TL2] the D2R Mobile-style layouts (Tl2Touch): "tl2" sticks + skill fan (default), "tl2_side" quick-access cells on the
+            // sides; or the gamepad. D3's touch layout is not offered.
+            final String[] layIds = TL2 ? new String[] {D3PadView.LAYOUT_TL2, D3PadView.LAYOUT_TL2_SIDE, D3PadView.LAYOUT_GAMEPAD}
+                                        : new String[] {D3PadView.LAYOUT_TOUCH, D3PadView.LAYOUT_GAMEPAD};
             String layNow = cp.getString("d3_layout", D3PadView.LAYOUT_DEFAULT);
-            boolean touchWas = TL2 ? !D3PadView.LAYOUT_GAMEPAD.equals(layNow) : D3PadView.LAYOUT_TOUCH.equals(layNow);
-            RadioGroup layG = radios(box, new String[] {ui.getString(TL2 ? R.string.tl2_layout_touch : R.string.d3_layout_touch), ui.getString(R.string.d3_layout_gamepad)}, 9200, touchWas ? 0 : 1, false);
+            int layAt = TL2 ? (D3PadView.LAYOUT_GAMEPAD.equals(layNow) ? 2 : D3PadView.LAYOUT_TL2_SIDE.equals(layNow) ? 1 : 0) : (D3PadView.LAYOUT_TOUCH.equals(layNow) ? 0 : 1);
+            String[] layLabels = TL2 ? new String[] {ui.getString(R.string.tl2_layout_touch), ui.getString(R.string.tl2_layout_side), ui.getString(R.string.d3_layout_gamepad)}
+                                     : new String[] {ui.getString(R.string.d3_layout_touch), ui.getString(R.string.d3_layout_gamepad)};
+            RadioGroup layG = radios(box, layLabels, 9200, layAt, false);
             layG.setOnCheckedChangeListener((g, id) -> {
-                cp.edit().putString("d3_layout", id == 9200 ? touchId : D3PadView.LAYOUT_GAMEPAD).apply();
+                cp.edit().putString("d3_layout", layIds[Math.min(Math.max(0, id - 9200), layIds.length - 1)]).apply();
                 if (d3Pad != null) d3Pad.reloadSettings();
             });
             note(box, ui.getString(TL2 ? R.string.tl2_layout_note : R.string.d3_layout_note));
@@ -990,7 +994,7 @@ public class DmActivity extends Activity implements SurfaceHolder.Callback, Disp
             CheckBox iconsC = new CheckBox(this); iconsC.setText(when(ui, R.string.d3_skill_icons, true)); iconsC.setChecked(cp.getBoolean("d3_icons", true)); box.addView(iconsC);
             CheckBox hideSt = new CheckBox(this); hideSt.setText(when(ui, R.string.d3_hide_sticks, true)); hideSt.setChecked(cp.getBoolean("d3_hide_sticks", true)); box.addView(hideSt);
             TextView iconsN = note(box, ui.getString(R.string.d3_skill_icons_note));
-            if (TL2) { iconsC.setVisibility(View.GONE); iconsN.setVisibility(View.GONE); }   // [TL2] the icon reader knows D3's HUD only
+            if (TL2) { iconsC.setVisibility(View.GONE); iconsN.setVisibility(View.GONE); hideSt.setVisibility(View.GONE); }   // [TL2] the icon reader knows D3's HUD only; Tl2Touch draws idle sticks as faint rings
             android.widget.Button editB = new android.widget.Button(this); editB.setText(ui.getString(R.string.d3_edit)); box.addView(editB);
             note(box, ui.getString(R.string.d3_edit_note));
             heading(box, when(ui, R.string.d3_deadzone, true));
@@ -1006,25 +1010,24 @@ public class DmActivity extends Activity implements SurfaceHolder.Callback, Disp
                 cp.getInt("d3_menu_swipe", D3PadView.MENU_SWIPE_STICK), true);
             if (TL2) d3Touch.setVisibility(View.GONE);   // [TL2] D3's touch layout only
             // [TL2] the D2R-style touch layout (Tl2Touch): "doom_controls" tl2_*; sliders live, the rest on Save
-            RadioGroup tapG = null, aimG = null, modG = null, navG = null; CheckBox walkC = null, autoNavC = null;
+            // No menu mode for TL2 (hidden until per-item menu touch works through CEGUI mouse events); the extras below are off by default.
+            RadioGroup tapG = null, aimG = null, modG = null; CheckBox walkC = null;
             if (TL2) {
                 heading(box, when(ui, R.string.tl2_touch, true));
                 d3Slider(box, ui, R.string.tl2_iso, cp, "tl2_iso", Tl2Touch.ISO_MIN, Tl2Touch.ISO_MAX, Tl2Touch.ISO_DEFAULT);
                 note(box, ui.getString(R.string.tl2_iso_note));
-                d3Slider(box, ui, R.string.d3_hero_y, cp, "tl2_hero_y", Tl2Touch.HERO_Y_MIN, Tl2Touch.HERO_Y_MAX, Tl2Touch.HERO_Y_DEFAULT);
-                heading(box, ui.getString(R.string.tl2_tap));
-                tapG = radios(box, new String[] {ui.getString(R.string.d3_off), ui.getString(R.string.tl2_tap_a), ui.getString(R.string.tl2_tap_face)}, 9400, cp.getInt("tl2_tap", Tl2Touch.TAP_A), false);
-                walkC = new CheckBox(this); walkC.setText(ui.getString(R.string.tl2_hold_walk)); walkC.setChecked(cp.getBoolean("tl2_hold_walk", true)); box.addView(walkC);
-                heading(box, ui.getString(R.string.tl2_aim));
-                aimG = radios(box, new String[] {ui.getString(R.string.d3_off), ui.getString(R.string.tl2_aim_right), ui.getString(R.string.tl2_aim_left)}, 9500, cp.getInt("tl2_aim", Tl2Touch.AIM_RIGHT), false);
                 heading(box, ui.getString(R.string.tl2_mod));
-                modG = radios(box, new String[] {"ZL", "ZR", "L", "R"}, 9600, cp.getInt("tl2_mod", 0), true);
-                heading(box, ui.getString(R.string.tl2_nav));
-                navG = radios(box, new String[] {ui.getString(R.string.d3_menu_swipe_dpad), ui.getString(R.string.d3_menu_swipe_stick)}, 9700, cp.getInt("tl2_nav_swipe", 0), true);
-                autoNavC = new CheckBox(this); autoNavC.setText(ui.getString(R.string.tl2_auto_nav)); autoNavC.setChecked(cp.getBoolean("tl2_auto_nav", true)); box.addView(autoNavC);
-                note(box, ui.getString(R.string.tl2_nav_note));
+                modG = radios(box, Tl2Touch.MOD_NAMES, 9600, cp.getInt("tl2_mod", 0), true);
+                note(box, ui.getString(R.string.tl2_mod_note));
+                heading(box, ui.getString(R.string.tl2_extras));
+                heading(box, ui.getString(R.string.tl2_tap));
+                tapG = radios(box, new String[] {ui.getString(R.string.d3_off), ui.getString(R.string.tl2_tap_a), ui.getString(R.string.tl2_tap_face)}, 9400, cp.getInt("tl2_tap", Tl2Touch.TAP_OFF), false);
+                walkC = new CheckBox(this); walkC.setText(ui.getString(R.string.tl2_hold_walk)); walkC.setChecked(cp.getBoolean("tl2_hold_walk", false)); box.addView(walkC);
+                d3Slider(box, ui, R.string.d3_hero_y, cp, "tl2_hero_y", Tl2Touch.HERO_Y_MIN, Tl2Touch.HERO_Y_MAX, Tl2Touch.HERO_Y_DEFAULT);
+                heading(box, ui.getString(R.string.tl2_aim));
+                aimG = radios(box, new String[] {ui.getString(R.string.d3_off), ui.getString(R.string.tl2_aim_right), ui.getString(R.string.tl2_aim_left)}, 9500, cp.getInt("tl2_aim", Tl2Touch.AIM_OFF), false);
             }
-            final RadioGroup tapF = tapG, aimF = aimG, modF = modG, navF = navG; final CheckBox walkF = walkC, autoNavF = autoNavC;
+            final RadioGroup tapF = tapG, aimF = aimG, modF = modG; final CheckBox walkF = walkC;
             // Settings button (DoomPadView.GEAR_*): normal / faded, with the faded opacity slider below (saved and shown on the pad while
             // sliding: the pad is visible behind the dialog).
             heading(box, when(ui, R.string.d3_gear, true));
@@ -1052,7 +1055,7 @@ public class DmActivity extends Activity implements SurfaceHolder.Callback, Disp
                 cp.edit().putBoolean("fps", fps.isChecked()).putBoolean("d3_icons", iconsC.isChecked()).putBoolean("d3_hide_sticks", hideSt.isChecked()).putFloat("move_dz", DEADZONES[picked(dz, 4000, DEADZONES.length)])
                     .putInt("gear_mode", picked(gearG, 9000, D3_GEAR_LABELS.length)).putInt("d3_menu_swipe", picked(swG, 9300, 2)).apply();
                 if (TL2) cp.edit().putInt("tl2_tap", picked(tapF, 9400, 3)).putBoolean("tl2_hold_walk", walkF.isChecked()).putInt("tl2_aim", picked(aimF, 9500, 3))
-                    .putInt("tl2_mod", picked(modF, 9600, 4)).putInt("tl2_nav_swipe", picked(navF, 9700, 2)).putBoolean("tl2_auto_nav", autoNavF.isChecked()).apply();
+                    .putInt("tl2_mod", picked(modF, 9600, 4)).apply();
                 if (d3Pad != null) d3Pad.reloadSettings();
                 applyAspectLayout();
             };

@@ -1,21 +1,20 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- [TL2] Torchlight II touch layout (Tl2Touch.java, after D2R Mobile) -->
+<!-- [TL2] Torchlight II touch layouts (Tl2Touch.java, after D2R Mobile) -->
 <resources>
-    <string name="tl2_pad_game">GAME</string>
-    <string name="tl2_layout_touch">Touch (D2R Mobile style)</string>
-    <string name="tl2_layout_note">Touch: the move stick appears under your thumb in the lower left; skills on the right (A primary, B X Y R around it, ZR above), drag a skill to aim, II = second skill set (holds the modifier while a skill is used); bottom row = d-pad and +, top = ZL L L3, − R3. Tap the world = A, touch and hold = walk there. MENU switches to menu gestures (tap = A, long press = hold A, swipe = d-pad, two fingers = B); + and − switch to it by themselves.</string>
+    <string name="tl2_layout_touch">Touch: two sticks + skill fan (D2R Mobile style)</string>
+    <string name="tl2_layout_side">Touch: quick-access buttons on the sides</string>
+    <string name="tl2_layout_note">Both touch layouts: the move stick appears under your left thumb in the lower left, the aim stick (right stick) under your right thumb anywhere free in the lower right. Fan: A primary, B X Y R around it, ZR above, II = second skill set (holds the modifier while a skill is used); bottom row = d-pad and +, top = ZL L L3, − R3. Side layout: every Switch button as its own cell: right edge A B X Y R ZR and modifier + each of them, left edge L ZL and the d-pad, top L3 − + R3. Menus are driven with the buttons (the game has no touch of its own).</string>
     <string name="tl2_touch">Touch layout</string>
     <string name="tl2_iso">Diagonal correction: %1$d%%</string>
-    <string name="tl2_iso_note">Makes the hero walk the way the finger points. Push the stick at 45 degrees: if the hero walks flatter than the finger, raise it.</string>
-    <string name="tl2_tap">Tap on the world</string>
+    <string name="tl2_iso_note">Makes the hero walk (and aim) the way the finger points. Push the stick at 45 degrees: if the hero walks flatter than the finger, raise it.</string>
+    <string name="tl2_mod">Second skill set modifier (II / the inner side column)</string>
+    <string name="tl2_mod_note">The button the game holds for its second set of skills; it goes down a moment before the skill button.</string>
+    <string name="tl2_extras">Extras (off by default)</string>
+    <string name="tl2_tap">Tap on the world (outside the sticks)</string>
     <string name="tl2_tap_a">A (attack / pick up / talk)</string>
     <string name="tl2_tap_face">Turn toward the point, then A</string>
     <string name="tl2_hold_walk">Touch and hold the world = walk toward the finger</string>
-    <string name="tl2_aim">Dragging a skill aims with</string>
+    <string name="tl2_aim">Dragging a fan skill aims with</string>
     <string name="tl2_aim_right">right stick</string>
     <string name="tl2_aim_left">left stick</string>
-    <string name="tl2_mod">Second skill set (II) modifier</string>
-    <string name="tl2_nav">Menu mode: a swipe presses</string>
-    <string name="tl2_auto_nav">+ and − switch to menu mode</string>
-    <string name="tl2_nav_note">The game has no touch support of its own: menus are driven with the gamepad buttons. Use the stick swipe for round (radial) menus.</string>
 </resources>
