@@ -94,7 +94,13 @@ enum {
     N_STRIDE = 0x40, N_TYPE = 4, N_VALID = 0x18, N_SUB = 0x20, TAB_STRIDE = 0x18, TAB_NODE = 0x10,
     D_MODE = 0x178, D_ELEM = 0x118, D_ELEM_A = 0x140, D_SINGLE = 0x138, D_ACT = 0x240, D_N = 0x250,
     PE_HAS_RIGHT = 0x74, PE_LEFT_ON = 0x76, PE_RIGHT_ON = 0x77,
-    SND_FOCUS = 0x50, SND_TAB = 0x5b,
+    SND_FOCUS = 0x50, SND_TAB = 0x5b, SND_VIEW_ON = 0x53, SND_VIEW_OFF = 0x54,
+    // radial tab headers: vector +0x108..+0x110 of 0x18-byte entries, the label element at +8 (0x13dce0 writes tab i's name into it)
+    R_TABHDR = 0x108, R_TABHDR_END = 0x110, TABHDR_STRIDE = 0x18,
+    // the panel lists' owner / pet view (PanelEquipment TOGGLE_PET_VIEW = code 2): left flag +0x22a with header elements +0x248..+0x268
+    // (0x13d710), right flag +0x22b with +0x278..+0x298 (0x13d770, plus 0x13d7f0 for +0x288)
+    R_VIEW_L = 0x22a, R_VIEW_R = 0x22b, R_VHDR_L = 0x248, R_VHDR_R = 0x278,
+    F_VIEW_L = 0x13d710, F_VIEW_R = 0x13d770, F_VIEW_R2 = 0x13d7f0,
 };
 static const struct { uint32_t off, n, w[14]; } k_sites[] = {
     {0x1a02460, 14, {0xf81e0ff3, 0xa9017bfd, 0x910043fd, 0xaa0003f3, 0x3100043f, 0x5400006a, 0x12800001, 0x14000005, 0xb9410668 /* ldr w8,[x19,#0x104] */,
@@ -137,6 +143,13 @@ static const struct { uint32_t off, n, w[14]; } k_sites[] = {
     {0x7390d8, 1, {0xf9413a88 /* ldr x8,[x20,#0x270] */}},
     {0xbfd78, 1, {0x39016288 /* strb w8,[x20,#0x58] */}},   // StartMenu "press +" 0xbfd40
     {0x113f00, 4, {0xd10183ff, 0xf90013f7, 0xa90357f6, 0xa9044ff4}},   // UI manager PlaySound(mgr, id)
+    // tab header labels 0x13dce0: ldp [x0,#0x108] (vector), tab index +0x44 / tabs +0x38
+    {0x13dd00, 1, {0xa950a408 /* ldp x8,x9,[x0,#0x108] */}}, {0x13dd38, 1, {0xb9804668 /* ldrsw x8,[x19,#0x44] */}}, {0x13dd40, 1, {0xf9401e68 /* ldr x8,[x19,#0x38] */}},
+    // owner / pet view toggles and PanelEquipment's calls to them
+    {0x13d71c, 1, {0x3908a808 /* strb w8,[x0,#0x22a] */}}, {0x13d720, 1, {0xf9412408 /* ldr x8,[x0,#0x248] */}}, {0x13d754, 1, {0xf9413408 /* ldr x8,[x0,#0x268] */}},
+    {0x13d77c, 1, {0x3908ac08 /* strb w8,[x0,#0x22b] */}}, {0x13d780, 1, {0xf9413c08 /* ldr x8,[x0,#0x278] */}}, {0x13d7b4, 1, {0xf9414c08 /* ldr x8,[x0,#0x298] */}},
+    {0x13d7f8, 1, {0xf9414408 /* ldr x8,[x0,#0x288] */}},
+    {0x80818, 1, {0x9402f3d6 /* bl 0x13d770 */}}, {0x808dc, 1, {0x9402f38d /* bl 0x13d710 */}},
 };
 
 static uint8_t *g_base; static size_t g_size; static int g_ok = -1, g_mode, g_dump;
@@ -378,9 +391,45 @@ static void panel_row(uint64_t menu, uint64_t panel, int right, int row, int sel
     else { uint64_t f = rq(pvt + 0x48); if (is_text(f)) ((void (*)(uint64_t))(uintptr_t)f)(panel); }
     sound(SND_FOCUS);
 }
+// Tab header under (x, y): entry i of the radial menu's header vector (label element +8, also +0 / +0x10 when they are drawn elements)
+static int is_elem(uint64_t e) { uint64_t vt = rq(e); return e && vt >= img(0x1f00000) && vt < img(0x2400000); }
+static int tab_header_at(uint64_t menu, float x, float y) {
+    uint64_t v0 = rq(menu + R_TABHDR), v1 = rq(menu + R_TABHDR_END); int n = v1 > v0 ? (int)((v1 - v0) / TABHDR_STRIDE) : 0;
+    if (n > 16 || n > r32(menu + R_NTABS)) n = r32(menu + R_NTABS) < 16 ? r32(menu + R_NTABS) : 16;
+    for (int i = 0; i < n; i++)
+        for (int q = 0; q < 3; q++) { uint64_t e = rq(v0 + (uint64_t)i * TABHDR_STRIDE + 8u * q); if (is_elem(e) && elem_hit(e, x, y)) return i; }
+    return -1;
+}
+// Owner / pet view header of a panel list (+0x248..+0x268 left, +0x278..+0x298 right) under (x, y): 0 left, 1 right, -1 none
+static int view_header_at(uint64_t menu, float x, float y) {
+    if (!rq(menu + R_LISTS)) return -1;
+    for (int s = 0; s < 2; s++) for (int q = 0; q < 5; q++) { uint64_t e = rq(menu + (s ? R_VHDR_R : R_VHDR_L) + 8u * q); if (is_elem(e) && elem_hit(e, x, y)) return s; }
+    return -1;
+}
+// PanelEquipment's TOGGLE_PET_VIEW (code 2) for that list, as its own code does it (0x807fc right: 0x13d770 + 0x13d7f0, 0x808cc left:
+// 0x13d710; sound 0x53 / 0x54; then the rebuild 0x81530 + prompts 0x78030 its move path ends with)
+static void panel_view_toggle(uint64_t menu, uint64_t panel, int right) {
+    int on = r8(menu + (right ? R_VIEW_R : R_VIEW_L));
+    if (right) { ((void (*)(uint64_t, int))img(F_VIEW_R))(menu, !on); ((void (*)(uint64_t, int))img(F_VIEW_R2))(menu, !on); }
+    else ((void (*)(uint64_t, int))img(F_VIEW_L))(menu, !on);
+    sound(r8(menu + (right ? R_VIEW_R : R_VIEW_L)) ? SND_VIEW_ON : SND_VIEW_OFF);
+    call1(F_EQ_REBUILD, panel); call1(F_EQ_PROMPTS, panel);
+}
 static int radial_click(uint64_t menu, float ux, float uy, int lbest, int lrow) {
     uint64_t ra = rq(menu + R_PUI), panel = rq(menu + R_PANEL); int state = r32(menu + R_STATE);
     if (!ra || rq(ra) != img(P_VT_RADIAL)) { LOG("[tl2ui]   radial menu %#llx without its PUI::Radial", (unsigned long long)menu); return 1; }
+    int th = tab_header_at(menu, ux, uy);
+    if (th >= 0) {   // the tab bar: inventory / skill trees / pet / stash / vendor pages are the radial menu's tabs (panels have no tab code)
+        LOG("[tl2ui]   radial menu tab header %d (tab %d of %d): its own L / R tab code", th, r32(menu + R_TAB), r32(menu + R_NTABS));
+        if (!radial_tab(menu, th)) LOG("[tl2ui]   tabs locked here (+0x22e = 0) or one tab only");
+        return 1;
+    }
+    int vh = lbest < 0 && state == 1 && panel_is_equipment(panel) ? view_header_at(menu, ux, uy) : -1;   // rows win: a header may span them
+    if (vh >= 0) {
+        LOG("[tl2ui]   %s list owner / pet header: PanelEquipment's own view toggle (was %d)", vh ? "right" : "left", r8(menu + (vh ? R_VIEW_R : R_VIEW_L)));
+        panel_view_toggle(menu, panel, vh);
+        return 1;
+    }
     uint64_t lists = rq(menu + R_LISTS), ll = lists ? rq(menu + R_LLIST) : 0, rl = lists ? rq(menu + R_RLIST) : 0;
     if (lbest >= 0 && (g_el[lbest].a == ll || g_el[lbest].a == rl)) {   // a panel list row
         int right = g_el[lbest].a == rl, sel = g_el[lbest].sel;
@@ -403,6 +452,11 @@ static int radial_click(uint64_t menu, float ux, float uy, int lbest, int lrow) 
         float r[4] = {0}; rd(ra + E_RECT, r, 16);
         LOG("[tl2ui]   radial menu: no segment under %.0f,%.0f (%d segments, radial rect %.0f,%.0f,%.0f,%.0f)", ux, uy, nseg, r[0], r[1], r[2], r[3]);
         return 0;   // another list / a button: the generic path below
+    }
+    if (state == 1 && seg == r32(ra + RA_SEL)) {   // the open panel's own segment (a skill node of the skill tree): Accept goes to the panel
+        LOG("[tl2ui]   radial menu: segment %d is the open panel's: Accept into the panel (PanelSkills: learn / raise)", seg);
+        dispatch(EV_ACCEPT, "Accept into the panel");
+        return 1;
     }
     if (state == 1) { call1(F_RM_CLOSEPANEL, menu); LOG("[tl2ui]   panel closed (its Back path 0x13b850)"); }
     LOG("[tl2ui]   radial menu (type %d, tab %d/%d): segment %d of %d (selected %d)", r32(menu + R_TYPE), r32(menu + R_TAB), r32(menu + R_NTABS), seg, nseg, r32(ra + RA_SEL));
@@ -526,6 +580,20 @@ static void dump_stack(FILE *f) {
             for (int j = 0; a && j < 48 && rq(a + (uint64_t)j * N_STRIDE + N_VALID); j++)
                 fprintf(f, " %d%s", r32(a + (uint64_t)j * N_STRIDE + N_TYPE), rq(a + (uint64_t)j * N_STRIDE + N_SUB) ? "+" : "");
             fputc('\n', f);
+        }
+        uint64_t h0 = rq(me + R_TABHDR), h1 = rq(me + R_TABHDR_END);
+        for (int j = 0; h1 > h0 && j < (int)((h1 - h0) / TABHDR_STRIDE) && j < 16; j++)
+            for (int q = 0; q < 3; q++) {
+                uint64_t e = rq(h0 + (uint64_t)j * TABHDR_STRIDE + 8u * q); float r[4] = {0};
+                if (is_elem(e) && rd(e + E_RECT, r, 16)) fprintf(f, "#   tab header %d.%d %#llx rect %.1f,%.1f,%.1f,%.1f drawn %d\n", j, q, (unsigned long long)e, r[0], r[1], r[2], r[3], drawn_chain(e));
+            }
+        if (rq(me + R_LISTS)) {
+            fprintf(f, "#   view left %d right %d\n", r8(me + R_VIEW_L), r8(me + R_VIEW_R));
+            for (int s = 0; s < 2; s++) for (int q = 0; q < 5; q++) {
+                uint64_t e = rq(me + (s ? R_VHDR_R : R_VHDR_L) + 8u * q); float r[4] = {0};
+                if (is_elem(e) && rd(e + E_RECT, r, 16)) fprintf(f, "#   view header %s +%#x %#llx rect %.1f,%.1f,%.1f,%.1f drawn %d\n", s ? "right" : "left",
+                                                                (s ? R_VHDR_R : R_VHDR_L) + 8 * q, (unsigned long long)e, r[0], r[1], r[2], r[3], drawn_chain(e));
+            }
         }
         uint64_t s0 = rq(ra + RA_SEG), s1 = rq(ra + RA_SEGEND);
         for (int j = 0; s1 > s0 && j < (int)((s1 - s0) / SEG_STRIDE) && j < 64; j++) {
