@@ -203,3 +203,38 @@ Java: `DmActivity.nativeTl2MenuOpen()` / `nativeTl2UiTap(x, y)`; Tl2Touch: па�
 короткий неподвижный тап (< TAP_MS, ≤ MOVE_DP) → `nativeTl2UiTap(x0/w, y0/h)`, сдвинулся — становится стиком / мировым пальцем, как без
 меню. Шестерёнка: «Тап по пунктам меню (эксперимент)», по умолчанию выкл. → `DM_TL2_POINTER=1|0` (prefs `tl2_pointer`); `DM_TL2_UIDUMP=1|2`
 только из dm/env (+ файл `dm/ui-dump-now` → `dm/tl2-ui-dump.tsv` с деревом PUI и стеком меню); файл `dm/ui-tap-now` «x y» = клик без фронта.
+`dm/host/hle_tl2_ui.c`: `dm_tl2_ui_tap(x, y)` (доли картинки, любой поток) ставит тап в очередь, `dm_tl2_ui_pump` (hle_hid.c fill, поток
+ввода игры) ведёт шаги; JNI `DmActivity.nativeTl2UiTap(float, float)` → false, если гейт выкл. Кнопка без подсвеченной кнопки в своей
+группе (общий предок не выше 4 уровней — подписи, подсказки) не цель. Ручки: `DM_TL2_POINTER=1` / `=2` (мимо пунктов = A, как старый
+тап меню); `DM_TL2_UIDUMP=1|2` + файл `dm/ui-dump-now` → `dm/tl2-ui-dump.tsv` (дерево PUI); файл `dm/ui-tap-now` с «x y» = тап без фронта.
+Все места сверяются по словам (+ GOT и vtable), другая сборка → выкл.
+Не покрыто: элементы `UserDrawn` (сетка инвентаря, дерево навыков и т. п. — если они такие), радиальные меню, прокрутка списка пальцем.
+Java (не подключено, Tl2Touch.java правится параллельно): `static native boolean nativeTl2UiTap(float x, float y);` в DmActivity; в
+Tl2Touch, режим меню, короткий тап: вместо `pulse(K_A, 0, 0, 0, false)` —
+`if (!DmActivity.nativeTl2UiTap(f.x0 / view.getWidth(), f.y0 / view.getHeight())) pulse(K_A, 0, 0, 0, false);` (картинка TL2 = весь view).
+## Моды PC (DM_TL2_MODS, 07.11.2026; прототип, на телефоне не проверено, по умолчанию выкл.)
+Вывод: PC-моды (.MOD из GUTS) подключаются как дополнительные паки данных — **частично**: данные (DAT/LAYOUT/ANIMATION/MESH/SKELETON/
+MATERIAL/звук) совместимы байт в байт, текстуры конвертируются, но консольный UI (UICONSOLE, PUI) PC-модами не покрывается, а собственный
+загрузчик модов движка вырезан.
+| Факт | Доказательство |
+|---|---|
+| Данные Switch = PC-формат | `PAKS/DATA*.PAK(.MAN)`: MAN v2, типы как в PC (0 DAT, 1 LAYOUT, 2 MESH, 3 SKELETON, 4 DDS, 16 ANIMATION …); хэш заголовка PAK по алгоритму PC (`tl2_mod.py selftest`: все 6 паков совпали); CRC32 записи = CRC32 несжатого; DAT начинаются с `02000000` (TL2 binary DAT v2), LAYOUT с байта `0x0b` (TL2), `[MeshSerializer_v1.40]`, `[Serializer_v1.10]` |
+| .MOD = заголовок + PAK + MAN | v4: ver, modver, gamever (1.25.5.2 у GUTS), offData, offMan, строки, modid, flags, reqs, dels; тело с offData — обычный TL2 PAK (смещения MAN от offData), MAN с offMan (Awkward-im/Torchlight `TL2Lib/rgmod.pas`, `rgpak.pas`) |
+| Паки грузятся перечислением | `main+0x163c30`: FindFiles `"*" + ".PAK"` в `PAKS/` (`main+0x18105b0` → nn::fs::OpenDirectory/ReadDirectory, push_back в порядке листинга), каждый — `main+0x15f000` ("Loading Pack : "); вызов из старта `0x293a5c` |
+| Загрузчик модов вырезан | `CModManager` (RTTI `11CModManager`, ctor `0x36d300`, синглтон `0x75628a8`, getter `0x36d670`) есть, флаги `+0x68/+0x69` = «Mod Mode Active - Using Mod Save Folder» (`0x1f713c`); но метод, вызываемый на старте перед загрузкой паков (`0x293a34` → `0x36d970`), — пустой `ret`; строки `.MOD`/«Unable to activate mod» — только в статических инициализаторах |
+| Текстуры Switch | все DDS/PNG/JPG/TGA в паках — XTX (`DFvN`/`HBvN`): NVN 0x42 BC1, 0x43 BC2, 0x44 BC3, 0x25 RGBA8, block-linear; блок 4 = Ogre PixelFormat (17/19/21; RGBA8 10..13, `0x1997794` переводит 11/13 → 14); загрузчик `0x1995f40` без `DFvN` ничего не грузит; Ogre DDSCodec (`DDSCodec::decode`, `'DDS '` `0x195273c`) в бинаре есть, но путь с ним не подтверждён |
+| Порядок паков | RomFS перечисляет DATA, DATA1 … DATA5 (цепочка таблиц, `tools/romfs_tl2.py`), а /sdcard на телефоне отдал DATA5 … DATA (лог r10: первые открытия). Порядок задаёт листинг ФС, т. е. зависит от телефона; 408 путей есть в нескольких паках, у патчей свежее время, DATA3 «удаляет» файл DATA нулевой записью → ожидаемо «последний загруженный побеждает» в порядке RomFS. Не проверено на устройстве |
+
+Прототип (всё под `DM_GAME_TL2`, DOOM/D3/XC2 не тронуты):
+- `dm/host/hle_fs.c`: `DM_TL2_MODS=1` → каталог `DM_TL2_MODS_DIR` (по умолчанию `<DM_ROMFS>/../mods/overlay`, т. е.
+  `Download/Torchlight2Mobile/mods/overlay`) первым в overlay ROM; `DM_TL2_ROM_ORDER` (по умолчанию = DM_TL2_MODS) — листинги ROM по имени
+  (порядок RomFS), моды `ZMOD_NN_*` после DATA5; `DM_TL2_MODS_SAVE` (по умолчанию 1 при модах) — сохранения в `<DM_SAVE>-mods`, при
+  первом включении — копия ванильных, ванильные не трогаются.
+- `tools/tl2_mod.py`: `convert <mod> <overlay>` → `PAKS/ZMOD_NN_<name>.PAK(.MAN)` + `.json` (DDS DXT1/3/5 и 32-бит → XTX, PNG/JPG/TGA → RGBA8
+  XTX одним уровнем, dels → нулевые записи, хэш PAK и CRC пересчитаны); `selftest <romfs>` — 461/461 текстур игры пересобираются из своих
+  пикселей байт в байт; `info`, `unpack`.
+Риски: сохранения (моды пишут свои GUID в персонажа, без мода предметы/классы пропадают — поэтому отдельная папка), PC-UI (MEDIA/UI) не
+используется консолью, моды с новыми классами без консольных ассетов, моды, целиком заменяющие файлы, которые правили DATA1–5 (откатят
+консольные правки), материалы с шейдерами (на Switch только FixedFunction-перестановки), DDS cube/volume и прочие форматы — не
+конвертируются (остаются PC-байтами, текстура пропадёт). Проверка на телефоне: `DM_FSLOG` + один дубль-путь из DATA/DATA1 — какой пак
+читается; затем тестовый мод с заменой одной текстуры.

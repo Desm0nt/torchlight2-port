@@ -327,6 +327,55 @@ static Result err_res(const char *op, const char *path) {
 // Create directory / create file: if the target exists, answer "already exists" as a writable mount would. That is the only failure the game understands (the original save storage never fails to write); with a generic failure it carries on with a null handle (the iOS read-only fallback crashed in CloseDirectory)
 #define RW_CREATE() if (ro) { if (!access(hp, F_OK)) return RES_PATH_EXISTS; LOG("fs 写只读挂载：%s", hp); return RES_FAIL; }
 
+#ifdef DM_GAME_TL2
+// [TL2] PC mods as extra data packs (docs/tl2/TL2_PORT.md, "Моды PC"), DM_TL2_MODS=1, default off:
+// - the game loads every ROM:/PAKS/*.PAK it lists (main+0x163c30: FindFiles "*.PAK" in the order ReadDirectory returns, each pack's
+//   manifest read by main+0x15f000); a PC .MOD is a TL2 PAK + PAK.MAN behind a header, the same format as the Switch packs, so
+//   tools/tl2_mod.py turns it into PAKS/ZMOD_<nn>_<name>.PAK(.MAN) (textures converted to the Switch XTX) in DM_TL2_MODS_DIR
+//   (default <DM_ROMFS>/../mods/overlay), and that directory goes first in the rom overlay list;
+// - DM_TL2_ROM_ORDER (default = DM_TL2_MODS): rom directory listings in RomFS order (names ascending, as the RomFS tables list them:
+//   DATA, DATA1 .. DATA5 -- tools/romfs_tl2.py walks the table chain) instead of the host file system's order (the phone's /sdcard
+//   listed DATA5 .. DATA), so the patch packs and the mod packs (ZMOD_* after DATA5) load in a fixed order on every device;
+// - DM_TL2_MODS_SAVE (default 1 with mods on): the save mount uses <DM_SAVE>-mods, seeded once with a copy of the vanilla save,
+//   like the PC game's separate mod save folder ("Mod Mode Active - Using Mod Save Folder"): characters played with mods never
+//   write into the vanilla save.
+static int tl2_env_on(const char *k, int def) { const char *e = getenv(k); return e && *e ? strcmp(e, "0") != 0 : def; }
+static int tl2_mods_on(void) { return tl2_env_on("DM_TL2_MODS", 0); }
+static int tl2_rom_sorted(void) { return tl2_env_on("DM_TL2_ROM_ORDER", tl2_mods_on()); }
+static char g_tl2_rom_name[32];   // the guest's rom mount name (MountRom), for the sorted listing
+static int tl2_name_cmp(const void *a, const void *b) { return strcmp((const char *)a, (const char *)b); }
+static void tl2_mods_mount(const char *name) {
+    strlcpy(g_tl2_rom_name, name, sizeof g_tl2_rom_name);
+    if (tl2_rom_sorted()) LOG("[tl2] rom listings in RomFS order (names ascending): DM_TL2_ROM_ORDER");
+    if (!tl2_mods_on()) return;
+    char d[1024], b[1024]; const char *e = getenv("DM_TL2_MODS_DIR");
+    if (e && *e) strlcpy(d, e, sizeof d); else snprintf(d, sizeof d, "%s/../mods/overlay", envdir("DM_ROMFS", "data/switch/3.3.94012/Update/RomFS", b, sizeof b));
+    struct stat st;
+    if (stat(d, &st) || !S_ISDIR(st.st_mode)) { LOG("[tl2 mods] DM_TL2_MODS=1 but %s is not a directory: no mod packs", d); return; }
+    PATH_LOCK();
+    for (int i = 0; i < g_nmnt; i++) if (!strcmp(g_mnt[i].name, name)) {
+        char ov[sizeof g_mnt[0].overlay];
+        if (snprintf(ov, sizeof ov, "%s%s%s", d, g_mnt[i].overlay[0] ? ":" : "", g_mnt[i].overlay) >= (int)sizeof ov) { LOG("[tl2 mods] overlay list too long, mods off"); return; }
+        strlcpy(g_mnt[i].overlay, ov, sizeof g_mnt[i].overlay);
+    }
+    char p[1100]; snprintf(p, sizeof p, "%s/PAKS", d); int n = 0;
+    DIR *x = opendir(p); struct dirent *de;
+    while (x && (de = readdir(x))) { size_t l = strlen(de->d_name); if (l > 4 && !strcasecmp(de->d_name + l - 4, ".PAK")) { n++; LOG("[tl2 mods] pack %s", de->d_name); } }
+    if (x) closedir(x);
+    LOG("[tl2 mods] %d mod pack(s) from %s (rom overlay, first)", n, d);
+}
+static void tl2_mods_save_dir(char *dd, size_t n) {
+    if (!tl2_mods_on() || !tl2_env_on("DM_TL2_MODS_SAVE", 1)) return;
+    char m[1100]; snprintf(m, sizeof m, "%s-mods", dd);
+    if (access(m, F_OK)) {
+        if (!access(dd, F_OK) && !clonefile(dd, m, 0)) LOG("[tl2 mods] mod save folder %s: seeded with a copy of the vanilla save", m);
+        else { LOG("【红】[tl2 mods] mod save folder %s: no copy of the vanilla save (errno %d), starting empty", m, errno); mkdir(m, 0755); }
+    }
+    LOG("[tl2 mods] save mount -> %s (vanilla save %s untouched)", m, dd);
+    strlcpy(dd, m, n);
+}
+#endif
+
 // ---------- 挂载 ----------
 // ---------- Mount ----------
 HLE_FORCE("_ZN2nn2fs22QueryMountRomCacheSizeEPm", "fsp-srv；rom 直读宿主目录，缓存只给最小值", Result, h_fs_QueryRomCache, size_t *out) { *out = 0x1000; return RES_OK; }
@@ -339,6 +388,9 @@ HLE_FORCE("_ZN2nn2fs8MountRomEPKcPvm", "fsp-srv；rom → 宿主 RomFS 目录", 
             strlcpy(g_mnt[i].overlay, getenv("DM_ROMFS_OVERLAY"), sizeof g_mnt[i].overlay); break;
         }
     }
+#ifdef DM_GAME_TL2
+    if (r == RES_OK) tl2_mods_mount(name);
+#endif
     return r;
 }
 #if defined(DM_GAME_ETERNAL) || defined(DM_GAME_XC2) || defined(DM_GAME_D3)   // [XC2] [D3] the same mount: DM_AOC/<index> holds that DLC's extracted RomFS
@@ -494,6 +546,9 @@ HLE_FORCE("_ZN2nn2fs13MountSaveDataEPKcRKNS_7account3UidE", "fsp-srv；存档 �
     const char *d = getenv("DM_SAVE");
     if (!d) die("未设 DM_SAVE：请指向一份存档目录的可写副本");
     char dd[1024]; strlcpy(dd, d, sizeof dd); size_t L = strlen(dd); while (L > 1 && dd[L - 1] == '/') dd[--L] = 0;   // 去掉结尾斜杠（.work / .new 拼在同级） | strip trailing slashes (.work / .new are appended at the same level)
+#ifdef DM_GAME_TL2
+    tl2_mods_save_dir(dd, sizeof dd);   // [TL2] DM_TL2_MODS: separate mod save folder
+#endif
 #ifndef DM_GAME_DOOM
     stash_seed(dd);
     low_vision_off(dd);
@@ -885,6 +940,9 @@ static void dir_snapshot(dirh_t *h, const mount_t *m, const char *rest) {
         }
         closedir(x);
     }
+#ifdef DM_GAME_TL2
+    if (tl2_rom_sorted() && !strcmp(m->name, g_tl2_rom_name)) qsort(names, nn, sizeof *names, tl2_name_cmp);   // [TL2] RomFS order
+#endif
     h->snap = calloc(nn, sizeof *h->snap); h->nsnap = nn;
     if (nn && !h->snap) die("rom overlay 目录快照分配失败");
     for (int j = 0; j < nn; j++) {
@@ -901,7 +959,12 @@ HLE_FORCE("_ZN2nn2fs13OpenDirectoryEPNS0_15DirectoryHandleEPKci", "fsp-srv → o
     if (!d) return err_res("opendir", hp);
     dirh_t *h = calloc(1, sizeof *h); h->d = d; strlcpy(h->path, hp, sizeof h->path); h->mode = mode;
     const char *c = strchr(path, ':');
-    if (c) for (int i = 0; i < g_nmnt; i++) if (g_mnt[i].overlay[0] && strlen(g_mnt[i].name) == (size_t)(c - path) && !strncmp(g_mnt[i].name, path, (size_t)(c - path))) {
+#ifdef DM_GAME_TL2
+#define SNAP_MOUNT(i) (g_mnt[i].overlay[0] || (tl2_rom_sorted() && !strcmp(g_mnt[i].name, g_tl2_rom_name)))   // [TL2] sorted rom listing needs the snapshot
+#else
+#define SNAP_MOUNT(i) (g_mnt[i].overlay[0])
+#endif
+    if (c) for (int i = 0; i < g_nmnt; i++) if (SNAP_MOUNT(i) && strlen(g_mnt[i].name) == (size_t)(c - path) && !strncmp(g_mnt[i].name, path, (size_t)(c - path))) {
         dir_snapshot(h, &g_mnt[i], c + 1); break;
     }
     *out = (uint64_t)h; return RES_OK;
