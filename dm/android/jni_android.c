@@ -663,6 +663,33 @@ JNIEXPORT jboolean JNICALL Java_com_xiaoboluo_d2r_DmActivity_nativeTl2OpenPanel(
 #endif
 }
 
+// [TL2] Button icons (hle_tl2_icons.c): the HUD action bar's slot icons as the game drew them. nativeTl2IconSerial() = change counter
+// (-1 = off); nativeTl2Icons(int[8*64*64] argb, int[8*4] meta) fills both (meta per slot: button code 1 A / 3 B / 2 X / 0 Y / 8 R / 9 ZR /
+// 10 L / 11 ZL, state 0 not yet / 1 icon / 2 nothing bound, 0, 0) and returns the serial.
+JNIEXPORT jint JNICALL Java_com_xiaoboluo_d2r_Tl2Touch_nativeTl2IconSerial(JNIEnv *env, jclass cls) {
+    (void)env; (void)cls;
+#ifdef DM_GAME_TL2
+    int dm_tl2_icon_serial(void); return dm_tl2_icon_serial();
+#else
+    return -1;
+#endif
+}
+JNIEXPORT jint JNICALL Java_com_xiaoboluo_d2r_Tl2Touch_nativeTl2Icons(JNIEnv *env, jclass cls, jintArray px, jintArray meta) {
+    (void)cls;
+#ifdef DM_GAME_TL2
+    if (!px || !meta) return -1;
+    jint np = (*env)->GetArrayLength(env, px), nm = (*env)->GetArrayLength(env, meta);
+    jint *p = (*env)->GetIntArrayElements(env, px, NULL), *m = (*env)->GetIntArrayElements(env, meta, NULL);
+    int dm_tl2_icons(uint32_t *px, int npx, int *meta, int nmeta);
+    int s = p && m ? dm_tl2_icons((uint32_t *)p, np, (int *)m, nm) : -1;
+    if (p) (*env)->ReleaseIntArrayElements(env, px, p, 0);
+    if (m) (*env)->ReleaseIntArrayElements(env, meta, m, 0);
+    return s;
+#else
+    (void)env; (void)px; (void)meta; return -1;
+#endif
+}
+
 // [TL2] The radial menu's tab one step left (-1) / right (+1), as its own L / R code (hle_tl2_ui.c dm_tl2_ui_tab).
 // Java: `static native boolean nativeTl2UiTab(int delta);` -> false while DM_TL2_POINTER is off or no menu is open.
 JNIEXPORT jboolean JNICALL Java_com_xiaoboluo_d2r_DmActivity_nativeTl2UiTab(JNIEnv *env, jclass cls, jint delta) {

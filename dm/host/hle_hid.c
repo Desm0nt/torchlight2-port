@@ -425,6 +425,7 @@ static void fill(NpadState *s, uint32_t id, uint32_t style) {
     if (dm_pad_hook) dm_pad_hook(guest_ns(), &s->buttons, &s->lx, &s->ly, &s->rx, &s->ry);
 #ifdef DM_GAME_TL2
     { void dm_tl2_ui_pump(uint64_t *); dm_tl2_ui_pump(&s->buttons); }   // [TL2] DM_TL2_POINTER / DM_TL2_UIDUMP (hle_tl2_ui.c): tap = click: the top menu's own focus move + its Accept handler, no pad input
+    { void dm_tl2_icons_poll(void); dm_tl2_icons_poll(); }   // [TL2] hle_tl2_icons.c: the HUD action bar's slots (skill per button) for the touch buttons' icons
 #endif
 #if defined(DM_GAME_D3) && !defined(DM_GAME_TL2)
     { void dm_d3_ui_pump(uint64_t *); dm_d3_ui_pump(&s->buttons); }   // [D3] DM_D3_UIDUMP / DM_D3_UITAP (hle_d3_ui.c): focus log, UI dump, tap = focus + A, on the game's main thread

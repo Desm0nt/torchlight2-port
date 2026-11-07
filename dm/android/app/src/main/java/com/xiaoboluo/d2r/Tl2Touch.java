@@ -58,6 +58,32 @@ final class Tl2Touch {
     static final int KIND_MAIN = 0, KIND_SKILL = 1, KIND_PLAIN = 2, KIND_SWAP = 3, KIND_GEAR = 4, KIND_COMBO = 5,
         KIND_PANEL = 6, KIND_TAB = 7;   // [TL2] pointer on (DM_TL2_POINTER): D2R-style panel buttons (key = panel type) and radial tab arrows (key = -1 / +1)
     // panel types = RadialMenu CreatePanel 0x13dfa0 numbering (hle_tl2_ui.c): 0 inventory / equipment, 7 skills, 9 character stats, 12 quests
+    // [TL2] icons of the skills / items bound to the buttons (hle_tl2_icons.c: the HUD action bar's slots as the game drew them; pref "tl2_icons",
+    // default on). Slot button codes: 1 A, 3 B, 2 X, 0 Y, 8 R, 9 ZR, 10 L, 11 ZL.
+    static native int nativeTl2IconSerial();
+    static native int nativeTl2Icons(int[] argb, int[] meta);
+    private static final int ICON = 64, NSLOT = 8;
+    private final int[] iconPx = new int[NSLOT * ICON * ICON], iconMeta = new int[NSLOT * 4];
+    private final android.graphics.Bitmap[] iconOf = new android.graphics.Bitmap[16];
+    private final int[] iconState = new int[16];
+    private int iconSerial = -2; private long iconPoll; private boolean icons = true;
+    private final android.graphics.Path clip = new android.graphics.Path(); private final RectF iconDst = new RectF();
+    private static int codeOf(int key) {
+        switch (key) { case K_A: return 1; case K_B: return 3; case K_X: return 2; case K_Y: return 0; case K_R: return 8; case K_ZR: return 9; case K_L: return 10; case K_ZL: return 11; default: return -1; }
+    }
+    private void pollIcons() {
+        long t = now(); if (!icons || t < iconPoll) return; iconPoll = t + 500;
+        int s; try { s = nativeTl2IconSerial(); } catch (UnsatisfiedLinkError e) { icons = false; return; }
+        if (s < 0 || s == iconSerial) return;
+        iconSerial = nativeTl2Icons(iconPx, iconMeta);
+        java.util.Arrays.fill(iconState, 0);
+        for (int i = 0; i < NSLOT; i++) {
+            int code = iconMeta[i * 4], st = iconMeta[i * 4 + 1];
+            if (code < 0 || code >= 16) continue;
+            iconState[code] = st;
+            iconOf[code] = st == 1 ? android.graphics.Bitmap.createBitmap(iconPx, i * ICON * ICON, ICON, ICON, ICON, android.graphics.Bitmap.Config.ARGB_8888) : null;
+        }
+    }
     private static final String[] PANEL_LABELS = {"INV", "SKL", "CHR", "QST"};
     private static final int[] PANEL_TYPES = {0, 7, 9, 12};
     // where a button's (bx, by) is measured from (k units = dp x size); "belt" x is in D2R belt cell pitches (40 k) from the centre
@@ -150,6 +176,7 @@ final class Tl2Touch {
         int m = clamp(p.getInt("tl2_mod", 0), 0, MOD_KEYS.length - 1); modKey = MOD_KEYS[m]; modName = MOD_NAMES[m];
         holdWalk = p.getBoolean("tl2_hold_walk", false);
         pointer = p.getBoolean(DmActivity.TL2_POINTER_KEY, false);
+        icons = p.getBoolean("tl2_icons", true); iconSerial = -2; iconPoll = 0;
         editHint = ui.getString(R.string.d3_pad_edit_hint); resetLabel = ui.getString(R.string.d3_pad_reset); doneLabel = ui.getString(R.string.d3_pad_done);
         build();
         off.clear();
@@ -420,6 +447,8 @@ final class Tl2Touch {
     // ---------------- drawing ----------------
     void draw(Canvas c) {
         layout();
+        pollIcons();
+        if (icons && !editMode) view.postInvalidateDelayed(500);   // keep polling the icon serial while nothing else redraws
         if (editMode) c.drawColor(0x50000000);
         if (!controllerMode) {
             drawStick(c, move); drawStick(c, aim);
@@ -452,9 +481,25 @@ final class Tl2Touch {
         line.setColor(editMode ? 0xffffd040 : tint); line.setAlpha(editMode ? 0xe0 : Math.round(0x90 * kk));
         if (b.square) { cell.set(b.x - b.r, b.y - b.r, b.x + b.r, b.y + b.r); c.drawRoundRect(cell, 8 * dp, 8 * dp, fill); c.drawRoundRect(cell, 8 * dp, 8 * dp, line); }
         else { c.drawCircle(b.x, b.y, b.r, fill); c.drawCircle(b.x, b.y, b.r, line); }
+        int code = icons && b.kind != KIND_PANEL && b.kind != KIND_TAB && b.kind != KIND_GEAR && b.kind != KIND_SWAP ? codeOf(b.key) : -1;
+        android.graphics.Bitmap ic = code >= 0 ? iconOf[code] : null;
+        boolean empty = code >= 0 && iconState[code] == 2;
+        if (ic != null) {   // the game's own icon inside the button, the button letter as a small badge
+            float ir = b.r * 0.86f; clip.reset();
+            if (b.square) { cell.set(b.x - ir, b.y - ir, b.x + ir, b.y + ir); clip.addRoundRect(cell, 6 * dp, 6 * dp, android.graphics.Path.Direction.CW); }
+            else clip.addCircle(b.x, b.y, ir, android.graphics.Path.Direction.CW);
+            iconDst.set(b.x - ir, b.y - ir, b.x + ir, b.y + ir);
+            c.save(); c.clipPath(clip); fill.setColor(0xffffffff); fill.setAlpha(Math.round((on ? 0xff : 0xd0) * Math.max(kk, 0.6f)));
+            c.drawBitmap(ic, null, iconDst, fill); c.restore();
+            float bs = Math.max(9 * dp, 0.32f * b.r); text.setTextSize(bs); text.setColor(0xffffffff); text.setAlpha(Math.round(0xe0 * kk));
+            float bx = b.x + b.r * 0.55f, by = b.y + b.r * 0.62f;
+            fill.setColor(0xa0000000); c.drawCircle(bx, by - bs * 0.35f, bs * 0.85f, fill);
+            c.drawText(b.label.length() > 3 ? b.label.substring(b.label.length() - 2) : b.label, bx, by, text);
+            return;
+        }
         float ts = Math.max(11 * dp, 0.6f * b.r); text.setTextSize(ts);
         float w = text.measureText(b.label); if (w > 1.7f * b.r) { ts *= 1.7f * b.r / w; text.setTextSize(ts); }
-        text.setColor(0xffffffff); text.setAlpha(Math.round(0xd8 * kk));
+        text.setColor(0xffffffff); text.setAlpha(Math.round((empty ? 0x70 : 0xd8) * kk));   // nothing bound to that button in the game: dim
         c.drawText(b.label, b.x, b.y + ts * 0.35f, text);
     }
     private void drawEditPanel(Canvas c) {
