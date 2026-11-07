@@ -1,38 +1,48 @@
-// [TL2] Pointer input for the console menus (DM_TL2_POINTER, default off until checked on the phone; docs/tl2/TL2_PORT.md "Тап по пунктам меню").
-// TL2 Switch has no mouse path: its menus are Panic Button's own retained UI "PUI" (RTTI N3PUI7ElementE / 4List / 6Button / 6Radial /
-// 7Manager), driven by the gamepad through each CConsoleUI* menu's own focus model (CConsoleUIMainMenu keeps its focus index at +0x5c
-// over a Button array at +0x98, other menus move a PUI::List's selection). CEGUI 0.6.2 is linked but its mouse injection is never fed.
-// What PUI keeps that a host can use: every element's laid-out rectangle in canvas units and the visible focus state. So a tap is turned
-// into the game's own navigation, closed loop: find the item under the finger, read which item is focused now, press the d-pad toward
-// the target one step at a time (re-reading the focus after each step), and press A only once the game itself shows the target focused.
-// Nothing is written into the game; a step that does not move the focus ends the attempt without A.
+// [TL2] Tap = click on the console menus (DM_TL2_POINTER, default off until checked on the phone; docs/tl2/TL2_PORT.md "Тап по пунктам меню").
+// TL2 Switch keeps Panic Button's console UI "PUI" (RTTI N3PUI7ElementE / 4List / 6Button / 6Radial / 7Manager); the PC UI is gone from the
+// code (CEGUI 0.6.2 is linked, but System / layout loading were dead-stripped: the static String objects for System::EventGUISheetChanged
+// (main+0x7680168) and the layout handler's "GUILayout" (main+0x76826d0) are referenced only by their own static initializer 0x179d850;
+// WindowManager::createWindow 0x17d5890 has no caller outside CEGUI; no PC GUI class in RTTI; the PAKs still carry MEDIA/UI/*.LAYOUT, unused).
+// So a tap is a click through the console menus' own code, with no pad emulation:
+//   * the item under the finger is found in the PUI tree (laid-out rects, below);
+//   * the owning menu is the top of the console UI stack; its focus is moved the way its own navigation code moves it (SetHighlighted(old, 0),
+//     focus index = item, SetHighlighted(new, 1): MainMenu 0x145954..0x1459b8, ButtonMenu 0x739690) or, for list menus, with the list's
+//     own SetSelected (0x1a02460, what their Up / Down code calls);
+//   * the activation is the menu's own: the UI manager's dispatch (vt slot 0 = 0x143800, hands the event to the top menu) gets the logical
+//     Accept event {type 0 press, code 1} (IsAccept 0x1139f0), so the confirm branch of that menu acts on the item now focused (MainMenu
+//     0x145b60: switch on the item id; it needs the button's enabled byte +0xc3). The outer quarters of a button row get the logical Left /
+//     Right {0, 4} / {0, 5} instead (value rows: MainMenu item types 0x26..0x28 / 0x36, character create).
+//   * button menus: one tap = focus + activate. List rows: a tap selects (= hover / details), a tap on the selected row activates.
+// Codes: IsUp 0x113950 = 6, IsDown 0x1139a0 = 7, IsAccept 0x1139f0 = 1, IsBack 0x13acd0 = 0; event {u32 type, u32 code, u32 axis, f32 value}.
 //
 // PUI layout (main v5 build a0c6c2d2, offsets = main.raw; all checked word for word at the first poll):
 //   PUI::Manager   static main+0x927a970 (GOT 0x23a3678; init 0x19fef80 from the UI setup 0x140f00 with 1920x1080): +0x2f8 / +0x2fc canvas
 //                  width / height (0x19ff3d8), +0x308 root element (0x19ff450); Render 0x19f5090 draws the root twice, pass 0 then pass 1.
 //   PUI::Element   vtable main+0x23651f8: +0x38 parent, +0x40 first child, +0x58 next sibling (children drawn first to last = bottom to top),
-//                  +0x60 l,t,r,b laid-out rect in canvas units (Layout vt+0x70 = 0x19f5a90, from anchors +0x10 / offsets +0x20 / pivot
-//                  +0x30), +0x74 drawn (Render vt+0x18 = 0x19f57b0 returns before drawing it and its children while 0), +0x80 layer (drawn
-//                  in pass 0 when 0, in pass 1 when 1 = above every pass-0 element).
-//   PUI::List      vtable main+0x23656d8 (Draw vt+0x10 = 0x1a01ab0): +0x84 l,t,r,b row area, +0x100 row height (int), +0x104 rows,
-//                  +0x108 selected row (-1 none; SetSelected 0x1a02460), +0x10c scroll (float), +0x116 shows the selection. Row i spans
-//                  y = area.t + i*h - scroll .. + h across the area (0x1a01dac..0x1a01e88).
-//   PUI::Button    vtable main+0x2365838: +0xc4 highlighted (SetHighlighted 0x1a05020, used by the button menus 0x739xxx / main menu 0x1458xx),
-//                  +0xc3 greyed (0x1a05060).
-//   PUI::Radial    vtable main+0x2365628: radial quick menus are stick-driven; a tap on one is logged, not handled.
+//                  +0x60 l,t,r,b laid-out rect in canvas units (Layout vt+0x70 = 0x19f5a90), +0x74 drawn (Render 0x19f57b0 returns before
+//                  drawing it and its children while 0), +0x80 layer (1 = second pass, above every pass-0 element).
+//   PUI::List      vtable main+0x23656d8 (Draw 0x1a01ab0): +0x84 l,t,r,b row area, +0x100 row height (int), +0x104 rows, +0x108 selected
+//                  (SetSelected 0x1a02460, GetSelected 0x1a02600), +0x10c scroll, +0x116 shows the selection; row i: y = t + i*h - scroll.
+//   PUI::Button    vtable main+0x2365838: +0xc4 highlighted (SetHighlighted 0x1a05020), +0xc3 enabled (0x1a05060; Accept is refused while 0).
+// Menus (CConsoleUIMenu subclasses, vt slot 0 = HandleInput(menu, player, event)):
+//   button family A: MainMenu vt 0x230ddb8 (0x1457e0), Network vt 0x2309e28 (0x112ab0), CreateCharacter vt 0x232b008 (0x75fde0):
+//                    items +0x48 (0x28-byte entries, id at +0), count +0x58, focus +0x5c, Button* array +0x98.
+//   button family B: Options vt 0x23043d8 (0xc05f0), PlayerInvite vt 0x232a938 (0x73bb10), PartyMenu vt 0x232b2e8 (0x766fa0), base ButtonMenu
+//                    (build 0x739210): items +0x30, count +0x38, focus +0x3c, Button* vector +0x50.
+//   list menus:      any top menu holding the tapped PUI::List pointer in its first 0x400 bytes (CharacterList family 0x757310 / 0x7588b0 /
+//                    0x762420 with the list at +0x40, Waypoints 0x765ab0, SkillsRespec 0x771580, PlayerInvite / PartyMenu lists): they read
+//                    GetSelected when Accept comes.
+//   Not covered: radial menus (CConsoleUIRadialMenu vt 0x230d6d8, stick angle), the in-game panels (class Panel vt 0x2303d60: PanelEquipment
+//                0x23036f8, PanelSkills, PanelMerchant..., not CConsoleUIMenu, own input), tabs (shoulder codes), custom-drawn grids.
 //
-// "A menu is open" (dm_tl2_menu_open, published every npad read; taps and steps happen only while it holds, never in plain gameplay where
-// the d-pad fires potions / hotkeys): the console UI manager (static main+0x74cfe70, GOT 0x23a3590) keeps its menu stack at +0x58 (array)
-// with the top index at +0x60 (-1 = empty; pop 0x111e10, popped all by 0x143d10). Its HandleInput 0x143800 gives the event to +0x80 (the
-// gameplay HUD receiver) only while the stack is empty (0x1438f8), and first to the modal element +0x50 while that is drawn (+0x74, ->
-// 0x738e70). So: open = stack not empty or the modal drawn, and the loading screen (+0x90, drawn +0x74) not up.
-//   DM_TL2_POINTER=1   dm_tl2_ui_tap(x, y) (fractions of the game picture, top left origin, any thread) queues a tap; the npad poll (the
-//                      game's input update 0x13fd40 -> 0x13ea60, main thread) runs the navigation: d-pad held 50 ms / released 70 ms per
-//                      step, at most 24 steps or 3 s, then A for 60 ms. A tap on the item already focused = A at once.
-//   DM_TL2_POINTER=2   the same, and a tap that hits no item presses A (the old "tap = A" of the touch menu mode).
-//   DM_TL2_UIDUMP=1    the file dm/ui-dump-now makes dm/tl2-ui-dump.tsv (visible elements: depth, address, class, rect, layer, list / button
-//                      state) and is deleted; =2 dumps hidden elements too. A file dm/ui-tap-now holding "x y" queues a tap (test without
-//                      the front end; both checked every 30 polls).
+// "A menu is open" (dm_tl2_menu_open, published every npad read; clicks happen only while it holds, never in plain gameplay): the console UI
+// manager (static main+0x74cfe70, GOT 0x23a3590) keeps its menu stack at +0x58 (array) with the top index at +0x60 (-1 = empty; pop
+// 0x111e10). Its HandleInput 0x143800 gives the event to +0x80 (the gameplay HUD receiver) only while the stack is empty (0x1438f8), and
+// first to the modal element +0x50 while that is drawn (+0x74). So: open = stack not empty or the modal drawn, and no loading screen (+0x90).
+//   DM_TL2_POINTER=1   dm_tl2_ui_tap(x, y) (fractions of the game picture, any thread) queues a click; the npad read (the game's input
+//                      update 0x13fd40 -> 0x13ea60, main thread, right before the game dispatches its own input events) performs it.
+//   DM_TL2_UIDUMP=1    the file dm/ui-dump-now makes dm/tl2-ui-dump.tsv (visible PUI elements + the menu stack) and is deleted; =2 hidden
+//                      elements too. A file dm/ui-tap-now holding "x y" queues a click (test without the front end; checked every 30 polls).
 #ifdef DM_GAME_TL2
 #include "hle.h"
 #include "dm.h"
@@ -55,7 +65,10 @@ enum {
     M_W = 0x2f8, M_H = 0x2fc, M_ROOT = 0x308,
     E_PARENT = 0x38, E_FIRST = 0x40, E_NEXT = 0x58, E_RECT = 0x60, E_DRAWN = 0x74, E_LAYER = 0x80,
     L_AREA = 0x84, L_ROWH = 0x100, L_COUNT = 0x104, L_SEL = 0x108, L_SCROLL = 0x10c, L_SHOWSEL = 0x116,
-    B_GREY = 0xc3, B_HILITE = 0xc4,
+    B_ENABLED = 0xc3, B_HILITE = 0xc4,
+    F_SETSEL = 0x1a02460, F_SETHI = 0x1a05020, F_DISPATCH = 0x143800, VT_UIMGR = 0x230d7f0,
+    VT_MAIN = 0x230ddb8, VT_NETWORK = 0x2309e28, VT_CREATE = 0x232b008, VT_OPTIONS = 0x23043d8, VT_INVITE = 0x232a938, VT_PARTY = 0x232b2e8,
+    EV_ACCEPT = 1, EV_LEFT = 4, EV_RIGHT = 5,
     MAX_EL = 4096, MAX_DEPTH = 48,
 };
 static const struct { uint32_t off, n, w[14]; } k_sites[] = {
@@ -72,6 +85,11 @@ static const struct { uint32_t off, n, w[14]; } k_sites[] = {
     {0x143884, 3, {0xf9402a60 /* ldr x0,[x19,#0x50] */, 0x3941d008 /* ldrb w8,[x0,#0x74] */, 0x34000108}},
     {0x1438f8, 4, {0xf9404260 /* ldr x0,[x19,#0x80] */, 0xb4000140, 0xb9406268 /* ldr w8,[x19,#0x60] */, 0x3100051f /* cmn w8,#1 */}},
     {0x143930, 2, {0xf9402e68 /* ldr x8,[x19,#0x58] */, 0xf8767900 /* ldr x0,[x8,x22,lsl #3] */}},
+    {0x143800, 8, {0xf81c0ff7, 0xa90157f6, 0xa9024ff4, 0xa9037bfd, 0x9100c3fd, 0xaa0203f4, 0x2a0103f5, 0xaa0003f3}},   // UI manager HandleInput
+    {0x1139f0, 4, {0x29402428, 0x7100053f, 0x1a9f17e9, 0x7100011f}},   // IsAccept: code 1, type 0
+    {0x145830, 1, {0xb9805c18 /* ldrsw x24,[x0,#0x5c] */}}, {0x145890, 1, {0xf9404e68 /* ldr x8,[x19,#0x98] */}},   // MainMenu focus / buttons
+    {0x739690, 8, {0xb9403808 /* ldr w8,[x0,#0x38] */, 0x34000268, 0xa9be4ff4, 0xa9017bfd, 0x910043fd, 0xb9803c08 /* ldrsw x8,[x0,#0x3c] */, 0x2a0103f4, 0xaa0003f3}},
+    {0x114860, 8, {0xb9405808 /* ldr w8,[x0,#0x58] */, 0x34000268, 0xa9be4ff4, 0xa9017bfd, 0x910043fd, 0xb9805c08 /* ldrsw x8,[x0,#0x5c] */, 0x2a0103f4, 0xaa0003f3}},
 };
 
 static uint8_t *g_base; static size_t g_size; static int g_ok = -1, g_mode, g_dump;
@@ -102,7 +120,9 @@ static int setup(void) {
         if (memcmp(g_base + k_sites[i].off, k_sites[i].w, 4 * k_sites[i].n)) {
             LOG("【红】[tl2ui] main+%#x differs: not TL2 v5 main (build a0c6c2d2), pointer / dump off", k_sites[i].off); return 0; }
     if (rq(img(P_GOT_MGR)) != img(P_MGR) || rq(img(U_GOT_MGR)) != img(U_MGR) || rq(img(P_VT_LIST + 0x10)) != img(P_LIST_DRAW) || rq(img(P_VT_ELEM + 0x10)) != img(P_ELEM_DRAW) ||
-        rq(img(P_VT_BUTTON + 8)) != img(P_BUTTON_DTOR) || rq(img(P_VT_RADIAL + 0x10)) != img(P_RADIAL_DRAW)) {
+        rq(img(P_VT_BUTTON + 8)) != img(P_BUTTON_DTOR) || rq(img(P_VT_RADIAL + 0x10)) != img(P_RADIAL_DRAW) || rq(img(VT_UIMGR)) != img(F_DISPATCH) ||
+        rq(img(VT_MAIN)) != img(0x1457e0) || rq(img(VT_NETWORK)) != img(0x112ab0) || rq(img(VT_CREATE)) != img(0x75fde0) ||
+        rq(img(VT_OPTIONS)) != img(0xc05f0) || rq(img(VT_INVITE)) != img(0x73bb10) || rq(img(VT_PARTY)) != img(0x766fa0)) {
         LOG("【红】[tl2ui] PUI vtables / GOT do not match: pointer / dump off"); return 0; }
     e = getenv("DM_RUNTIME_DIR"); snprintf(g_dir, sizeof g_dir, "%s", e && *e ? e : "dm");
     LOG("[tl2ui] on: pointer %d, dump %d (PUI manager main+%#x), game input thread tid %d", g_mode, g_dump, P_MGR, (int)gettid());
@@ -116,7 +136,7 @@ typedef struct {
     uint64_t a, vt; int parent, depth, kind, layer, vis;
     float r[4];
     float area[4]; int rowh, rows, sel, showsel; float scroll;   // List
-    int hilite, grey;                                            // Button
+    int hilite, enabled;                                            // Button
 } el;
 static el g_el[MAX_EL];
 static int kind_of(uint64_t vt) {
@@ -148,7 +168,7 @@ static int snapshot(int all, float *cw, float *ch) {
             memcpy(e->area, raw + L_AREA, 16); memcpy(&e->rowh, raw + L_ROWH, 4); memcpy(&e->rows, raw + L_COUNT, 4);
             memcpy(&e->sel, raw + L_SEL, 4); memcpy(&e->scroll, raw + L_SCROLL, 4); e->showsel = raw[L_SHOWSEL];
         } else if (e->kind == K_BUTTON) {
-            uint8_t hb[2] = {0, 0}; if (rd(a + B_GREY, hb, 2)) { e->grey = hb[0]; e->hilite = hb[1]; }
+            uint8_t hb[2] = {0, 0}; if (rd(a + B_ENABLED, hb, 2)) { e->enabled = hb[0]; e->hilite = hb[1]; }
         }
         int me = n++;
         if (depth + 1 >= MAX_DEPTH) continue;
@@ -166,27 +186,8 @@ static int list_row_at(const el *e, float x, float y) {
     int i = (int)floorf((y - e->area[1] + e->scroll) / (float)e->rowh);
     return i >= 0 && i < e->rows ? i : -1;
 }
-static void center(const el *e, int row, float *cx, float *cy) {
-    if (e->kind == K_LIST && row >= 0) { *cx = (e->area[0] + e->area[2]) * .5f; *cy = e->area[1] + (row + .5f) * e->rowh - e->scroll; }
-    else { *cx = (e->r[0] + e->r[2]) * .5f; *cy = (e->r[1] + e->r[3]) * .5f; }
-}
-static int find_addr(int n, uint64_t a) { for (int i = 0; i < n; i++) if (g_el[i].a == a) return i; return -1; }
-static int common_depth(int x, int y) {   // levels from x up to the nearest ancestor shared with y (-1 none)
-    for (int up = 0, p = x; p >= 0; p = g_el[p].parent, up++) for (int q = y; q >= 0; q = g_el[q].parent) if (q == p) return up;
-    return -1;
-}
-// The highlighted button that belongs to the target's group: the nearest shared ancestor at most 4 levels above the target
-static int focused_button(int n, int t) {
-    int best = -1, bu = 99;
-    for (int i = 0; i < n; i++) {
-        if (g_el[i].kind != K_BUTTON || !g_el[i].vis || !g_el[i].hilite) continue;
-        int up = common_depth(t, i);
-        if (up >= 0 && up <= 4 && up < bu) { bu = up; best = i; }
-    }
-    return best;
-}
-
 // ---- dump
+static void dump_stack(FILE *f);
 static void dump(void) {
     float cw, ch; int n = snapshot(g_dump >= 2, &cw, &ch);
     char p[1200]; snprintf(p, sizeof p, "%s/tl2-ui-dump.tsv", g_dir);
@@ -198,9 +199,10 @@ static void dump(void) {
                 (unsigned long long)(e->vt - (uint64_t)(uintptr_t)g_base), k_kind[e->kind], e->vis, e->layer, e->r[0], e->r[1], e->r[2], e->r[3]);
         if (e->kind == K_LIST) fprintf(f, "area %.1f,%.1f,%.1f,%.1f rowh %d rows %d sel %d scroll %.1f showsel %d", e->area[0], e->area[1], e->area[2], e->area[3],
                                        e->rowh, e->rows, e->sel, e->scroll, e->showsel);
-        if (e->kind == K_BUTTON) fprintf(f, "hilite %d grey %d", e->hilite, e->grey);
+        if (e->kind == K_BUTTON) fprintf(f, "hilite %d enabled %d", e->hilite, e->enabled);
         fputc('\n', f);
     }
+    dump_stack(f);
     fclose(f);
     LOG("[tl2ui] dump: %d elements -> %s", n, p);
 }
@@ -230,50 +232,45 @@ int dm_tl2_ui_tap(float x, float y) {
     return 1;
 }
 
-// ---- navigation state machine (time based: the game reads the npad several times per frame)
-enum { S_IDLE, S_STEP_DOWN, S_STEP_UP, S_A_DOWN, S_A_UP };
-enum { HOLD_NS = 50000000, GAP_NS = 70000000, A_NS = 60000000, MAX_STEPS = 24, MAX_NS = 3000000000u };
-static struct {
-    int st, steps, row, stalls, tried;   // tried: bit per direction already stalled at the current focus
-    uint64_t target, focus_a, t, t0, dir; int focus_row;
-} g_nav;
-static const uint64_t k_dirs[4] = {DM_BTN_UP, DM_BTN_DOWN, DM_BTN_LEFT, DM_BTN_RIGHT};
-static const char *const k_dirn[4] = {"up", "down", "left", "right"};
-static int dir_index(uint64_t d) { for (int i = 0; i < 4; i++) if (k_dirs[i] == d) return i; return -1; }
-
-// Where the focus is now for the current target: 1 = on it (A may go), 0 = elsewhere (fills focus_a / focus_row and the next direction),
-// -1 = target gone or no usable focus
-static int evaluate(uint64_t *dir_out, const char **why) {
-    float cw, ch; int n = snapshot(0, &cw, &ch), t = find_addr(n, g_nav.target);
-    if (t < 0) { *why = "target no longer visible"; return -1; }
-    const el *te = &g_el[t]; float tx, ty, fx, fy;
-    if (te->kind == K_LIST) {
-        if (te->sel == g_nav.row) return 1;
-        if (te->sel < 0) { *why = "list has no selection"; return -1; }
-        g_nav.focus_a = te->a; g_nav.focus_row = te->sel;
-        *dir_out = g_nav.row > te->sel ? DM_BTN_DOWN : DM_BTN_UP;
-        return 0;
-    }
-    if (te->hilite) return 1;
-    int f = focused_button(n, t);
-    if (f < 0) { *why = "no highlighted button in the target's group"; return -1; }
-    g_nav.focus_a = g_el[f].a; g_nav.focus_row = -1;
-    center(te, -1, &tx, &ty); center(&g_el[f], -1, &fx, &fy);
-    float dx = tx - fx, dy = ty - fy;
-    // directions toward the target, best first; skip the ones that already did not move the focus from here
-    uint64_t order[4]; int k = 0;
-    uint64_t v = dy > 0 ? DM_BTN_DOWN : DM_BTN_UP, h = dx > 0 ? DM_BTN_RIGHT : DM_BTN_LEFT;
-    int vok = fabsf(dy) > 4, hok = fabsf(dx) > 4;
-    if (fabsf(dy) >= fabsf(dx)) { if (vok) order[k++] = v; if (hok) order[k++] = h; } else { if (hok) order[k++] = h; if (vok) order[k++] = v; }
-    for (int i = 0; i < k; i++) if (!(g_nav.tried & 1 << dir_index(order[i]))) { *dir_out = order[i]; return 0; }
-    *why = k ? "no direction moves the focus toward it" : "focus and target at the same place";
+// ---- the click, on the game's input thread
+static uint64_t top_menu(int *top_out) {
+    uint64_t m = img(U_MGR); int32_t top = -1; rd(m + U_TOP, &top, 4); *top_out = top;
+    return top >= 0 && top < 64 ? rq(rq(m + U_STACK) + 8ull * top) : 0;
+}
+static const char *menu_name(uint64_t vt) {
+    static const struct { uint32_t vt; const char *n; } k[] = {
+        {VT_MAIN, "MainMenu"}, {VT_NETWORK, "Network"}, {VT_CREATE, "CreateCharacter"}, {VT_OPTIONS, "Options"}, {VT_INVITE, "PlayerInvite"},
+        {VT_PARTY, "PartyMenu"}, {0x232a788, "ButtonMenu"}, {0x232ac88, "MPCharacterSelect"}, {0x232ad60, "ChangeCharacter"}, {0x232b130, "ManageCharacters"},
+        {0x232ae38, "CharacterList"}, {0x232b208, "Waypoints"}, {0x232b4e8, "SkillsRespec"}, {0x232af10, "Controls"}, {0x230d6d8, "RadialMenu"},
+        {0x2304300, "StartMenu"}, {0x232a860, "Credits"}, {0x2309f50, "MoviePlayer"}, {0x232aa10, "Transition"}};
+    for (size_t i = 0; i < sizeof k / sizeof *k; i++) if (vt == img(k[i].vt)) return k[i].n;
+    return "?";
+}
+static void dispatch(uint32_t code, const char *what) {
+    uint32_t ev[4] = {0 /* press */, code, 0, 0};
+    int r = ((int (*)(uint64_t, int, const uint32_t *))img(F_DISPATCH))(img(U_MGR), 0, ev);
+    LOG("[tl2ui]   %s: UI manager HandleInput(code %u) -> %s", what, code, (r & 1) ? "handled" : "not handled");
+}
+static void set_hi(uint64_t button, int on) { ((void (*)(uint64_t, int))img(F_SETHI))(button, on); }
+// A button of the top menu's focus list: its index (-1 = not this menu's), the array and the focus field
+static int menu_button(uint64_t menu, uint64_t vt, uint64_t button, uint64_t *arr_out, uint64_t *focus_at) {
+    uint64_t arr = 0; int32_t n = 0;
+    if (vt == img(VT_MAIN) || vt == img(VT_NETWORK) || vt == img(VT_CREATE)) { arr = rq(menu + 0x98); rd(menu + 0x58, &n, 4); *focus_at = menu + 0x5c; }
+    else if (vt == img(VT_OPTIONS) || vt == img(VT_INVITE) || vt == img(VT_PARTY)) { arr = rq(menu + 0x50); rd(menu + 0x38, &n, 4); *focus_at = menu + 0x3c; }
+    else return -1;
+    if (!arr || n <= 0 || n > 256) return -1;
+    for (int i = 0; i < n; i++) if (rq(arr + 8ull * i) == button) { *arr_out = arr; return i; }
     return -1;
 }
-static void nav_end(const char *what) {
-    LOG("[tl2ui] tap done after %d steps, %.0f ms: %s", g_nav.steps, (now_ns() - g_nav.t0) / 1e6, what);
-    g_nav.st = S_IDLE;
+static int menu_holds(uint64_t menu, uint64_t p) {
+    uint64_t q[0x80]; if (!rd(menu, q, sizeof q)) return 0;
+    for (int i = 1; i < 0x80; i++) if (q[i] == p) return 1;
+    return 0;
 }
-static void start_tap(float fx, float fy) {
+static void click(float fx, float fy) {
+    int top; uint64_t menu = top_menu(&top);
+    if (!menu) { LOG("[tl2ui] tap %.3f,%.3f: no menu on the console UI stack (top %d): nothing", fx, fy, top); return; }
+    uint64_t vt = rq(menu);
     float cw, ch; int n = snapshot(0, &cw, &ch);
     float ux = fx * cw, uy = fy * ch; int best = -1, row = -1, radial = -1;
     for (int i = 0; i < n; i++) {
@@ -282,94 +279,82 @@ static void start_tap(float fx, float fy) {
         else if (e->kind == K_BUTTON && in_rect(e->r, ux, uy) && e->r[2] > e->r[0] && (best < 0 || above(e, i, &g_el[best], best))) { best = i; row = -1; }
         else if (e->kind == K_RADIAL && in_rect(e->r, ux, uy)) radial = i;
     }
-    if (best >= 0 && g_el[best].kind == K_BUTTON && !g_el[best].hilite && focused_button(n, best) < 0) {
-        LOG("[tl2ui] tap %.3f,%.3f = UI %.0f,%.0f: button %#llx has no focused button in its group (a label or prompt?), ignored", fx, fy, ux, uy,
-            (unsigned long long)g_el[best].a);
-        best = -1;
-    }
+    const char *mn = menu_name(vt);
+    unsigned long long vto = (unsigned long long)(vt - img(0));
     if (best < 0) {
-        LOG("[tl2ui] tap %.3f,%.3f = UI %.0f,%.0f (canvas %.0fx%.0f, %d visible elements): no list row / button%s%s", fx, fy, ux, uy, cw, ch, n,
-            radial >= 0 ? " (over a radial menu: not handled)" : "", g_mode >= 2 ? "; A (DM_TL2_POINTER=2)" : "");
-        if (g_mode >= 2) { memset(&g_nav, 0, sizeof g_nav); g_nav.t0 = g_nav.t = now_ns(); g_nav.st = S_A_DOWN; }
+        LOG("[tl2ui] tap %.3f,%.3f = UI %.0f,%.0f, menu %s %#llx (vt main+%#llx): no button / list row under it%s", fx, fy, ux, uy, mn,
+            (unsigned long long)menu, vto, radial >= 0 ? " (a radial menu: not handled)" : "");
         return;
     }
-    memset(&g_nav, 0, sizeof g_nav);
-    g_nav.target = g_el[best].a; g_nav.row = row; g_nav.t0 = g_nav.t = now_ns();
-    LOG("[tl2ui] tap %.3f,%.3f = UI %.0f,%.0f -> %s %#llx rect %.0f,%.0f,%.0f,%.0f", fx, fy, ux, uy, k_kind[g_el[best].kind], (unsigned long long)g_nav.target,
-        g_el[best].r[0], g_el[best].r[1], g_el[best].r[2], g_el[best].r[3]);
-    if (row >= 0) LOG("[tl2ui]   list row %d of %d (selected %d, row height %d, scroll %.0f)", row, g_el[best].rows, g_el[best].sel, g_el[best].rowh, g_el[best].scroll);
-    const char *why = ""; uint64_t d = 0; int r = evaluate(&d, &why);
-    if (r == 1) { LOG("[tl2ui]   already focused: A"); g_nav.st = S_A_DOWN; return; }
-    if (r < 0) { nav_end(why); return; }
-    g_nav.dir = d; g_nav.st = S_STEP_DOWN;
-    LOG("[tl2ui]   focus %#llx row %d: step %s", (unsigned long long)g_nav.focus_a, g_nav.focus_row, k_dirn[dir_index(d)]);
-}
-static void nav_tick(uint64_t *buttons) {
-    uint64_t now = now_ns();
-    const uint64_t mask = DM_BTN_A | DM_BTN_UP | DM_BTN_DOWN | DM_BTN_LEFT | DM_BTN_RIGHT;
-    if (g_nav.st == S_IDLE) return;
-    if (g_nav.st != S_A_UP && !atomic_load(&g_menu_open)) { nav_end("the menu closed: stopped, no more presses"); return; }
-    *buttons &= ~mask;   // the sequence owns A and the d-pad while it runs
-    if (now - g_nav.t0 > MAX_NS && g_nav.st != S_A_DOWN && g_nav.st != S_A_UP) { nav_end("timeout, no A"); return; }
-    switch (g_nav.st) {
-    case S_STEP_DOWN:
-        *buttons |= g_nav.dir;
-        if (now - g_nav.t >= HOLD_NS) { g_nav.st = S_STEP_UP; g_nav.t = now; }
-        break;
-    case S_STEP_UP:
-        if (now - g_nav.t < GAP_NS) break;
-        {
-            uint64_t prev_a = g_nav.focus_a; int prev_row = g_nav.focus_row, prev_dir = dir_index(g_nav.dir);
-            g_nav.steps++;
-            const char *why = ""; uint64_t d = 0; int r = evaluate(&d, &why);
-            if (r == 1) { LOG("[tl2ui]   step %d (%s): target focused, A", g_nav.steps, k_dirn[prev_dir]); g_nav.st = S_A_DOWN; g_nav.t = now; break; }
-            if (r < 0) { nav_end(why); break; }
-            if (g_nav.focus_a == prev_a && g_nav.focus_row == prev_row) {   // that press did not move the focus
-                g_nav.tried |= 1 << prev_dir;
-                if (++g_nav.stalls > 3) { nav_end("focus does not move, no A"); break; }
-                r = evaluate(&d, &why);
-                if (r == 1) { g_nav.st = S_A_DOWN; g_nav.t = now; break; }
-                if (r < 0 || g_nav.tried & 1 << dir_index(d)) { nav_end(r < 0 ? why : "focus does not move, no A"); break; }
-            } else g_nav.tried = 0;
-            if (g_nav.steps >= MAX_STEPS) { nav_end("too many steps, no A"); break; }
-            LOG("[tl2ui]   step %d: focus %#llx row %d, next %s", g_nav.steps, (unsigned long long)g_nav.focus_a, g_nav.focus_row, k_dirn[dir_index(d)]);
-            g_nav.dir = d; g_nav.st = S_STEP_DOWN; g_nav.t = now;
+    const el *t = &g_el[best];
+    if (t->kind == K_BUTTON) {
+        uint64_t arr = 0, focus_at = 0; int idx = menu_button(menu, vt, t->a, &arr, &focus_at);
+        if (idx < 0) {
+            LOG("[tl2ui] tap %.3f,%.3f = UI %.0f,%.0f: button %#llx is not in the focus list of the top menu %s (vt main+%#llx): nothing", fx, fy, ux, uy,
+                (unsigned long long)t->a, mn, vto);
+            return;
         }
-        break;
-    case S_A_DOWN:
-        *buttons |= DM_BTN_A;
-        if (now - g_nav.t >= A_NS) { g_nav.st = S_A_UP; g_nav.t = now; }
-        break;
-    case S_A_UP:
-        if (now - g_nav.t >= GAP_NS) nav_end("A pressed");
-        break;
+        int32_t cur = -1; rd(focus_at, &cur, 4);
+        LOG("[tl2ui] tap %.3f,%.3f = UI %.0f,%.0f -> %s item %d (focus was %d)%s", fx, fy, ux, uy, mn, idx, cur, t->enabled ? "" : ", greyed: Accept refused by the menu");
+        if (cur != idx) {   // the menu's own focus move: what its navigation code does (MainMenu 0x145954..0x1459b8, ButtonMenu 0x739690)
+            if (cur >= 0) { uint64_t ob = rq(arr + 8ull * cur); if (ob) set_hi(ob, 0); }
+            *(volatile int32_t *)(uintptr_t)focus_at = idx;
+            set_hi(t->a, 1);
+        }
+        float w = t->r[2] - t->r[0], rel = w > 0 ? (ux - t->r[0]) / w : .5f;
+        if (rel < .25f) dispatch(EV_LEFT, "left quarter: Left");
+        else if (rel > .75f) dispatch(EV_RIGHT, "right quarter: Right");
+        else dispatch(EV_ACCEPT, "Accept");
+        return;
+    }
+    if (!menu_holds(menu, t->a)) {
+        LOG("[tl2ui] tap %.3f,%.3f = UI %.0f,%.0f: list %#llx row %d is not held by the top menu %s (vt main+%#llx): nothing", fx, fy, ux, uy,
+            (unsigned long long)t->a, row, mn, vto);
+        return;
+    }
+    LOG("[tl2ui] tap %.3f,%.3f = UI %.0f,%.0f -> %s list %#llx row %d of %d (selected %d)", fx, fy, ux, uy, mn, (unsigned long long)t->a, row, t->rows, t->sel);
+    if (row != t->sel) { ((void (*)(uint64_t, int))img(F_SETSEL))(t->a, row); LOG("[tl2ui]   selected with the list's SetSelected (tap it again to activate)"); }
+    else dispatch(EV_ACCEPT, "Accept on the selected row");
+}
+
+static void dump_stack(FILE *f) {
+    int top; top_menu(&top); uint64_t st = rq(img(U_MGR) + U_STACK);
+    fprintf(f, "# console UI stack top %d\n", top);
+    for (int i = 0; i <= top && i < 64; i++) {
+        uint64_t me = rq(st + 8ull * i), vt = rq(me);
+        fprintf(f, "# stack %d: %#llx vt main+%#llx %s\n", i, (unsigned long long)me, (unsigned long long)(vt - img(0)), menu_name(vt));
     }
 }
 
-// ---- per npad read (hle_hid.c fill(), after the front end's buttons)
+// ---- per npad read (hle_hid.c fill(), after the front end's buttons; the buttons are left alone)
 void dm_tl2_ui_pump(uint64_t *buttons);
 void dm_tl2_ui_pump(uint64_t *buttons) {
+    (void)buttons;
     if (g_ok < 0) setup();
     if (g_ok <= 0) return;
     if (g_mode > 0) {
         int top, open = menu_open_now(&top); static int was = -1, said;
-        if (open != was && said < 2000) { said++; LOG("[tl2ui] menu %s (console UI stack top %d)", open ? "open: taps go to menu items" : "closed: taps stay with the touch layout", top); }
+        if (open != was && said < 2000) {
+            said++; uint64_t me = top_menu(&top);
+            LOG("[tl2ui] menu %s (console UI stack top %d %s)", open ? "open: taps click menu items" : "closed: taps stay with the touch layout", top,
+                me ? menu_name(rq(me)) : "-");
+        }
         was = open; atomic_store_explicit(&g_menu_open, open, memory_order_release);
+        if (atomic_exchange_explicit(&g_tap_pending, 0, memory_order_acquire)) {
+            uint64_t xy = atomic_load(&g_tap_xy); float x, y; uint32_t xb = (uint32_t)xy, yb = (uint32_t)(xy >> 32); memcpy(&x, &xb, 4); memcpy(&y, &yb, 4);
+            if (!open) LOG("[tl2ui] tap %.3f,%.3f: no menu open any more, dropped", x, y);
+            else click(x, y);
+        }
     }
-    if (g_mode > 0 && atomic_exchange_explicit(&g_tap_pending, 0, memory_order_acquire)) {
-        uint64_t xy = atomic_load(&g_tap_xy); float x, y; uint32_t xb = (uint32_t)xy, yb = (uint32_t)(xy >> 32); memcpy(&x, &xb, 4); memcpy(&y, &yb, 4);
-        if (!atomic_load(&g_menu_open)) LOG("[tl2ui] tap %.3f,%.3f: no menu open any more, dropped", x, y);
-        else if (g_nav.st == S_A_DOWN || g_nav.st == S_A_UP) LOG("[tl2ui] tap %.3f,%.3f while A is pressed: dropped", x, y);
-        else { if (g_nav.st != S_IDLE) LOG("[tl2ui] new tap: the previous one is abandoned"); g_nav.st = S_IDLE; start_tap(x, y); }
-    }
-    if (g_mode > 0) nav_tick(buttons);
     static unsigned tick; if (++tick % 30) return;
     char t[1200];
     if (g_dump > 0) { snprintf(t, sizeof t, "%s/ui-dump-now", g_dir); if (!access(t, F_OK)) { remove(t); dump(); } }
     if (g_mode > 0) {
         snprintf(t, sizeof t, "%s/ui-tap-now", g_dir); FILE *f = fopen(t, "r");
-        if (f) { float x = -1, y = -1; int ok = fscanf(f, "%f %f", &x, &y) == 2; fclose(f); remove(t);
-                 if (!ok || !dm_tl2_ui_tap(x, y)) LOG("[tl2ui] %s: want \"x y\" in 0..1", t); }
+        if (f) {
+            float x = -1, y = -1; int ok = fscanf(f, "%f %f", &x, &y) == 2; fclose(f); remove(t);
+            if (!ok || !dm_tl2_ui_tap(x, y)) LOG("[tl2ui] %s: want \"x y\" in 0..1 while a menu is open", t);
+        }
     }
 }
 #endif
