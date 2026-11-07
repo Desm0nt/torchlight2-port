@@ -428,7 +428,7 @@ public class DmActivity extends Activity implements SurfaceHolder.Callback, Disp
                 // [TL2] the other way round: loading screens pillarboxed 16:9 by default, stretched only when asked (hle_tl2_wide.c)
                 if (TL2) Os.setenv("DM_TL2_WIDE_LOADSTRETCH", p.getBoolean(STRETCH_LOADING_KEY, STRETCH_LOADING_DEFAULT) ? "1" : "0", true);
                 else Os.setenv("DM_D3_WIDE_STRETCH_LOADING", p.getBoolean(STRETCH_LOADING_KEY, STRETCH_LOADING_DEFAULT) ? "1" : "0", true);
-                if (TL2) Os.setenv("DM_TL2_POINTER", p.getBoolean(TL2_POINTER_KEY, false) ? "1" : "0", true);   // [TL2] hle_tl2_ui.c, experimental, default off; DM_TL2_UIDUMP only from dm/env
+                if (TL2) Os.setenv("DM_TL2_POINTER", "1", true);   // always on (owner), no gear option   // [TL2] hle_tl2_ui.c, experimental, default off; DM_TL2_UIDUMP only from dm/env
             } else {
             if (p.getBoolean("drs", false)) Os.setenv("DM_DOOM_DRS", "1", true); else Os.unsetenv("DM_DOOM_DRS");
             int res = p.getInt("res", 0);
@@ -951,7 +951,6 @@ public class DmActivity extends Activity implements SurfaceHolder.Callback, Disp
             note(box, ui.getString(R.string.d3_aspect_wide_note));
             CheckBox stretchL = new CheckBox(this); stretchL.setText(when(ui, R.string.d3_stretch_loading, false)); stretchL.setChecked(p.getBoolean(STRETCH_LOADING_KEY, STRETCH_LOADING_DEFAULT)); box.addView(stretchL);
             CheckBox tl2Ptr = new CheckBox(this); tl2Ptr.setText(when(ui, R.string.tl2_pointer, false)); tl2Ptr.setChecked(p.getBoolean(TL2_POINTER_KEY, false));
-            if (TL2) box.addView(tl2Ptr);
             if (TL2) {   // [TL2] mod manager (Tl2Mods): its own dialog, saved there; applies at the next start
                 heading(box, ui.getString(R.string.tl2_mods_title));
                 android.widget.Button modsB = new android.widget.Button(this); modsB.setText(ui.getString(R.string.tl2_mods_button, Tl2Mods.enabledCount(p))); box.addView(modsB);

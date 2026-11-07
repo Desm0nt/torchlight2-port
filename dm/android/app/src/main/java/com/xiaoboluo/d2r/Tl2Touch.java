@@ -140,12 +140,11 @@ final class Tl2Touch {
             }
             double ia = Math.toRadians(95);
             add("II", 0, KIND_SWAP, "fan", A_BR, mx + 150 * (float) Math.cos(ia), my - 150 * (float) Math.sin(ia), 22);
-            add("-", K_MINUS, KIND_PLAIN, "tr", A_TR, -30, 30, 22);   // D2R's map spot
-            add("R3", K_R3, KIND_PLAIN, "tr", A_TR, -80, 30, 19);
-            add("L3", K_L3, KIND_PLAIN, "tr", A_TR, -124, 30, 19);   // kept (not a HUD slot), next to R3 instead of the top-left row
+            add("R3", K_R3, KIND_PLAIN, "tr", A_TR, -30, 30, 19);
+            add("L3", K_L3, KIND_PLAIN, "tr", A_TR, -74, 30, 19);   // kept (not a HUD slot), next to R3 instead of the top-left row
             add("⚙", 0, KIND_GEAR, "top", A_TOP, 0, 30, 20);
-            String[] bl = {"←", "↑", "↓", "→", "+"}; int[] bk = {K_LEFT, K_UP, K_DOWN, K_RIGHT, K_PLUS};   // D2R belt cells 1..5
-            for (int i = 0; i < 5; i++) add(bl[i], bk[i], KIND_PLAIN, "belt", A_BELT, (120 * (i + 1) - 344) / 120f, 0, 19);
+            // bottom centre: only "-" and "+" (the owner: the d-pad arrows are not needed with menu taps always on)
+            add("-", K_MINUS, KIND_PLAIN, "belt", A_BELT, -0.7f, 0, 20); add("+", K_PLUS, KIND_PLAIN, "belt", A_BELT, 0.7f, 0, 20);
         } else {   // quick access along the edges: cells 50 dp, pitch 56 dp, from 40 dp below the top
             String[] l = {"A", "B", "X", "Y", "R", "ZR"}; int[] kk = {K_A, K_B, K_X, K_Y, K_R, K_ZR};
             for (int i = 0; i < 6; i++) {
@@ -180,7 +179,7 @@ final class Tl2Touch {
         aimMode = clamp(p.getInt("tl2_aim", AIM_OFF), 0, 2);
         int m = clamp(p.getInt("tl2_mod", 0), 0, MOD_KEYS.length - 1); modKey = MOD_KEYS[m]; modName = MOD_NAMES[m];
         holdWalk = p.getBoolean("tl2_hold_walk", false);
-        pointer = p.getBoolean(DmActivity.TL2_POINTER_KEY, false);
+        pointer = true;   // [TL2] menu taps are always on (the owner: convenient and works); the gear option was removed
         icons = p.getBoolean("tl2_icons", true); iconSerial = -2; iconPoll = 0;
         editHint = ui.getString(R.string.d3_pad_edit_hint); resetLabel = ui.getString(R.string.d3_pad_reset); doneLabel = ui.getString(R.string.d3_pad_done);
         build();
