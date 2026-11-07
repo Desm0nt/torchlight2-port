@@ -333,20 +333,26 @@ static Result err_res(const char *op, const char *path) {
 //   manifest read by main+0x15f000); a PC .MOD is a TL2 PAK + PAK.MAN behind a header, the same format as the Switch packs, so
 //   tools/tl2_mod.py turns it into PAKS/ZMOD_<nn>_<name>.PAK(.MAN) (textures converted to the Switch XTX) in DM_TL2_MODS_DIR
 //   (default <DM_ROMFS>/../mods/overlay), and that directory goes first in the rom overlay list;
-// - DM_TL2_ROM_ORDER (default = DM_TL2_MODS): rom directory listings in RomFS order (names ascending, as the RomFS tables list them:
-//   DATA, DATA1 .. DATA5 -- tools/romfs_tl2.py walks the table chain) instead of the host file system's order (the phone's /sdcard
-//   listed DATA5 .. DATA), so the patch packs and the mod packs (ZMOD_* after DATA5) load in a fixed order on every device;
+// - DM_TL2_ROM_ORDER (default 1, with or without mods; =0 = the host file system's order, for A/B): rom directory listings in
+//   the order the Switch gives them -- Horizon's RomFS ReadDirectory returns the child directories, then the files, each in table
+//   order, and this RomFS's tables are sorted by name in every directory (work/romfs-list.tsv: DATA, DATA1 .. DATA5). The phone's
+//   /sdcard listed DATA5 .. DATA (log r10), so the game met its patch packs in reverse; which pack supplies a path present in
+//   several packs (408 paths) is unproven, so the Switch order is emulated. Mod packs (ZMOD_*) sort after DATA5;
 // - DM_TL2_MODS_SAVE (default 1 with mods on): the save mount uses <DM_SAVE>-mods, seeded once with a copy of the vanilla save,
 //   like the PC game's separate mod save folder ("Mod Mode Active - Using Mod Save Folder"): characters played with mods never
 //   write into the vanilla save.
 static int tl2_env_on(const char *k, int def) { const char *e = getenv(k); return e && *e ? strcmp(e, "0") != 0 : def; }
 static int tl2_mods_on(void) { return tl2_env_on("DM_TL2_MODS", 0); }
-static int tl2_rom_sorted(void) { return tl2_env_on("DM_TL2_ROM_ORDER", tl2_mods_on()); }
+static int tl2_rom_sorted(void) { return tl2_env_on("DM_TL2_ROM_ORDER", 1); }
 static char g_tl2_rom_name[32];   // the guest's rom mount name (MountRom), for the sorted listing
-static int tl2_name_cmp(const void *a, const void *b) { return strcmp((const char *)a, (const char *)b); }
+static int tl2_ent_cmp(const void *a, const void *b) {   // RomFS order: directories first, then files, each by name
+    const DirectoryEntry *x = a, *y = b;
+    if ((x->type == ENT_DIR) != (y->type == ENT_DIR)) return x->type == ENT_DIR ? -1 : 1;
+    return strcmp(x->name, y->name);
+}
 static void tl2_mods_mount(const char *name) {
     strlcpy(g_tl2_rom_name, name, sizeof g_tl2_rom_name);
-    if (tl2_rom_sorted()) LOG("[tl2] rom listings in RomFS order (names ascending): DM_TL2_ROM_ORDER");
+    LOG("[tl2] rom listings in %s (DM_TL2_ROM_ORDER=%d)", tl2_rom_sorted() ? "RomFS order (directories, then files, by name)" : "host file system order", tl2_rom_sorted());
     if (!tl2_mods_on()) return;
     char d[1024], b[1024]; const char *e = getenv("DM_TL2_MODS_DIR");
     if (e && *e) strlcpy(d, e, sizeof d); else snprintf(d, sizeof d, "%s/../mods/overlay", envdir("DM_ROMFS", "data/switch/3.3.94012/Update/RomFS", b, sizeof b));
@@ -940,9 +946,6 @@ static void dir_snapshot(dirh_t *h, const mount_t *m, const char *rest) {
         }
         closedir(x);
     }
-#ifdef DM_GAME_TL2
-    if (tl2_rom_sorted() && !strcmp(m->name, g_tl2_rom_name)) qsort(names, nn, sizeof *names, tl2_name_cmp);   // [TL2] RomFS order
-#endif
     h->snap = calloc(nn, sizeof *h->snap); h->nsnap = nn;
     if (nn && !h->snap) die("rom overlay 目录快照分配失败");
     for (int j = 0; j < nn; j++) {
@@ -952,6 +955,9 @@ static void dir_snapshot(dirh_t *h, const mount_t *m, const char *rest) {
         struct stat st;
         if (!stat(resolved, &st)) { h->snap[j].type = S_ISDIR(st.st_mode) ? ENT_DIR : ENT_FILE; h->snap[j].size = S_ISDIR(st.st_mode) ? 0 : dm_data_logical_size(resolved, st.st_size); }
     }
+#ifdef DM_GAME_TL2
+    if (tl2_rom_sorted() && !strcmp(m->name, g_tl2_rom_name)) qsort(h->snap, nn, sizeof *h->snap, tl2_ent_cmp);   // [TL2] RomFS order
+#endif
     free(resolved); free(rel); free(guest); free(parent); free(all); free(names); free(roots);
 }
 HLE_FORCE("_ZN2nn2fs13OpenDirectoryEPNS0_15DirectoryHandleEPKci", "fsp-srv → opendir(3)", Result, h_fs_OpenDirectory, uint64_t *out, const char *path, int mode) {

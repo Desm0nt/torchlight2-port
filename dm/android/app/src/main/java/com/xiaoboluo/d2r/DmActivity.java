@@ -948,6 +948,12 @@ public class DmActivity extends Activity implements SurfaceHolder.Callback, Disp
             CheckBox stretchL = new CheckBox(this); stretchL.setText(when(ui, R.string.d3_stretch_loading, false)); stretchL.setChecked(p.getBoolean(STRETCH_LOADING_KEY, STRETCH_LOADING_DEFAULT)); box.addView(stretchL);
             CheckBox tl2Ptr = new CheckBox(this); tl2Ptr.setText(when(ui, R.string.tl2_pointer, false)); tl2Ptr.setChecked(p.getBoolean(TL2_POINTER_KEY, false));
             if (TL2) box.addView(tl2Ptr);
+            if (TL2) {   // [TL2] mod manager (Tl2Mods): its own dialog, saved there; applies at the next start
+                heading(box, ui.getString(R.string.tl2_mods_title));
+                android.widget.Button modsB = new android.widget.Button(this); modsB.setText(ui.getString(R.string.tl2_mods_button, Tl2Mods.enabledCount(p))); box.addView(modsB);
+                modsB.setOnClickListener(v -> showTl2Mods(ui, modsB));
+                note(box, ui.getString(R.string.tl2_mods_restart));
+            }
             aspG.setOnCheckedChangeListener((g, id) -> d3ModeLabels(modeG, ui, id == 8002));
             heading(box, when(ui, R.string.d3_sharpen, false));
             RadioGroup sh = radios(box, texts(ui, D3_SHARPEN_LABELS), 2000, p.getInt("sharpen", 0), true);
@@ -1076,6 +1082,61 @@ public class DmActivity extends Activity implements SurfaceHolder.Callback, Disp
             editB.setOnClickListener(v -> { save.run(); dlg.dismiss(); if (d3Pad != null) d3Pad.startEdit(); });   // drag controls on the pad; "Done" there ends it
         });
     }
+    // [TL2] The mod list (Tl2Mods): every .MOD in Download/Torchlight2Mobile/mods with title, author, version from its header, a tick to
+    // enable it and up / down for the load order (lower = loaded later, wins). Saved with "Save"; the next start converts and loads it.
+    private void showTl2Mods(android.content.Context ui, android.widget.Button from) {
+        SharedPreferences p = doomPrefs(); final java.util.List<Tl2Mods.Mod> mods = Tl2Mods.list(p);
+        LinearLayout box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL); box.setPadding(48, 24, 48, 0);
+        note(box, ui.getString(R.string.tl2_mods_folder, Tl2Mods.modsDir().getAbsolutePath()));
+        final LinearLayout rows = new LinearLayout(this); rows.setOrientation(LinearLayout.VERTICAL); box.addView(rows);
+        final Runnable[] fill = new Runnable[1];
+        fill[0] = () -> {
+            rows.removeAllViews();
+            if (mods.isEmpty()) { TextView t = new TextView(this); t.setText(ui.getString(R.string.tl2_mods_none)); t.setPadding(0, 24, 0, 24); rows.addView(t); }
+            for (int i = 0; i < mods.size(); i++) {
+                final int at = i; final Tl2Mods.Mod m = mods.get(i);
+                LinearLayout row = new LinearLayout(this); row.setOrientation(LinearLayout.HORIZONTAL); row.setPadding(0, 12, 0, 12);
+                CheckBox c = new CheckBox(this);
+                String sub = m.info == null ? ui.getString(R.string.tl2_mods_bad, m.error)
+                    : ui.getString(R.string.tl2_mods_line, (m.info.author.isEmpty() ? "" : m.info.author + " · ") + m.file.getName(), m.info.modver);
+                c.setText(Tl2Mods.describe(m) + "\n" + sub); c.setEnabled(m.info != null); c.setChecked(m.on && m.info != null);
+                c.setOnCheckedChangeListener((b, on) -> m.on = on);
+                row.addView(c, new LinearLayout.LayoutParams(0, -2, 1f));
+                android.widget.Button up = new android.widget.Button(this), down = new android.widget.Button(this);
+                up.setText("▲"); down.setText("▼"); up.setEnabled(i > 0); down.setEnabled(i < mods.size() - 1);
+                up.setOnClickListener(v -> { java.util.Collections.swap(mods, at, at - 1); fill[0].run(); });
+                down.setOnClickListener(v -> { java.util.Collections.swap(mods, at, at + 1); fill[0].run(); });
+                row.addView(up, new LinearLayout.LayoutParams(-2, -2)); row.addView(down, new LinearLayout.LayoutParams(-2, -2));
+                rows.addView(row);
+            }
+        };
+        fill[0].run();
+        note(box, ui.getString(R.string.tl2_mods_restart));
+        android.widget.ScrollView scroll = new android.widget.ScrollView(this); scroll.addView(box);
+        new AlertDialog.Builder(this).setTitle(ui.getString(R.string.tl2_mods_title)).setView(scroll)
+            .setPositiveButton(ui.getString(R.string.d3_save), (d, w) -> { Tl2Mods.save(p, mods); from.setText(ui.getString(R.string.tl2_mods_button, Tl2Mods.enabledCount(p))); })
+            .setNegativeButton(ui.getString(R.string.d3_cancel), null).show();
+    }
+    // [TL2] Before the library starts the game: the enabled mods become packs (Tl2Mods.prepare, a background thread; a progress dialog only
+    // when something has to be converted), then startHost goes on. Once per process (0 not yet, 1 running, 2 done).
+    private static volatile int tl2ModsState;
+    private void prepareTl2Mods() {
+        tl2ModsState = 1;
+        final android.content.Context ui = d3Ui(), app = getApplicationContext(); final SharedPreferences p = doomPrefs();
+        final int todo = Tl2Mods.pending(this, p);
+        final AlertDialog dlg = todo == 0 ? null : new AlertDialog.Builder(this).setTitle(ui.getString(R.string.tl2_mods_title))
+            .setMessage(ui.getString(R.string.tl2_mods_preparing, 1, todo, "")).setCancelable(false).show();
+        new Thread(() -> {
+            Tl2Mods.Outcome o = Tl2Mods.prepare(app, p, (done, total, name) -> { if (dlg != null) runOnUiThread(() -> dlg.setMessage(ui.getString(R.string.tl2_mods_preparing, Math.min(done + 1, Math.max(1, total)), total, name))); });
+            runOnUiThread(() -> {
+                if (dlg != null) try { dlg.dismiss(); } catch (RuntimeException ignored) { /* the activity went away */ }
+                for (int i = 0; i < Math.min(40, o.log.size()); i++) crumb("[tl2 mods] " + o.log.get(i));
+                if (!o.failed.isEmpty()) android.widget.Toast.makeText(app, ui.getString(R.string.tl2_mods_failed, android.text.TextUtils.join("; ", o.failed)), android.widget.Toast.LENGTH_LONG).show();
+                tl2ModsState = 2;
+                DmActivity a = current.get(); if (a != null) a.startHost();
+            });
+        }, "tl2-mods").start();
+    }
     // [D3] A percentage slider that saves "doom_controls" <key> and updates the pad while it moves (shown behind the dialog).
     private void d3Slider(LinearLayout box, android.content.Context ui, int label, SharedPreferences cp, String key, int min, int max, int def) {
         final int was = Math.max(min, Math.min(max, cp.getInt(key, def)));
@@ -1188,6 +1249,7 @@ public class DmActivity extends Activity implements SurfaceHolder.Callback, Disp
         File downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
         if (!DOOM && !libraryLoaded && !ensureImported(new File(downloads, "S2X/D2R Mobile/android"))) return;
         if (gameFrame.getParent() == null) setContentView(gameFrame);
+        if (TL2 && !libraryLoaded && tl2ModsState != 2) { if (tl2ModsState == 0) prepareTl2Mods(); return; }   // [TL2] mods first (Tl2Mods)
         if (!libraryLoaded) {
             // 与 jni_android.c 选运行目录同一条规则：内部目录有主程序就用内部目录，否则用外部私有目录
             // Same rule as jni_android.c's choice of runtime directory: internal storage when it has the main module, otherwise external private storage

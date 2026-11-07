@@ -11,6 +11,8 @@ Formats (docs/tl2/TL2_PORT.md, "Моды PC" has the evidence):
               0x42 BC1, 0x43 BC2, 0x44 BC3, 0x25 RGBA8, block-linear GOB layout). PC mods carry real DDS / PNG / JPG / TGA, so they
               are converted here (DXT1/3/5 and 32-bit uncompressed DDS; PNG/JPG/TGA through Pillow to RGBA8).
 
+Device port: dm/android/.../Tl2ModConv.java (the app's mod manager, Tl2Mods.java) writes the same bytes; tools/tl2_mod_java_test.py checks.
+
 Usage:
   tl2_mod.py info    <mod>                         header, file counts, texture kinds
   tl2_mod.py convert <mod> <out_overlay> [--slot N] [--no-tex]   write <out_overlay>/PAKS/ZMOD_<NN>_<name>.PAK(.MAN) + .json
@@ -52,7 +54,9 @@ def man_write(root, ents):
     for e in ents: dirs.setdefault(e[0], []).append(e)
     body = b''.join(_wsw(d) + struct.pack('<I', len(es)) + b''.join(
         struct.pack('<IB', e[5], e[2]) + _wsw(e[1]) + struct.pack('<IIQ', e[3], e[4], e[6]) for e in es) for d, es in dirs.items())
-    return struct.pack('<HI', 2, 0) + _wsw(root) + struct.pack('<II', len(ents), len(dirs)) + body
+    # header: version 2, a hash the game does not check (0, as GUTS / rgman write it), root, a capacity hint (records + directories,
+    # as rgman's writer; the game's own packs carry larger values), the directory count
+    return struct.pack('<HI', 2, 0) + _wsw(root) + struct.pack('<II', len(ents) + len(dirs), len(dirs)) + body
 
 def pak_hash(b):
     """TL2 PAK header hash over the whole pack (header included in the size, sampling starts after it). Same as the game's packs."""
@@ -191,13 +195,15 @@ def dds_to_xtx(b):
     if pf_flags & 4:
         fmt = {b'DXT1': 0x42, b'DXT2': 0x43, b'DXT3': 0x43, b'DXT4': 0x44, b'DXT5': 0x44}.get(struct.pack('<I', fourcc))
         if fmt is None: raise ValueError(f'DDS fourcc {struct.pack("<I", fourcc)!r} not supported')
-    elif pf_flags & 0x40 and bits == 32:
-        fmt = 0x25
-        order = [{0xff: 0, 0xff00: 1, 0xff0000: 2, 0xff000000: 3}[m] for m in (rm, gm, bm)]
+    elif pf_flags & 0x40 and bits in (24, 32):   # uncompressed RGB(A) with byte-aligned 8-bit masks -> RGBA8 (every level)
+        fmt = 0x25; bpp = bits // 8
+        byte = {0xff: 0, 0xff00: 1, 0xff0000: 2, 0xff000000: 3}
+        if any(m not in byte or byte[m] >= bpp for m in (rm, gm, bm)) or (pf_flags & 1 and am and (am not in byte or byte[am] >= bpp)):
+            raise ValueError(f'DDS masks {rm:#x} {gm:#x} {bm:#x} {am:#x} not supported')
         import numpy as np
-        a = np.frombuffer(data, np.uint8)[:len(data) // 4 * 4].reshape(-1, 4)
-        alpha = a[:, [{0xff: 0, 0xff00: 1, 0xff0000: 2, 0xff000000: 3}[am]]] if pf_flags & 1 and am else np.full((len(a), 1), 255, np.uint8)
-        data = np.concatenate([a[:, order], alpha], 1).tobytes()
+        a = np.frombuffer(data, np.uint8)[:len(data) // bpp * bpp].reshape(-1, bpp)
+        alpha = a[:, [byte[am]]] if pf_flags & 1 and am else np.full((len(a), 1), 255, np.uint8)
+        data = np.concatenate([a[:, [byte[rm], byte[gm], byte[bm]]], alpha], 1).tobytes()
     else: raise ValueError(f'DDS pixel format flags {pf_flags:#x} / {bits} bits not supported')
     _, bpb, bs = FMT[fmt]; lv = []; o = 0
     for i in range(mips):
@@ -206,7 +212,45 @@ def dds_to_xtx(b):
         lv.append(data[o:o + n]); o += n
     return xtx_build(lv, w, h, fmt)
 
-def image_to_xtx(b):   # PNG / JPG / TGA: one level RGBA8, as every image of this kind in the game's packs
+PNG_MAGIC, JPG_MAGIC = bytes.fromhex("89504e470d0a1a0a"), bytes.fromhex("ffd8ff")
+
+def tga_decode(b):
+    """-> (w, h, RGBA bytes top row first). Types 1/2/3 and RLE 9/10/11; 8 (grey / palette index), 15/16, 24, 32 bits; palettes of
+    15/16/24/32-bit entries. Own decoder (not Pillow) so the device converter (Tl2ModConv.java) can match it byte for byte."""
+    idl, cmt, it, c0, clen, csz, _, _, w, h, bpp, desc = struct.unpack_from('<BBBHHBHHHHBB', b, 0)
+    base = it & 7
+    if base not in (1, 2, 3) or not w or not h: raise ValueError(f'TGA type {it} not supported')
+    o = 18 + idl; pal = None
+    def px(c, sz):   # one stored pixel -> (r, g, b, a)
+        if sz in (15, 16): v = c[0] | c[1] << 8; r, g, bl = (v >> 10) & 31, (v >> 5) & 31, v & 31; e = lambda x: x << 3 | x >> 2; return e(r), e(g), e(bl), (255 if sz == 15 or not desc & 15 or v & 0x8000 else 0)
+        if sz == 24: return c[2], c[1], c[0], 255
+        if sz == 32: return c[2], c[1], c[0], c[3]
+        raise ValueError(f'TGA pixel size {sz} not supported')
+    if cmt == 1:
+        es = (csz + 7) // 8; pal = [px(b[o + i * es:o + i * es + es], csz) for i in range(clen)]; o += clen * es
+    ps = (bpp + 7) // 8; n = w * h; raw = bytearray()
+    if it & 8:
+        while len(raw) < n * ps:
+            hd = b[o]; o += 1; k = (hd & 0x7f) + 1
+            if hd & 0x80: raw += b[o:o + ps] * k; o += ps
+            else: raw += b[o:o + k * ps]; o += k * ps
+    else: raw = b[o:o + n * ps]
+    if len(raw) < n * ps: raise ValueError('TGA data truncated')
+    out = bytearray(n * 4)
+    for i in range(n):
+        c = raw[i * ps:i * ps + ps]
+        if base == 1: k = (c[0] | (c[1] << 8 if ps > 1 else 0)) - c0; q = pal[k] if pal and 0 <= k < len(pal) else (0, 0, 0, 255)
+        elif base == 3: q = (c[0], c[0], c[0], c[1] if ps > 1 else 255)
+        else: q = px(c, 15 if bpp == 15 else bpp)
+        out[i * 4:i * 4 + 4] = bytes(q)
+    rows = [out[y * w * 4:(y + 1) * w * 4] for y in range(h)]
+    if desc & 0x10: rows = [bytes(b''.join(r[x * 4:x * 4 + 4] for x in range(w - 1, -1, -1))) for r in rows]
+    if not desc & 0x20: rows.reverse()
+    return w, h, bytes(b''.join(rows))
+
+def image_to_xtx(b, name=''):   # PNG / JPG / TGA: one level RGBA8, as every image of this kind in the game's packs
+    if name.upper().endswith('.TGA') and b[:8] != PNG_MAGIC and b[:3] != JPG_MAGIC:
+        w, h, px = tga_decode(b); return xtx_build([px], w, h, 0x25)
     from io import BytesIO
     from PIL import Image
     im = Image.open(BytesIO(b)).convert('RGBA')
@@ -217,7 +261,7 @@ TEX_EXT = ('.DDS', '.PNG', '.JPG', '.TGA')
 def to_switch_texture(name, d):
     if d[:4] == b'DFvN': return d, 'xtx'
     if d[:4] == b'DDS ': return dds_to_xtx(d), 'dds'
-    return image_to_xtx(d), 'image'
+    return image_to_xtx(d, name), 'image'
 
 # ---------------------------------------------------------------- convert
 
@@ -245,9 +289,8 @@ def convert(mod_path, out_dir, slot=None, tex=True, log=print):
                 else: full = None
             except Exception as e:   # keep the PC bytes: the game shows the texture as missing, the rest of the mod still loads
                 stats['failed'].append(f'{d}{n}: {e}'); full = None
-        if full is not None:
-            z = zlib.compress(full, 9); raw = z if len(z) < len(full) else full
-            dl, cl = len(full), (len(z) if len(z) < len(full) else len(full)); crc = zlib.crc32(full)
+        if full is not None:   # converted textures are stored (packed size = size, as the game's uncompressed entries): no deflate, so
+            raw = full; dl = cl = len(full); crc = zlib.crc32(full)   # this tool and the device converter (Tl2ModConv.java) write the same bytes
         out.append((d, n, typ, len(body), dl, crc, ft))
         body += struct.pack('<II', dl, cl) + raw; largest = max(largest, cl or dl); stats['files'] += 1
     for p in info['deletes']:   # deleted files: a zero entry, as the game's own patch packs do (DATA3 deletes a DATA file this way)
@@ -258,7 +301,8 @@ def convert(mod_path, out_dir, slot=None, tex=True, log=print):
     # root as in every Switch pack ('MEDIA/'; a mod's own root is its folder name, the directory records carry the full paths)
     open(os.path.join(pdir, base + '.PAK.MAN'), 'wb').write(man_write('MEDIA/', out))
     meta = dict(info, source=os.path.basename(mod_path), pack=base, **stats)
-    json.dump(meta, open(os.path.join(pdir, base + '.json'), 'w', encoding='utf-8'), ensure_ascii=False, indent=1)
+    os.makedirs(os.path.join(out_dir, 'meta'), exist_ok=True)   # outside PAKS: the game lists PAKS
+    json.dump(meta, open(os.path.join(out_dir, 'meta', base + '.json'), 'w', encoding='utf-8'), ensure_ascii=False, indent=1)
     log(f'{base}: {stats["files"]} files, textures {stats["textures"]}, deleted {stats["deleted"]}, failed {len(stats["failed"])}')
     for f in stats['failed'][:20]: log('  texture kept as PC bytes:', f)
     return meta

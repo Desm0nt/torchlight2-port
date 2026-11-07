@@ -85,4 +85,13 @@
     <string name="d3_drv_load_failed">драйвер не открылся</string>
     <string name="d3_drv_no_library">в пакете нет библиотеки драйвера</string>
     <string name="d3_drv_missing_lib">в пакете не хватает библиотеки</string>
+    <string name="tl2_mods_button">Моды (включено: %d)…</string>
+    <string name="tl2_mods_title">Моды</string>
+    <string name="tl2_mods_folder">Положите PC-моды Torchlight II (файлы .MOD) в %s. Отмеченные моды загружаются сверху вниз: мод ниже в списке перекрывает моды выше, если они меняют один и тот же файл.</string>
+    <string name="tl2_mods_restart">Изменения применятся при следующем запуске игры (закройте и откройте её снова). Пока включён хоть один мод, игра пишет в отдельную папку сохранений (при первом включении туда копируются ваши сохранения); обычные сохранения не меняются.</string>
+    <string name="tl2_mods_none">В папке пока нет файлов .MOD.</string>
+    <string name="tl2_mods_line">%1$s · версия %2$d</string>
+    <string name="tl2_mods_bad">не читается как .MOD: %s</string>
+    <string name="tl2_mods_preparing">Подготовка модов (%1$d из %2$d)…\n%3$s</string>
+    <string name="tl2_mods_failed">Пропущены моды (не удалось преобразовать): %s</string>
 </resources>
