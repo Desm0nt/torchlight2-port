@@ -55,7 +55,11 @@ final class Tl2Touch {
     static final long AIM_SETTLE_MS = 80, KEY_MIN_MS = 35, MOD_LEAD_MS = 170, TAP_MS = 350, HOLD_MS = 500, PULSE_MS = 100, FACE_MS = 70, STEP_GAP_MS = 40;
     static final float MOVE_DP = 10, AIM_DEAD_DP = 10, AIM_FULL_DP = 60, JOY_FULL_DP = 60, JOY_DEAD_DP = 6, WALK_DEAD_DP = 30, WALK_FULL_DP = 140, WALK_MIN_TILT = 0.4f;
 
-    static final int KIND_MAIN = 0, KIND_SKILL = 1, KIND_PLAIN = 2, KIND_SWAP = 3, KIND_GEAR = 4, KIND_COMBO = 5;
+    static final int KIND_MAIN = 0, KIND_SKILL = 1, KIND_PLAIN = 2, KIND_SWAP = 3, KIND_GEAR = 4, KIND_COMBO = 5,
+        KIND_PANEL = 6, KIND_TAB = 7;   // [TL2] pointer on (DM_TL2_POINTER): D2R-style panel buttons (key = panel type) and radial tab arrows (key = -1 / +1)
+    // panel types = RadialMenu CreatePanel 0x13dfa0 numbering (hle_tl2_ui.c): 0 inventory / equipment, 7 skills, 9 character stats, 12 quests
+    private static final String[] PANEL_LABELS = {"INV", "SKL", "CHR", "QST"};
+    private static final int[] PANEL_TYPES = {0, 7, 9, 12};
     // where a button's (bx, by) is measured from (k units = dp x size); "belt" x is in D2R belt cell pitches (40 k) from the centre
     static final int A_BR = 0, A_TR = 1, A_TL = 2, A_TOP = 3, A_BELT = 4, A_LEFT = 5, A_RIGHT = 6;
     private static final class Btn {
@@ -82,7 +86,7 @@ final class Tl2Touch {
     private float k = 1, op = 1, iso = ISO_DEFAULT / 100f, heroFy = HERO_Y_DEFAULT / 100f, joyR;
     private int tapMode = TAP_OFF, aimMode = AIM_OFF, modKey = K_ZL; private String modName = "ZL"; private boolean holdWalk;
     private String editHint = "", resetLabel = "Reset", doneLabel = "Done";
-    private boolean side, setII, editMode, controllerMode;
+    private boolean side, setII, editMode, controllerMode, pointer;
     private int lw, lh; private long seqN;
     private final Stick move = new Stick(), aim = new Stick();
     private float joyMinX, joyMaxY;
@@ -126,6 +130,13 @@ final class Tl2Touch {
             add("⚙", 0, KIND_GEAR, "top", A_TOP, 0, 30, 20);
             add("+", K_PLUS, KIND_PLAIN, "top", A_TOP, 55, 30, 22); add("R3", K_R3, KIND_PLAIN, "top", A_TOP, 110, 30, 19);
         }
+        if (pointer) {   // [TL2] D2R Mobile's panel buttons along the top (a second row in tl2_side) and the radial menu's tab arrows next to the gear
+            float py = side ? 86 : 30, ax = side ? 165 : 75;
+            for (int i = 0; i < PANEL_LABELS.length; i++)
+                add(PANEL_LABELS[i], PANEL_TYPES[i], KIND_PANEL, "panels", A_TOP, i < 2 ? -240 + 50 * i : 140 + 50 * (i - 2), py, 19);
+            add("◀", -1, KIND_TAB, "panels", A_TOP, -ax, py, 18);
+            add("▶", 1, KIND_TAB, "panels", A_TOP, ax, py, 18);
+        }
         lw = -1;
     }
 
@@ -138,6 +149,7 @@ final class Tl2Touch {
         aimMode = clamp(p.getInt("tl2_aim", AIM_OFF), 0, 2);
         int m = clamp(p.getInt("tl2_mod", 0), 0, MOD_KEYS.length - 1); modKey = MOD_KEYS[m]; modName = MOD_NAMES[m];
         holdWalk = p.getBoolean("tl2_hold_walk", false);
+        pointer = p.getBoolean(DmActivity.TL2_POINTER_KEY, false);
         editHint = ui.getString(R.string.d3_pad_edit_hint); resetLabel = ui.getString(R.string.d3_pad_reset); doneLabel = ui.getString(R.string.d3_pad_done);
         build();
         off.clear();
@@ -308,6 +320,8 @@ final class Tl2Touch {
         Btn b = hit(x, y);
         if (b != null && b.kind == KIND_GEAR) { openSettings.run(); return; }
         if (b != null && b.kind == KIND_SWAP) { setII = !setII; return; }
+        if (b != null && b.kind == KIND_PANEL) { DmActivity.nativeTl2OpenPanel(b.key); return; }   // [TL2] hle_tl2_ui.c: the game's own + / tab / segment / Accept
+        if (b != null && b.kind == KIND_TAB) { DmActivity.nativeTl2UiTab(b.key); return; }        // [TL2] the radial menu's own L / R tab code
         if (b != null) f.target = btns.indexOf(b);
         // [TL2] pointer (hle_tl2_ui.c, gear "tap on menu items", DM_TL2_POINTER): while a console menu is up a finger off the overlay buttons
         // waits: a short still tap goes to the menu item under it; moving it first makes it the stick / world finger it would have been

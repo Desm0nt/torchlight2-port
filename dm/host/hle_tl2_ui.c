@@ -32,8 +32,20 @@
 //   list menus:      any top menu holding the tapped PUI::List pointer in its first 0x400 bytes (CharacterList family 0x757310 / 0x7588b0 /
 //                    0x762420 with the list at +0x40, Waypoints 0x765ab0, SkillsRespec 0x771580, PlayerInvite / PartyMenu lists): they read
 //                    GetSelected when Accept comes.
-//   Not covered: radial menus (CConsoleUIRadialMenu vt 0x230d6d8, stick angle), the in-game panels (class Panel vt 0x2303d60: PanelEquipment
-//                0x23036f8, PanelSkills, PanelMerchant..., not CConsoleUIMenu, own input), tabs (shoulder codes), custom-drawn grids.
+//   title:           StartMenu vt 0x2304300 (empty HandleInput): a tap anywhere = its own "press +" vt+8 0xbfd40 for player 0 (what a controller's +
+//                    reaches through 0x13eea0's receiver loop).
+//   modal dialog:    UI manager +0x50 (CConsoleUIDialog vt 0x232a6f8, takes the input first, 0x143884): a tap on a choice prompt (+0x118 + 8 i,
+//                    the appended Accept prompt +0x140) = the dialog's own choose 0x739060(dialog, i); hold-to-confirm choices stay with the pad.
+//   radial menus:    CConsoleUIRadialMenu vt 0x230d6d8 (HandleInput 0x139b60; pushed by + as id 0xd, NPCs push 0xe..0x1d): segment under the
+//                    finger (PUI::Radial +0xa8 x 0x118: centre +0x4c, size +0x30, disabled +0xf0) = its own SetSelected 0x19fe7f0 + "selection
+//                    changed" 0x139770, then Accept (sub ring or panel). Tabs (what L / R do, 0x13a1d8..): index +0x44 + 0x137510, from the
+//                    front end's tab buttons (dm_tl2_ui_tab). The in-game panels (class Panel vt 0x2303d60: PanelEquipment 0x23036f8, Skills,
+//                    Quests, Merchant, ...) are hosted by it (+0x2d8, made by CreatePanel 0x13dfa0 from the segment's panel type; input vt+0x40
+//                    while state +0x30 = 1) and show their rows in the radial menu's two PUI::Lists (+0x240 left / +0x270 right, setters
+//                    0x13d0d0 / 0x13d190): a tap on a row = that panel's own focus move (PanelEquipment: active list +0x76 / +0x77, rebuild
+//                    vt+0x58, prompts 0x78030; others: refresh vt+0x48), a tap on the selected row = Accept into the panel's own handler.
+//                    dm_tl2_ui_open_panel(type) opens a panel straight away (+ then tab / segment / Accept, all the menu's own code).
+//   Not covered: custom-drawn grids (if a panel draws cells itself), drag = list scroll, hold-to-confirm dialog choices.
 //
 // "A menu is open" (dm_tl2_menu_open, published every npad read; clicks happen only while it holds, never in plain gameplay): the console UI
 // manager (static main+0x74cfe70, GOT 0x23a3590) keeps its menu stack at +0x58 (array) with the top index at +0x60 (-1 = empty; pop
@@ -42,7 +54,8 @@
 //   DM_TL2_POINTER=1   dm_tl2_ui_tap(x, y) (fractions of the game picture, any thread) queues a click; the npad read (the game's input
 //                      update 0x13fd40 -> 0x13ea60, main thread, right before the game dispatches its own input events) performs it.
 //   DM_TL2_UIDUMP=1    the file dm/ui-dump-now makes dm/tl2-ui-dump.tsv (visible PUI elements + the menu stack) and is deleted; =2 hidden
-//                      elements too. A file dm/ui-tap-now holding "x y" queues a click (test without the front end; checked every 30 polls).
+//                      elements too. A file dm/ui-tap-now holding "x y" queues a click (test without the front end; checked every 30 polls),
+//                      dm/ui-panel-now "type" opens that panel (dm_tl2_ui_open_panel), dm/ui-tab-now "+1" / "-1" switches the radial tab.
 #ifdef DM_GAME_TL2
 #include "hle.h"
 #include "dm.h"
@@ -68,8 +81,20 @@ enum {
     B_ENABLED = 0xc3, B_HILITE = 0xc4,
     F_SETSEL = 0x1a02460, F_SETHI = 0x1a05020, F_DISPATCH = 0x143800, VT_UIMGR = 0x230d7f0,
     VT_MAIN = 0x230ddb8, VT_NETWORK = 0x2309e28, VT_CREATE = 0x232b008, VT_OPTIONS = 0x23043d8, VT_INVITE = 0x232a938, VT_PARTY = 0x232b2e8,
-    EV_ACCEPT = 1, EV_LEFT = 4, EV_RIGHT = 5,
+    EV_ACCEPT = 1, EV_LEFT = 4, EV_RIGHT = 5, EV_PLUS = 0xe,
     MAX_EL = 4096, MAX_DEPTH = 48,
+    // radial menus + the in-game panels they host (docs/tl2/TL2_PORT.md "Радиальные меню и панели")
+    VT_RADIAL = 0x230d6d8, VT_START = 0x2304300, VT_DIALOG = 0x232a6f8, VT_EQUIP = 0x23036f8,
+    F_RADIAL_INPUT = 0x139b60, F_START_PRESS = 0xbfd40, F_DLG_DTOR = 0x737400, F_EQ_INPUT = 0x802d0, F_EQ_REBUILD = 0x81530,
+    F_RA_SETSEL = 0x19fe7f0, F_RM_CHANGED = 0x139770, F_RM_TAB = 0x137510, F_RM_CLOSEPANEL = 0x13b850, F_SOUND = 0x113f00,
+    F_DLG_CHOOSE = 0x739060, F_PANEL_LSEL = 0x13d0d0, F_PANEL_RSEL = 0x13d190, F_EQ_PROMPTS = 0x78030,
+    R_TYPE = 0x2c, R_STATE = 0x30, R_TABS = 0x38, R_NTABS = 0x40, R_TAB = 0x44, R_NODE = 0x48, R_PUI = 0x78, R_TABSOK = 0x22e,
+    R_LISTS = 0x238, R_LLIST = 0x240, R_RLIST = 0x270, R_PANEL = 0x2d8,
+    RA_SEG = 0xa8, RA_SEGEND = 0xb0, RA_SEL = 0xc0, SEG_STRIDE = 0x118, SEG_SIZE = 0x30, SEG_POS = 0x4c, SEG_OFF = 0xf0,
+    N_STRIDE = 0x40, N_TYPE = 4, N_VALID = 0x18, N_SUB = 0x20, TAB_STRIDE = 0x18, TAB_NODE = 0x10,
+    D_MODE = 0x178, D_ELEM = 0x118, D_ELEM_A = 0x140, D_SINGLE = 0x138, D_ACT = 0x240, D_N = 0x250,
+    PE_HAS_RIGHT = 0x74, PE_LEFT_ON = 0x76, PE_RIGHT_ON = 0x77,
+    SND_FOCUS = 0x50, SND_TAB = 0x5b,
 };
 static const struct { uint32_t off, n, w[14]; } k_sites[] = {
     {0x1a02460, 14, {0xf81e0ff3, 0xa9017bfd, 0x910043fd, 0xaa0003f3, 0x3100043f, 0x5400006a, 0x12800001, 0x14000005, 0xb9410668 /* ldr w8,[x19,#0x104] */,
@@ -90,6 +115,28 @@ static const struct { uint32_t off, n, w[14]; } k_sites[] = {
     {0x145830, 1, {0xb9805c18 /* ldrsw x24,[x0,#0x5c] */}}, {0x145890, 1, {0xf9404e68 /* ldr x8,[x19,#0x98] */}},   // MainMenu focus / buttons
     {0x739690, 8, {0xb9403808 /* ldr w8,[x0,#0x38] */, 0x34000268, 0xa9be4ff4, 0xa9017bfd, 0x910043fd, 0xb9803c08 /* ldrsw x8,[x0,#0x3c] */, 0x2a0103f4, 0xaa0003f3}},
     {0x114860, 8, {0xb9405808 /* ldr w8,[x0,#0x58] */, 0x34000268, 0xa9be4ff4, 0xa9017bfd, 0x910043fd, 0xb9805c08 /* ldrsw x8,[x0,#0x5c] */, 0x2a0103f4, 0xaa0003f3}},
+    // CConsoleUIRadialMenu HandleInput 0x139b60: state +0x30 (1 = its panel +0x2d8 has the input), PUI::Radial +0x78, node +0x48
+    {0x139b78, 1, {0xb9403008 /* ldr w8,[x0,#0x30] */}}, {0x139b94, 1, {0xf9403e80 /* ldr x0,[x20,#0x78] */}}, {0x139c04, 1, {0xf9416e80 /* ldr x0,[x20,#0x2d8] */}},
+    // its tab switch (L / R: 0x13a1d8 checks +0x22e, 0x13a1f8 count +0x40, 0x13a214 index +0x44) and the tab apply 0x137510 (tabs +0x38, node +0x48)
+    {0x13a1d8, 1, {0x3948ba88 /* ldrb w8,[x20,#0x22e] */}}, {0x13a1f8, 1, {0xb9404288 /* ldr w8,[x20,#0x40] */}}, {0x13a214, 1, {0xb9004688 /* str w8,[x20,#0x44] */}},
+    {0x137510, 4, {0xa9be4ff4, 0xa9017bfd, 0x910043fd, 0xf9403c08 /* ldr x8,[x0,#0x78] */}},
+    {0x137554, 1, {0xf9401e68 /* ldr x8,[x19,#0x38] */}}, {0x137558, 1, {0xb9804669 /* ldrsw x9,[x19,#0x44] */}}, {0x13756c, 1, {0xf9002668 /* str x8,[x19,#0x48] */}},
+    {0x139770, 6, {0xd10143ff, 0xa902cfff, 0xa9047bfd, 0x910103fd, 0xa901ffff, 0xaa0003f3}},   // RadialMenu selection changed
+    {0x13dfb4, 1, {0xf9416c00 /* ldr x0,[x0,#0x2d8] */}},   // CreatePanel 0x13dfa0 (panel type = node entry +4)
+    {0x13b850, 4, {0xf81e0ff3, 0xa9017bfd, 0x910043fd, 0xaa0003f3}},   // close the hosted panel (Back from a panel)
+    // panel lists hosted by the radial menu: 0x13d0d0 left +0x240 / 0x13d190 right +0x270, both behind +0x238
+    {0x13d0e8, 1, {0xf9411e88 /* ldr x8,[x20,#0x238] */}}, {0x13d0f0, 1, {0xf9412280 /* ldr x0,[x20,#0x240] */}}, {0x13d1b0, 1, {0xf9413a80 /* ldr x0,[x20,#0x270] */}},
+    // PUI::Radial: SetSelected 0x19fe7f0 (segments +0xa8..+0xb0 x 0x118, selected +0xc0, disabled +0xf0), Draw 0x19fce90 (size +0x30, centre +0x4c)
+    {0x19fe824, 1, {0xb940c008 /* ldr w8,[x0,#0xc0] */}}, {0x19fe86c, 1, {0x3943c108 /* ldrb w8,[x8,#0xf0] */}}, {0x19fe878, 1, {0xb900c009 /* str w9,[x0,#0xc0] */}},
+    {0x19fcf30, 1, {0xa94aa275 /* ldp x21,x8,[x19,#0xa8] */}}, {0x19fcfac, 1, {0xfd401b62 /* ldr d2,[x27,#0x30] */}}, {0x19fcfb4, 1, {0xfc44c364 /* ldur d4,[x27,#0x4c] */}},
+    // PanelEquipment HandleInput 0x802d0: +0x77 right list active, +0x74 has a right list (+0x76 left active); prompts 0x78030
+    {0x80368, 1, {0x3941dea8 /* ldrb w8,[x21,#0x77] */}}, {0x80370, 1, {0x3941d2a8 /* ldrb w8,[x21,#0x74] */}},
+    {0x78030, 4, {0xd10183ff, 0xf90013f7, 0xa90357f6, 0xa9044ff4}},
+    // CConsoleUIDialog (UI manager modal +0x50) HandleInput 0x738e90: mode +0x178, actions +0x240, count +0x250; choose 0x739060 (callback +0x270)
+    {0x738ea8, 1, {0xb9417808 /* ldr w8,[x0,#0x178] */}}, {0x738ec0, 1, {0xb9425268 /* ldr w8,[x19,#0x250] */}}, {0x738edc, 1, {0xb9424101 /* ldr w1,[x8,#0x240] */}},
+    {0x7390d8, 1, {0xf9413a88 /* ldr x8,[x20,#0x270] */}},
+    {0xbfd78, 1, {0x39016288 /* strb w8,[x20,#0x58] */}},   // StartMenu "press +" 0xbfd40
+    {0x113f00, 4, {0xd10183ff, 0xf90013f7, 0xa90357f6, 0xa9044ff4}},   // UI manager PlaySound(mgr, id)
 };
 
 static uint8_t *g_base; static size_t g_size; static int g_ok = -1, g_mode, g_dump;
@@ -124,6 +171,9 @@ static int setup(void) {
         rq(img(VT_MAIN)) != img(0x1457e0) || rq(img(VT_NETWORK)) != img(0x112ab0) || rq(img(VT_CREATE)) != img(0x75fde0) ||
         rq(img(VT_OPTIONS)) != img(0xc05f0) || rq(img(VT_INVITE)) != img(0x73bb10) || rq(img(VT_PARTY)) != img(0x766fa0)) {
         LOG("【红】[tl2ui] PUI vtables / GOT do not match: pointer / dump off"); return 0; }
+    if (rq(img(VT_RADIAL)) != img(F_RADIAL_INPUT) || rq(img(VT_START + 8)) != img(F_START_PRESS) || rq(img(VT_DIALOG)) != img(F_DLG_DTOR) ||
+        rq(img(VT_EQUIP + 0x40)) != img(F_EQ_INPUT) || rq(img(VT_EQUIP + 0x58)) != img(F_EQ_REBUILD)) {
+        LOG("【红】[tl2ui] radial / start / dialog / panel vtables do not match: pointer / dump off"); return 0; }
     e = getenv("DM_RUNTIME_DIR"); snprintf(g_dir, sizeof g_dir, "%s", e && *e ? e : "dm");
     LOG("[tl2ui] on: pointer %d, dump %d (PUI manager main+%#x), game input thread tid %d", g_mode, g_dump, P_MGR, (int)gettid());
     return g_ok = 1;
@@ -267,12 +317,133 @@ static int menu_holds(uint64_t menu, uint64_t p) {
     for (int i = 1; i < 0x80; i++) if (q[i] == p) return 1;
     return 0;
 }
+// ---- radial menus, their hosted panels, the modal dialog, the title screen
+static int32_t r32(uint64_t a) { int32_t v = 0; rd(a, &v, 4); return v; }
+static uint8_t r8(uint64_t a) { uint8_t v = 0; rd(a, &v, 1); return v; }
+static void sound(int id) { ((void (*)(uint64_t, int))img(F_SOUND))(img(U_MGR), id); }
+static void call1(uint32_t f, uint64_t a) { ((void (*)(uint64_t))img(f))(a); }
+static int is_text(uint64_t fn) { return fn >= img(0x40000) && fn < img(0x1f00000); }
+static int drawn_chain(uint64_t e) {   // the element and every parent drawn (+0x74), i.e. on screen
+    for (int d = 0; e && d < MAX_DEPTH; d++, e = rq(e + E_PARENT)) if (!r8(e + E_DRAWN)) return 0;
+    return 1;
+}
+static int elem_hit(uint64_t e, float x, float y) {
+    float r[4]; return e && drawn_chain(e) && rd(e + E_RECT, r, 16) && r[2] > r[0] && in_rect(r, x, y);
+}
+// Segment of the PUI::Radial under (x, y): its own box (centre +0x4c, size +0x30, canvas units, as Draw 0x19fce90 places it); else the
+// nearest enabled centre within 1.5 segment sizes (the ring's gaps). -1 none.
+static int radial_segment(uint64_t ra, float x, float y, int *nseg) {
+    uint64_t s0 = rq(ra + RA_SEG), s1 = rq(ra + RA_SEGEND); int n = s1 > s0 ? (int)((s1 - s0) / SEG_STRIDE) : 0; *nseg = n;
+    if (n <= 0 || n > 64) return -1;
+    int best = -1; float bd = 1e30f;
+    for (int i = 0; i < n; i++) {
+        uint64_t s = s0 + (uint64_t)i * SEG_STRIDE; float wh[2], c[2];
+        if (!rd(s + SEG_SIZE, wh, 8) || !rd(s + SEG_POS, c, 8) || r8(s + SEG_OFF)) continue;
+        float dx = x - c[0], dy = y - c[1], d = dx * dx + dy * dy, lim = 1.5f * fmaxf(wh[0], wh[1]);
+        if (fabsf(dx) <= wh[0] * .5f && fabsf(dy) <= wh[1] * .5f) return i;
+        if (d < bd && d <= lim * lim) { bd = d; best = i; }
+    }
+    return best;
+}
+// The radial menu's own selection move (what its Left / Right / stick code does: PUI::Radial SetSelected, then RadialMenu "selection
+// changed" 0x139770 = details + panel preview, focus sound)
+static void radial_select(uint64_t menu, int seg) {
+    uint64_t ra = rq(menu + R_PUI); int cur = r32(ra + RA_SEL);
+    if (cur == seg) return;
+    ((void (*)(uint64_t, int))img(F_RA_SETSEL))(ra, seg);
+    if (r32(ra + RA_SEL) != cur) { call1(F_RM_CHANGED, menu); sound(SND_FOCUS); }
+}
+// Tab k of a radial menu, as its own L / R code does it (0x13a1f8..0x13a2b8: index +0x44, then 0x137510, sound 0x5b)
+static int radial_tab(uint64_t menu, int k) {
+    int n = r32(menu + R_NTABS);
+    if (!r8(menu + R_TABSOK) || n < 2 || k < 0 || k >= n) return 0;
+    if (r32(menu + R_TAB) == k && rq(menu + R_NODE) == rq(rq(menu + R_TABS) + (uint64_t)k * TAB_STRIDE + TAB_NODE)) return 1;
+    *(volatile int32_t *)(uintptr_t)(menu + R_TAB) = k;
+    call1(F_RM_TAB, menu); sound(SND_TAB);
+    return 1;
+}
+static int panel_is_equipment(uint64_t panel) { return panel && rq(rq(panel) + 0x40) == img(F_EQ_INPUT); }
+// Row r of a list hosted by the radial menu (right = the +0x270 list): the panel's own focus move. PanelEquipment keeps which list is
+// active (+0x76 left / +0x77 right, both written as a halfword by its Left / Right code 0x80420 / 0x8058c) and rebuilds after a move (vt+0x58
+// 0x81530, prompts 0x78030); the other panels read the lists' selection and refresh through vt+0x48 (what RadialMenu 0x139770 calls).
+static void panel_row(uint64_t menu, uint64_t panel, int right, int row, int sel) {
+    uint64_t pvt = rq(panel);
+    if (panel_is_equipment(panel)) {
+        int right_on = !r8(panel + PE_LEFT_ON) && r8(panel + PE_RIGHT_ON) && r8(panel + PE_HAS_RIGHT);
+        if (right && !right_on && r8(panel + PE_HAS_RIGHT)) { *(volatile uint16_t *)(uintptr_t)(panel + PE_LEFT_ON) = 0x100; LOG("[tl2ui]   panel: right list made active (its Right code)"); }
+        else if (!right && right_on) { *(volatile uint16_t *)(uintptr_t)(panel + PE_LEFT_ON) = 1; LOG("[tl2ui]   panel: left list made active (its Left code)"); }
+    }
+    if (row != sel) ((int (*)(uint64_t, int))img(right ? F_PANEL_RSEL : F_PANEL_LSEL))(menu, row);
+    if (panel_is_equipment(panel)) { call1(F_EQ_REBUILD, panel); call1(F_EQ_PROMPTS, panel); }
+    else { uint64_t f = rq(pvt + 0x48); if (is_text(f)) ((void (*)(uint64_t))(uintptr_t)f)(panel); }
+    sound(SND_FOCUS);
+}
+static int radial_click(uint64_t menu, float ux, float uy, int lbest, int lrow) {
+    uint64_t ra = rq(menu + R_PUI), panel = rq(menu + R_PANEL); int state = r32(menu + R_STATE);
+    if (!ra || rq(ra) != img(P_VT_RADIAL)) { LOG("[tl2ui]   radial menu %#llx without its PUI::Radial", (unsigned long long)menu); return 1; }
+    uint64_t lists = rq(menu + R_LISTS), ll = lists ? rq(menu + R_LLIST) : 0, rl = lists ? rq(menu + R_RLIST) : 0;
+    if (lbest >= 0 && (g_el[lbest].a == ll || g_el[lbest].a == rl)) {   // a panel list row
+        int right = g_el[lbest].a == rl, sel = g_el[lbest].sel;
+        LOG("[tl2ui]   radial menu (type %d, state %d, panel vt main+%#llx): %s list row %d of %d (selected %d)", r32(menu + R_TYPE), state,
+            (unsigned long long)(panel ? rq(panel) - img(0) : 0), right ? "right" : "left", lrow, g_el[lbest].rows, sel);
+        if (state != 1) {   // the panel is only previewed: enter it as Accept on the ring does (leaf segment -> panel vt+0x38 / +0x20)
+            dispatch(EV_ACCEPT, "enter the panel");
+            if (r32(menu + R_STATE) != 1) { LOG("[tl2ui]   the panel did not take the input: nothing more"); return 1; }
+            panel = rq(menu + R_PANEL);
+        }
+        int was_right = panel_is_equipment(panel) && !r8(panel + PE_LEFT_ON) && r8(panel + PE_RIGHT_ON);
+        if (lrow == sel && (!panel_is_equipment(panel) || was_right == right)) { dispatch(EV_ACCEPT, "Accept on the selected row (the panel's own Accept)"); return 1; }
+        panel_row(menu, panel, right, lrow, sel);
+        LOG("[tl2ui]   selected (details refreshed); tap it again to activate");
+        return 1;
+    }
+    if (lbest >= 0) return 0;   // a list the radial menu does not host: the generic list path
+    int nseg, seg = radial_segment(ra, ux, uy, &nseg);
+    if (seg < 0) {
+        float r[4] = {0}; rd(ra + E_RECT, r, 16);
+        LOG("[tl2ui]   radial menu: no segment under %.0f,%.0f (%d segments, radial rect %.0f,%.0f,%.0f,%.0f)", ux, uy, nseg, r[0], r[1], r[2], r[3]);
+        return 0;   // another list / a button: the generic path below
+    }
+    if (state == 1) { call1(F_RM_CLOSEPANEL, menu); LOG("[tl2ui]   panel closed (its Back path 0x13b850)"); }
+    LOG("[tl2ui]   radial menu (type %d, tab %d/%d): segment %d of %d (selected %d)", r32(menu + R_TYPE), r32(menu + R_TAB), r32(menu + R_NTABS), seg, nseg, r32(ra + RA_SEL));
+    radial_select(menu, seg);
+    if (r32(ra + RA_SEL) != seg) { LOG("[tl2ui]   the radial refused the segment (disabled)"); return 1; }
+    dispatch(EV_ACCEPT, "Accept on the segment (the radial menu's own: sub ring or panel)");
+    return 1;
+}
+// The UI manager's modal dialog (+0x50, CConsoleUIDialog): its choices are the prompt elements +0x118 + 8 i (one-prompt layout +0x138 = 1: the
+// first), the appended Accept prompt +0x140 (built by 0x7374e0); choosing = 0x739060(dialog, i), what its HandleInput does for an Accept
+// choice or in mode +0x178 != 0. Hold-to-confirm choices (mode 0, not Accept) are left to the pad on purpose.
+static int dialog_click(uint64_t dlg, float ux, float uy) {
+    int n = r32(dlg + D_N), mode = r32(dlg + D_MODE), hit = -1;
+    if (n <= 0 || n > 8) { LOG("[tl2ui] modal dialog %#llx: %d choices, nothing", (unsigned long long)dlg, n); return 1; }
+    for (int i = 0; i < n && hit < 0; i++) {
+        int act = r32(dlg + D_ACT + 4ull * i);
+        uint64_t e = (act == 1 && i == n - 1 && drawn_chain(rq(dlg + D_ELEM_A))) ? rq(dlg + D_ELEM_A) : i < 4 ? rq(dlg + D_ELEM + 8ull * i) : 0;
+        if (elem_hit(e, ux, uy)) hit = i;
+    }
+    if (hit < 0 && n == 1) hit = 0;   // a one-choice prompt (OK): anywhere
+    if (hit < 0) { LOG("[tl2ui] modal dialog %#llx: tap %.0f,%.0f on none of its %d choices", (unsigned long long)dlg, ux, uy, n); return 1; }
+    int act = r32(dlg + D_ACT + 4ull * hit);
+    if (mode == 0 && act != 1) { LOG("[tl2ui] modal dialog: choice %d (action %d) is hold-to-confirm: left to the pad", hit, act); return 1; }
+    LOG("[tl2ui] modal dialog %#llx: choice %d of %d (action %d, mode %d): the dialog's own choose 0x739060", (unsigned long long)dlg, hit, n, act, mode);
+    ((void (*)(uint64_t, int))img(F_DLG_CHOOSE))(dlg, hit);
+    return 1;
+}
+
 static void click(float fx, float fy) {
     int top; uint64_t menu = top_menu(&top);
-    if (!menu) { LOG("[tl2ui] tap %.3f,%.3f: no menu on the console UI stack (top %d): nothing", fx, fy, top); return; }
-    uint64_t vt = rq(menu);
     float cw, ch; int n = snapshot(0, &cw, &ch);
     float ux = fx * cw, uy = fy * ch; int best = -1, row = -1, radial = -1;
+    uint64_t modal = rq(img(U_MGR) + U_MODAL);
+    if (modal && r8(modal + E_DRAWN) && rq(modal) == img(VT_DIALOG)) { dialog_click(modal, ux, uy); return; }   // HandleInput 0x143884: the modal first
+    if (!menu) { LOG("[tl2ui] tap %.3f,%.3f: no menu on the console UI stack (top %d): nothing", fx, fy, top); return; }
+    uint64_t vt = rq(menu);
+    if (vt == img(VT_START)) {   // title "press +": its HandleInput is empty; the + of a controller reaches it as vt+8 (0x13eea0 -> 0xbfd40)
+        LOG("[tl2ui] tap %.3f,%.3f on the title screen: its own \"press +\" 0xbfd40 for player 0", fx, fy);
+        ((int (*)(uint64_t, int))img(F_START_PRESS))(menu, 0);
+        return;
+    }
     for (int i = 0; i < n; i++) {
         const el *e = &g_el[i];
         if (e->kind == K_LIST) { int r = list_row_at(e, ux, uy); if (r >= 0 && (best < 0 || above(e, i, &g_el[best], best))) { best = i; row = r; } }
@@ -281,6 +452,10 @@ static void click(float fx, float fy) {
     }
     const char *mn = menu_name(vt);
     unsigned long long vto = (unsigned long long)(vt - img(0));
+    if (vt == img(VT_RADIAL)) {
+        LOG("[tl2ui] tap %.3f,%.3f = UI %.0f,%.0f on the radial menu %#llx", fx, fy, ux, uy, (unsigned long long)menu);
+        if (radial_click(menu, ux, uy, best >= 0 && g_el[best].kind == K_LIST ? best : -1, row)) return;
+    }
     if (best < 0) {
         LOG("[tl2ui] tap %.3f,%.3f = UI %.0f,%.0f, menu %s %#llx (vt main+%#llx): no button / list row under it%s", fx, fy, ux, uy, mn,
             (unsigned long long)menu, vto, radial >= 0 ? " (a radial menu: not handled)" : "");
@@ -317,13 +492,125 @@ static void click(float fx, float fy) {
     else dispatch(EV_ACCEPT, "Accept on the selected row");
 }
 
+// A radial node's entries (0x40 bytes: id +0, panel type +4 = CreatePanel 0x13dfa0's switch, valid while +0x18 != 0, sub ring +0x20)
+static int node_find(uint64_t node, int type, int *idx, int *sub) {
+    uint64_t a = rq(node);
+    for (int i = 0; a && i < 48; i++) {
+        uint64_t e = a + (uint64_t)i * N_STRIDE;
+        if (!rq(e + N_VALID)) break;
+        if (r32(e + N_TYPE) == type && !rq(e + N_SUB)) { *idx = i; *sub = -1; return 1; }
+        uint64_t s = rq(e + N_SUB), b = s ? rq(s) : 0;
+        for (int j = 0; b && j < 48; j++) {
+            uint64_t f = b + (uint64_t)j * N_STRIDE;
+            if (!rq(f + N_VALID)) break;
+            if (r32(f + N_TYPE) == type && !rq(f + N_SUB)) { *idx = i; *sub = j; return 1; }
+        }
+    }
+    return 0;
+}
 static void dump_stack(FILE *f) {
     int top; top_menu(&top); uint64_t st = rq(img(U_MGR) + U_STACK);
     fprintf(f, "# console UI stack top %d\n", top);
     for (int i = 0; i <= top && i < 64; i++) {
         uint64_t me = rq(st + 8ull * i), vt = rq(me);
         fprintf(f, "# stack %d: %#llx vt main+%#llx %s\n", i, (unsigned long long)me, (unsigned long long)(vt - img(0)), menu_name(vt));
+        if (vt != img(VT_RADIAL)) continue;
+        uint64_t ra = rq(me + R_PUI), panel = rq(me + R_PANEL), tabs = rq(me + R_TABS);
+        fprintf(f, "#   radial type %d state %d tab %d/%d tabs_ok %d node %#llx panel %#llx vt main+%#llx lists %#llx left %#llx right %#llx\n",
+                r32(me + R_TYPE), r32(me + R_STATE), r32(me + R_TAB), r32(me + R_NTABS), r8(me + R_TABSOK), (unsigned long long)rq(me + R_NODE),
+                (unsigned long long)panel, (unsigned long long)(panel ? rq(panel) - img(0) : 0), (unsigned long long)rq(me + R_LISTS),
+                (unsigned long long)rq(me + R_LLIST), (unsigned long long)rq(me + R_RLIST));
+        for (int k = 0; k < r32(me + R_NTABS) && k < 16; k++) {
+            uint64_t node = rq(tabs + (uint64_t)k * TAB_STRIDE + TAB_NODE), a = rq(node);
+            fprintf(f, "#   tab %d kind %d node %#llx types:", k, r32(tabs + (uint64_t)k * TAB_STRIDE), (unsigned long long)node);
+            for (int j = 0; a && j < 48 && rq(a + (uint64_t)j * N_STRIDE + N_VALID); j++)
+                fprintf(f, " %d%s", r32(a + (uint64_t)j * N_STRIDE + N_TYPE), rq(a + (uint64_t)j * N_STRIDE + N_SUB) ? "+" : "");
+            fputc('\n', f);
+        }
+        uint64_t s0 = rq(ra + RA_SEG), s1 = rq(ra + RA_SEGEND);
+        for (int j = 0; s1 > s0 && j < (int)((s1 - s0) / SEG_STRIDE) && j < 64; j++) {
+            uint64_t s = s0 + (uint64_t)j * SEG_STRIDE; float wh[2] = {0}, c[2] = {0}; rd(s + SEG_SIZE, wh, 8); rd(s + SEG_POS, c, 8);
+            fprintf(f, "#   segment %d centre %.1f,%.1f size %.1fx%.1f off %d%s\n", j, c[0], c[1], wh[0], wh[1], r8(s + SEG_OFF), j == r32(ra + RA_SEL) ? " (selected)" : "");
+        }
     }
+    uint64_t modal = rq(img(U_MGR) + U_MODAL);
+    if (modal && r8(modal + E_DRAWN)) {
+        int n = r32(modal + D_N);
+        fprintf(f, "# modal %#llx vt main+%#llx mode %d choices %d:", (unsigned long long)modal, (unsigned long long)(rq(modal) - img(0)), r32(modal + D_MODE), n);
+        for (int i = 0; i < n && i < 8; i++) fprintf(f, " %d", r32(modal + D_ACT + 4ull * i));
+        fputc('\n', f);
+    }
+}
+
+// ---- requests from the front end (any thread): open a panel of the in-game radial menu, switch the radial menu's tab
+static _Atomic int g_req_panel = -1, g_req_tab;   // panel type (CreatePanel 0x13dfa0 numbering), tab delta
+int dm_tl2_ui_open_panel(int type);
+int dm_tl2_ui_open_panel(int type) {
+    static int mode = -1; if (mode < 0) { const char *e = getenv("DM_TL2_POINTER"); mode = e && *e ? atoi(e) : 0; }
+    if (g_ok == 0 || mode <= 0 || type < 0 || type > 0x40) return 0;
+    atomic_store_explicit(&g_req_panel, type, memory_order_release);
+    return 1;
+}
+int dm_tl2_ui_tab(int delta);
+int dm_tl2_ui_tab(int delta) {
+    if (g_ok <= 0 || g_mode <= 0 || !delta || !atomic_load_explicit(&g_menu_open, memory_order_acquire)) return 0;
+    atomic_store_explicit(&g_req_tab, delta, memory_order_release);
+    return 1;
+}
+static struct { int type, step, sub; uint64_t t0, t1; } g_op = {-1, 0, -1, 0, 0};
+static void tab_step(int delta) {
+    int top; uint64_t menu = top_menu(&top);
+    if (!menu || rq(menu) != img(VT_RADIAL)) { LOG("[tl2ui] tab %+d: the top menu is not a radial menu (%s): nothing", delta, menu ? menu_name(rq(menu)) : "-"); return; }
+    int n = r32(menu + R_NTABS), k = ((r32(menu + R_TAB) + delta) % n + n) % n;
+    if (n < 2 || !r8(menu + R_TABSOK)) { LOG("[tl2ui] tab %+d: this radial menu has %d tabs (switch %s)", delta, n, r8(menu + R_TABSOK) ? "on" : "off"); return; }
+    LOG("[tl2ui] tab %+d: %d -> %d of %d (the radial menu's own L / R code)", delta, r32(menu + R_TAB), k, n);
+    radial_tab(menu, k);
+}
+static void op_end(const char *what) { LOG("[tl2ui] open panel type %d: %s (%.0f ms)", g_op.type, what, (now_ns() - g_op.t0) / 1e6); g_op.type = -1; }
+// Open panel type T: the + button's own event to the UI manager when no menu is up (it pushes the game radial menu 0xd, HandleInput
+// 0x143a5c), then in that radial menu: the tab holding a segment of type T (its own tab apply), that segment (its own selection) and Accept.
+static void op_step(void) {
+    if (g_op.type < 0) return;
+    if (now_ns() - g_op.t0 > 3000000000ull) { op_end("timeout"); return; }
+    int top; uint64_t menu = top_menu(&top);
+    uint64_t modal = rq(img(U_MGR) + U_MODAL), load = rq(img(U_MGR) + U_LOADING);
+    if (modal && r8(modal + E_DRAWN)) { op_end("a dialog is up: nothing"); return; }
+    if (load && r8(load + E_DRAWN)) { op_end("loading screen: nothing"); return; }
+    if (!menu) {
+        if (g_op.step == 0) { dispatch(EV_PLUS, "open the game radial menu (+)"); g_op.step = 1; }
+        return;   // wait for the push (same frame normally)
+    }
+    if (rq(menu) != img(VT_RADIAL) || r32(menu + R_TYPE) != 0) { op_end(g_op.step ? "the + menu that came up is not the game radial menu" : "another menu is open: nothing"); return; }
+    uint64_t ra = rq(menu + R_PUI), tabs = rq(menu + R_TABS);
+    if (g_op.step == 1) { g_op.step = 2; g_op.t1 = now_ns(); return; }   // just pushed: let it lay out / open for a moment
+    if ((g_op.step == 2 || g_op.step == 3) && now_ns() - g_op.t1 < 150000000ull) return;
+    if (g_op.step == 3) {   // inside the sub ring: its entry
+        if (r32(menu + R_STATE) == 1) { op_end("opened"); return; }
+        LOG("[tl2ui] open panel type %d: sub ring entry %d", g_op.type, g_op.sub);
+        radial_select(menu, g_op.sub);
+        dispatch(EV_ACCEPT, "Accept on the entry");
+        op_end(r32(menu + R_STATE) == 1 ? "opened" : "Accept given, the panel did not open");
+        return;
+    }
+    int n = r32(menu + R_NTABS), k = -1, idx = -1, sub = -1;
+    int cur = r32(menu + R_TAB);
+    for (int t = 0; t < (n > 0 ? n : 1) && t < 16 && k < 0; t++) {
+        int kk = n > 0 ? (cur + t) % n : 0;
+        uint64_t node = n > 0 ? rq(tabs + (uint64_t)kk * TAB_STRIDE + TAB_NODE) : rq(menu + R_NODE);
+        if (node && node_find(node, g_op.type, &idx, &sub)) k = kk;
+    }
+    if (k < 0) { op_end("no segment of that type in the game radial menu's tabs"); return; }
+    if (r32(menu + R_STATE) == 1) call1(F_RM_CLOSEPANEL, menu);
+    if (n > 0 && (k != cur || rq(menu + R_NODE) != rq(tabs + (uint64_t)k * TAB_STRIDE + TAB_NODE))) {
+        if (!r8(menu + R_TABSOK)) { op_end("its tab is not the current one and tabs are locked"); return; }
+        *(volatile int32_t *)(uintptr_t)(menu + R_TAB) = k; call1(F_RM_TAB, menu); sound(SND_TAB);
+    }
+    LOG("[tl2ui] open panel type %d: tab %d segment %d%s", g_op.type, k, idx, sub >= 0 ? " (sub ring)" : "");
+    radial_select(menu, idx);
+    if (r32(ra + RA_SEL) != idx) { op_end("the segment is disabled"); return; }
+    dispatch(EV_ACCEPT, "Accept on the segment");
+    if (sub >= 0) { g_op.sub = sub; g_op.step = 3; g_op.t1 = now_ns(); return; }
+    op_end(r32(menu + R_STATE) == 1 ? "opened" : "Accept given, the panel did not open");
 }
 
 // ---- per npad read (hle_hid.c fill(), after the front end's buttons; the buttons are left alone)
@@ -345,6 +632,12 @@ void dm_tl2_ui_pump(uint64_t *buttons) {
             if (!open) LOG("[tl2ui] tap %.3f,%.3f: no menu open any more, dropped", x, y);
             else click(x, y);
         }
+        int d = atomic_exchange_explicit(&g_req_tab, 0, memory_order_acquire);
+        if (d && open) tab_step(d);
+        int pt = atomic_exchange_explicit(&g_req_panel, -1, memory_order_acquire);
+        if (pt >= 0) { if (g_op.type >= 0) LOG("[tl2ui] open panel type %d: replaced by type %d", g_op.type, pt);
+                       g_op.type = pt; g_op.step = 0; g_op.sub = -1; g_op.t0 = now_ns(); LOG("[tl2ui] open panel type %d requested", pt); }
+        op_step();
     }
     static unsigned tick; if (++tick % 30) return;
     char t[1200];
@@ -355,6 +648,10 @@ void dm_tl2_ui_pump(uint64_t *buttons) {
             float x = -1, y = -1; int ok = fscanf(f, "%f %f", &x, &y) == 2; fclose(f); remove(t);
             if (!ok || !dm_tl2_ui_tap(x, y)) LOG("[tl2ui] %s: want \"x y\" in 0..1 while a menu is open", t);
         }
+        snprintf(t, sizeof t, "%s/ui-panel-now", g_dir); f = fopen(t, "r");   // "type": open that panel of the game radial menu
+        if (f) { int v = -1, ok = fscanf(f, "%d", &v) == 1; fclose(f); remove(t); if (!ok || !dm_tl2_ui_open_panel(v)) LOG("[tl2ui] %s: want a panel type", t); }
+        snprintf(t, sizeof t, "%s/ui-tab-now", g_dir); f = fopen(t, "r");     // "+1" / "-1": the radial menu's tab
+        if (f) { int v = 0, ok = fscanf(f, "%d", &v) == 1; fclose(f); remove(t); if (!ok || !dm_tl2_ui_tab(v)) LOG("[tl2ui] %s: want +1 / -1 while a menu is open", t); }
     }
 }
 #endif

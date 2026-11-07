@@ -65,6 +65,8 @@ public class DmActivity extends Activity implements SurfaceHolder.Callback, Disp
     static native void nativeFrameStats(float[] out);   // [DOOM] {fps, mean ms, max ms, GPU ms} over the last 0.5 s
     static native void nativeTouch(int n, int[] ids, float[] xs, float[] ys);
     static native boolean nativeTl2UiTap(float x, float y);   // [TL2] hle_tl2_ui.c: tap on a console menu item (picture fractions); false = not taken
+    static native boolean nativeTl2OpenPanel(int type);   // [TL2] hle_tl2_ui.c: open an in-game panel (0 inventory, 7 skills, 9 stats, 12 quests) the game's own way
+    static native boolean nativeTl2UiTab(int delta);      // [TL2] hle_tl2_ui.c: the radial menu's tab -1 / +1 (its own L / R code)
     static native boolean nativeTl2MenuOpen();                // [TL2] a console menu / panel is up (published by the game's input thread)
     static native void nativeSetDrs(boolean on);   // [XC2] dynamic resolution on / off, live (hle_xc2.c)
     static native void nativeFocus(int ev);

@@ -651,6 +651,29 @@ JNIEXPORT jboolean JNICALL Java_com_xiaoboluo_d2r_DmActivity_nativeTl2MenuOpen(J
 #endif
 }
 
+// [TL2] D2R-style panel buttons (hle_tl2_ui.c dm_tl2_ui_open_panel): open the in-game panel of that type (RadialMenu CreatePanel 0x13dfa0
+// numbering: 0 inventory / equipment, 7 skills, 9 character stats, 0xc quests) through the game's own + menu, tab, segment and Accept.
+// Java: `static native boolean nativeTl2OpenPanel(int type);` -> false while DM_TL2_POINTER is off.
+JNIEXPORT jboolean JNICALL Java_com_xiaoboluo_d2r_DmActivity_nativeTl2OpenPanel(JNIEnv *env, jclass cls, jint type) {
+    (void)env; (void)cls;
+#ifdef DM_GAME_TL2
+    int dm_tl2_ui_open_panel(int type); return dm_tl2_ui_open_panel(type) ? JNI_TRUE : JNI_FALSE;
+#else
+    (void)type; return JNI_FALSE;
+#endif
+}
+
+// [TL2] The radial menu's tab one step left (-1) / right (+1), as its own L / R code (hle_tl2_ui.c dm_tl2_ui_tab).
+// Java: `static native boolean nativeTl2UiTab(int delta);` -> false while DM_TL2_POINTER is off or no menu is open.
+JNIEXPORT jboolean JNICALL Java_com_xiaoboluo_d2r_DmActivity_nativeTl2UiTab(JNIEnv *env, jclass cls, jint delta) {
+    (void)env; (void)cls;
+#ifdef DM_GAME_TL2
+    int dm_tl2_ui_tab(int delta); return dm_tl2_ui_tab(delta) ? JNI_TRUE : JNI_FALSE;
+#else
+    (void)delta; return JNI_FALSE;
+#endif
+}
+
 // [front] The unified front end (frontend-common, docs/FRONTEND_UNIFIED.md); the same names and signatures as nx2android's front_android.c and DOOM
 // Eternal's branch. nativeHold: the pause menu is open: the game is held as the Switch holds it behind HOME (hle_hold.c: graphics, audio, guest clock);
 // the Java side stops sending input. nativeQuit: the graceful exit (hle_lifecycle.c dm_host_shutdown: audio and graphics stopped, then _exit(0)).
