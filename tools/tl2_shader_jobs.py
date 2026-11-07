@@ -84,6 +84,11 @@ def main():
         meta[k] = {'stage': st, 'code': len(code), 'ctrl': len(ctl), 'kl': own if 0x760 <= own < 0x880 else 0x880, 'c1': c1t - c1o, 'src': p.name,
                    'xfb': xfb, 'progs': 0, 'next': set()}
         rep[f'{st} control {len(ctl):#x} c1 {c1t - c1o}'] += 1
+        if st == 'cs':   # compute local size / shared bytes (control +0x748 / +0x754, as xc2_shader_jobs.py). Without them the translator declares
+            # LocalSize 1,1,1 and the skin*_c dispatches (64 threads a group: CTAID.X * 64 + TID.X) skin one vertex in 64: bind pose + spikes
+            lc = list(struct.unpack_from('<3I', ctl, 0x748)); sh, = struct.unpack_from('<I', ctl, 0x754)
+            if not all(1 <= x <= 1024 for x in lc) or lc[0] * lc[1] * lc[2] > 1024 or sh > 49152: bad.append(f'{p.name}: local {lc} shared {sh}')
+            meta[k]['facts'] = {'local': lc, 'shared': (sh + 15) // 16 * 16}
     progs = []
     for name, (k, st) in sorted(byname.items()):
         if st == 'cs': progs.append((name, '-', '-', '-', k)); continue
@@ -108,10 +113,12 @@ def main():
     dz = os.environ.get('TL2_DEPTH_ZERO', '1') != '0'
     with open(out / 'shader_facts.tsv', 'w', newline='\n') as fp:
         fp.write('# TL2 translation-query facts (tools/tl2_shader_jobs.py): key <TAB> facts JSON merged into the translator job;\n'
-                 '# depth_zero: the game runs NVN_DEPTH_MODE_NEAR_IS_ZERO (main+0x199e50c), so vertex shaders keep z unchanged\n')
-        if dz:
-            for k in sorted(meta):
-                if meta[k]['stage'] in ('vs', 'gs'): fp.write(k + '\t' + json.dumps({'depth_zero': True}, separators=(',', ':')) + '\n')
+                 '# depth_zero: the game runs NVN_DEPTH_MODE_NEAR_IS_ZERO (main+0x199e50c), so vertex shaders keep z unchanged;\n'
+                 '# local / shared: compute local size and shared bytes from the control section (+0x748 / +0x754)\n')
+        for k in sorted(meta):
+            f = dict(meta[k].get('facts') or {})
+            if dz and meta[k]['stage'] in ('vs', 'gs'): f['depth_zero'] = True
+            if f: fp.write(k + '\t' + json.dumps(f, separators=(',', ':')) + '\n')
     with open(out / 'xfb.tsv', 'w', newline='\n') as fp:
         fp.write('# vertex shaders whose control section declares transform feedback: key, buffer, stride, location:components...\n')
         for k in sorted(xfbs):

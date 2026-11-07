@@ -20,7 +20,7 @@ $ADB shell "mkdir -p $R/romfs $R/dm/out $R/dm/shaders $R/drivers $R/logs"
 (cd $W/patched && $ADB push . $R/dm/out/ 2>&1 | tail -1)
 (cd $W/shaders-vk && $ADB push . $R/dm/shaders/ 2>&1 | tail -1)
 $ADB push ${DRIVER:-work/driver-assets/drivers/turnip27} $R/drivers/ 2>&1 | tail -1
-$ADB install -r src/work/TL2-port-debug.apk 2>&1 | tail -1
+$ADB install -r work/TL2-port-debug.apk 2>&1 | tail -1
 $ADB shell appops set org.torchlight2.port MANAGE_EXTERNAL_STORAGE allow
 for f in $(cd $W/romfs && find . -type f -printf '%s %P\n' | sort -n | cut -d' ' -f2-); do
   $ADB shell "mkdir -p '$R/romfs/$(dirname "$f")'" < /dev/null; big "$W/romfs/$f" "$R/romfs/$f" < /dev/null; done

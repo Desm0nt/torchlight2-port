@@ -220,8 +220,12 @@ enum {
     OP_X_RAST_DISCARD,             // p_flag                                        (SetRasterizerDiscard)
     OP_X_CLEAR_BUF,                // p_clear_buf                                   (ClearBuffer: CPU-visible, ordered like COPY_B2B)
     OP_X_FENCE_SYNC,               // sync_t * (the submit fences it; replay skips)  (CommandBufferFenceSync)
+    OP_X_DRAW_TEX,                 // p_draw_tex                                    (DrawTexture)
     OP_X_END_
 };
+// DrawTexture: the texture (handle: texture ID in the bound texture pool, sampler ID << 20) region s (texels) drawn into the region d (pixels)
+// of the bound colour target 0; regions are {x0, y0, x1, y1} as NVNdrawTextureRegion (nxnative nvn.h)
+typedef struct { uint64_t h; float d[4], s[4]; } p_draw_tex;
 typedef struct xbg_indirect { uint64_t arguments, count_address, index_address; int32_t primitive, index_type, max_count, stride; } xbg_indirect;   // index_type -1 = arrays
 typedef struct xbg_wait_event { uint64_t address; uint32_t mode, value; } xbg_wait_event;
 typedef struct xbg_typed_clear { p_clear_color color; int32_t scalar; } xbg_typed_clear;   // scalar: 0 float, 1 int, 2 uint

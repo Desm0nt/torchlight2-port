@@ -6142,6 +6142,32 @@ void copy_texture_buffer(const p_copy_b2t &request,bool to_buffer){preflight_cpu
         }
     }else im.gpu_written=true,provenance_write(im,__LINE__);
 }
+bool draw_tex_blit=false;   // set by draw_texture around its copy
+void copy_texture(const p_copy_t2t &p);
+// nvnCommandBufferDrawTexture (hle_nvn.c, OP_X_DRAW_TEX): the texture region (texels) drawn into the region of colour target 0 (pixels),
+// replayed as a texture copy (copy_texture: a filtered, format-converting blit when the sizes or formats differ). Blending, the channel
+// mask and the sampler's wrap modes are not applied: Torchlight II draws its opaque full-window frames this way. Mirrored regions are drawn
+// unmirrored (logged).
+void draw_texture(const p_draw_tex &a){
+    int id=int(uint32_t(a.h)&0xfffff);
+    if(!id || state.rt.n<1 || !state.rt.color[0]){static unsigned n=0;if(n++<8)xbg_logf("NVN DrawTexture skipped: texture %d, colour targets %d",id,int(state.rt.n));return;}
+    auto pool=textures.find(pool_key(&state.texture_pool));auto &table=pool==textures.end()?legacy_textures:pool->second;auto tex=table.find(id);
+    if(tex==table.end()){static unsigned n=0;if(n++<8)xbg_logf("NVN DrawTexture skipped: texture %d not registered",id);return;}
+    Image &s=get_image(&tex->second.texture,true),&d=get_image(state.rt.color[0],false);
+    auto rect=[](const float *r,uint32_t w,uint32_t h,NVNcopyRegion &o){
+        float x0=std::min(r[0],r[2]),x1=std::max(r[0],r[2]),y0=std::min(r[1],r[3]),y1=std::max(r[1],r[3]);
+        int ix0=std::clamp(int(std::lround(x0)),0,int(w)),ix1=std::clamp(int(std::lround(x1)),0,int(w)),iy0=std::clamp(int(std::lround(y0)),0,int(h)),iy1=std::clamp(int(std::lround(y1)),0,int(h));
+        o=NVNcopyRegion{};o.xoffset=ix0;o.yoffset=iy0;o.zoffset=0;o.width=ix1-ix0;o.height=iy1-iy0;o.depth=1;return o.width>0 && o.height>0;};
+    p_copy_t2t c{};c.src=&tex->second.texture;c.dst=state.rt.color[0];
+    if(tex->second.has_view){c.sv=tex->second.view;c.has_sv=1;}
+    if(state.rt.has_cview[0]){c.dv=state.rt.cview[0];c.has_dv=1;}
+    if(!rect(a.s,s.width,s.height,c.sr) || !rect(a.d,d.width,d.height,c.dr)){static unsigned n=0;if(n++<8)xbg_logf("NVN DrawTexture skipped: empty region");return;}
+    c.flags=1;   // NVN_COPY_FLAGS_LINEAR_FILTER_BIT: a scaled draw samples like the default linear sampler
+    {static unsigned n=0;if(n++<16)xbg_logf("NVN DrawTexture tex %d (%ux%u fmt %#x) %d,%d %dx%d -> rt %ux%u fmt %#x %d,%d %dx%d%s",id,s.width,s.height,c.src->d.format,
+        c.sr.xoffset,c.sr.yoffset,c.sr.width,c.sr.height,d.width,d.height,c.dst->d.format,c.dr.xoffset,c.dr.yoffset,c.dr.width,c.dr.height,
+        (a.s[0]>a.s[2])!=(a.d[0]>a.d[2]) || (a.s[1]>a.s[3])!=(a.d[1]>a.d[3])?" (mirrored: drawn unmirrored)":"");}
+    draw_tex_blit=true;copy_texture(c);draw_tex_blit=false;
+}
 void copy_texture(const p_copy_t2t &p){preflight_cpu_reads();Image &s=get_image(p.src,true),&d=get_image(p.dst,false);{static unsigned n=0;if(n++<60)xbg_logf("NVN COPYT2T src=%llu fmt=%#x %ux%ux%u L%u lv%u -> dst=%llu fmt=%#x %ux%u L%u lv%u decoded=%d/%d region=%d,%d,%d %dx%dx%d -> %d,%d,%d sv=%d/%u/%u dv=%d/%u/%u",(unsigned long long)p.src->serial,p.src->d.format,s.width,s.height,s.depth,s.layers,s.levels,(unsigned long long)p.dst->serial,p.dst->d.format,d.width,d.height,d.layers,d.levels,int(s.decoded),int(d.decoded),p.sr.xoffset,p.sr.yoffset,p.sr.zoffset,p.sr.width,p.sr.height,p.sr.depth,p.dr.xoffset,p.dr.yoffset,p.dr.zoffset,int(p.has_sv),p.has_sv?p.sv.base_level:0,p.has_sv?p.sv.min_layer:0,int(p.has_dv),p.has_dv?p.dv.base_level:0,p.has_dv?p.dv.min_layer:0);}
     if(p.has_sv && p.sv.set_format)(void)s.view_format(&p.sv);
     if(p.has_dv && p.dv.set_format)(void)d.view_format(&p.dv);
@@ -6184,6 +6210,7 @@ void copy_texture(const p_copy_t2t &p){preflight_cpu_reads();Image &s=get_image(
         bitcopy=sb>0 && db>0 && sbw==1 && sbh==1 && dbw==1 && dbh==1 && s.samples==VK_SAMPLE_COUNT_1_BIT;
         {static unsigned n=0;if(bitcopy && n++<8)xbg_logf("NVN COPYT2T converting blit across formats %#x -> %#x",s.source.d.format,d.source.d.format);}
     }
+    if(draw_tex_blit && s.fmt!=d.fmt && !s.decoded && !d.decoded && s.aspects==VK_IMAGE_ASPECT_COLOR_BIT && d.aspects==VK_IMAGE_ASPECT_COLOR_BIT)bitcopy=true;   // [TL2] DrawTexture: the window format differs from the texture
     need((uint32_t(p.flags)&~3u)==0 && (s.fmt==d.fmt || bitcopy) && s.aspects==d.aspects && s.samples==d.samples,"Texture copy requires matching formats/aspects and supported flags");
 #else
     need((uint32_t(p.flags)&~3u)==0 && s.fmt==d.fmt && s.aspects==d.aspects && s.samples==d.samples,"Texture copy requires matching formats/aspects and supported flags");
@@ -6541,6 +6568,7 @@ void execute(const uint8_t *pc,unsigned depth,uint64_t &budget){
         case OP_X_PRIM_RESTART:state.restart=payload<p_prim_restart>(p,n);break;
         case OP_X_DEPTH_CLAMP:state.depth_clamp=payload<p_flag>(p,n).on!=0;break;
         case OP_X_RAST_DISCARD:state.rast_discard=payload<p_flag>(p,n).on!=0;break;
+        case OP_X_DRAW_TEX:draw_texture(payload<p_draw_tex>(p,n));break;
         case OP_X_FENCE_SYNC:break;   // fenced by the submit (hle_nvn.c nvnQueueSubmitCommands); nothing to replay
         case OP_X_CLEAR_BUF:{auto a=payload<p_clear_buf>(p,n);need(a.addr && !(a.addr&3) && a.size<=256ull*1024*1024,"Invalid buffer clear");uint64_t bytes=a.size&~uint64_t(3);if(!bytes)break;
             // Ordered like the CPU path of COPY_B2B: earlier GPU results in the range are resolved first, then the CPU fill is the new content

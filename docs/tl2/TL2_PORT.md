@@ -68,8 +68,27 @@ bash tools/run.sh <имя> [сек] [ENV=…]                                # �
 ```
 Данные на телефоне: `/sdcard/Download/Torchlight2Mobile/{romfs, dm/out, dm/shaders, dm/env, drivers, logs}`.
 
+## Первые запуски (07.11.2026, Mi 14 Ultra, Turnip 27)
+- r2: первый кадр рисуется `nvnCommandBufferDrawTexture` (у нас не было) → «present a texture never rendered». Сделано: запись
+  `OP_X_DRAW_TEX` (hle_nvn.c) и `draw_texture` в xbg_game.cpp — хэндл из текущего пула, blit с фильтрацией и конвертацией формата
+  в colour target 0 (`draw_tex_blit` разрешает разные форматы). Блендинг и отражение регионов не учитываются (сплэш/меню непрозрачные).
+- r4: `nn::fs::IsSaveDataExisting(ApplicationId, Uid)` (main+0x1335e4) шёл в нативный fsp-srv — хук был только в hle_xc2.c.
+  Перенесены в hle_tl2.c: этот хук, `MountSaveDataReadOnly`, `ec::ShowShopApplicationInformation`, плюс по сверке импортов TL2 с
+  nxnative/nx2android (MIT): ldn после Initialize, `nifm::GetCurrentIpConfigInfo`, `socket::GAIStrError` / `SendTo(MsgFlag)` /
+  `Shutdown(ShutdownMethod)`, геттеры AudioIn, `account::AsyncContext::operator=`. os/util/mem/crypto из сверки не нужны: это код
+  SDK без сервисов, их не перехватывают и nxnative/nx2android. Сверка «по именам» должна учитывать все строки `"_Z…"` (макросы
+  SKF/SKD/SSF в hle_net.c) и гейты (хуки из hle_xc2.c в сборку tl2 не входят; `oe::Enter/LeaveExitRequestHandlingSection` — в hle_d3.c).
+- r6–r7: меню и создание персонажа, 60 fps (gpu ~12 мс, submit ~6 мс).
+- Скиннинг: TL2 скинит на GPU compute-шейдерами `skin1..4_c` (палитра костей — UBO 0 = c3, 64 байта на кость, `nVerts` в c3+0x4000;
+  s0 вход, s1 веса, s2 выход). Симптом: у всех персонажей, NPC и монстров нет анимаций, bind-поза, шипы из рук и рогов. Игра
+  анимирует нормально (хэш палитры меняется каждый бинд). Причина: `tl2_shader_jobs.py` не писал факты compute `local` / `shared`
+  (control +0x748 / +0x754), транслятор объявлял LocalSize 1,1,1, а шейдер считает индекс как CTAID.X * 64 + TID.X — скинилась
+  одна вершина из 64. Исправлено в tl2_shader_jobs.py (как xc2_shader_jobs.py), перевод заново: изменились только 4 cs.
+- Отладка по Wi-Fi adb: `work/bin/radb` (adb с переподключением, RADB_HOST=ip:port; ADB=…/radb для run.sh / shots.sh) и
+  `work/bin/shot` (скриншот, бинарно-безопасный). run.sh в конце закрывает игру — не запускать, пока на телефоне играют.
+
 ## Дальше
-1. Первый запуск на Mi 14 Ultra (Turnip 27): HLE-дыры, первый present, меню, FPS.
+1. Широкий экран 20:9 Hor+ и тач по D2R Mobile (в работе отдельно).
 2. Видео: MP4/H.264 через Android MediaCodec (сейчас ролики пропускаются).
 3. Тач: игра импортирует `GetTouchScreenState` — проверить, принимает ли меню тач (фронт D3 сейчас шлёт только пад).
 4. DLC Yapper (AOC 1), иконка, своя раскладка.

@@ -64,3 +64,4 @@ dm/gfx/tools/dmsh_xlate_*/obj/
 /tools/.runtime/
 /put-game-files-here/*
 !/put-game-files-here/README.txt
+dm/android/tl2/icon.png

@@ -1142,6 +1142,11 @@ NVN(nvnCommandBufferCopyTextureToTexture, void, NVNcommandBuffer *c, const NVNte
     p_copy_t2t *o = REC(c, OP_COPY_T2T, p_copy_t2t); o->src = snap_tex(s); o->dst = snap_tex(d);
     copy_view(&o->sv, &o->has_sv, sv); copy_view(&o->dv, &o->has_dv, dv); o->sr = *sr; o->dr = *dr; o->flags = flags;
 }
+// A textured rectangle into the bound colour target (no shader of the game's): Torchlight II draws its splash / UI frames to the window this way.
+// The handle is resolved at replay against the texture pool bound there, as bind_handles' IDs are (xbg_game.cpp draw_texture)
+NVN(nvnCommandBufferDrawTexture, void, NVNcommandBuffer *c, NVNtextureHandle h, const NVNdrawTextureRegion *d, const NVNdrawTextureRegion *s) {
+    p_draw_tex *r = REC(c, OP_X_DRAW_TEX, p_draw_tex); r->h = (uint64_t)h; memcpy(r->d, d, 16); memcpy(r->s, s, 16);
+}
 #ifdef DM_GAME_DOOM
 #define COPY_STRIDE_NOTE(c, f, st) (CB(c)->f = (int64_t)(st))   // [DOOM] GetCopyRowStride / GetCopyImageStride read them back
 #else
