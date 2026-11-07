@@ -626,6 +626,19 @@ JNIEXPORT jboolean JNICALL Java_com_xiaoboluo_d2r_DmActivity_nativeD3UiTap(JNIEn
 #endif
 }
 
+// [TL2] Tap on a console menu item (hle_tl2_ui.c, DM_TL2_POINTER): x / y = fractions of the game picture (0..1, top left origin; the
+// picture fills the view in both TL2 picture shapes). Queued only; the game's input thread steps the game's own focus to the item under
+// the point with the d-pad and presses A once the game shows it focused. Java: `static native boolean nativeTl2UiTap(float x, float y);`
+// -> false when DM_TL2_POINTER is off / not this build / the point is outside 0..1 (then the caller does what it did before, e.g. A).
+JNIEXPORT jboolean JNICALL Java_com_xiaoboluo_d2r_DmActivity_nativeTl2UiTap(JNIEnv *env, jclass cls, jfloat x, jfloat y) {
+    (void)env; (void)cls;
+#ifdef DM_GAME_TL2
+    int dm_tl2_ui_tap(float x, float y); return dm_tl2_ui_tap(x, y) ? JNI_TRUE : JNI_FALSE;
+#else
+    (void)x; (void)y; return JNI_FALSE;
+#endif
+}
+
 // [front] The unified front end (frontend-common, docs/FRONTEND_UNIFIED.md); the same names and signatures as nx2android's front_android.c and DOOM
 // Eternal's branch. nativeHold: the pause menu is open: the game is held as the Switch holds it behind HOME (hle_hold.c: graphics, audio, guest clock);
 // the Java side stops sending input. nativeQuit: the graceful exit (hle_lifecycle.c dm_host_shutdown: audio and graphics stopped, then _exit(0)).
