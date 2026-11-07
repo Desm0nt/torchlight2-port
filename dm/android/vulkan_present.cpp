@@ -274,7 +274,7 @@ bool record(VkCommandBuffer cmd,unsigned f,VkImage source,VkFormat format,uint32
 }
 }
 #ifdef DM_GAME_TL2
-extern "C" int (*dm_present_pillarbox)(void);   // [TL2] hle_tl2_wide.c registers it (translation thread, at the present); null = never
+extern "C" int (*dm_present_pillarbox)(void);   // [TL2] hle_tl2_wide.c registers it (translation thread, at the present): 0 none, 1 squeeze, 2 band 16:9, 3 band stretched
 // [TL2] hle_tl2_icons.c: the HUD action bar's icon rectangles (source pixels) to copy out of this frame, and the copied pixels after the
 // frame's fence. A host-visible buffer per flight; the copy is recorded into the present's own command buffer (the source is already in
 // TRANSFER_SRC_OPTIMAL for the blit), so it adds no wait; nothing is recorded unless a batch is due (at most 4 a second).
@@ -369,17 +369,21 @@ int present(void*,void*,VkImage source,VkFormat source_format,uint32_t width,uin
     // finished reading the image (synchronization validation: SYNC-HAZARD-WRITE-AFTER-READ).
     vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT,0,0,nullptr,0,nullptr,1,&barrier);
     double aw=w,ah=h;   // the shape the picture is shown at (normally the source's)
+    int bx=x,bw=w;      // the source columns shown (normally all of them)
 #ifdef DM_GAME_TL2
-    // [TL2] hle_tl2_wide.c: while a loading screen is up in widescreen, the W x 1080 window (its 1920x1080 UI canvas stretched to W) is
-    // shown at 16:9, centred with black side bars (pillarbox); squeezing back to 16:9 samples linearly when the format allows it
-    bool pillar=dm_present_pillarbox && w*9>h*16 && dm_present_pillarbox();
-    if(pillar)aw=h*16.0/9.0;
+    // [TL2] hle_tl2_wide.c, while a loading screen is up in widescreen: 1 = the whole W x 1080 window (its 1920 canvas stretched to W)
+    // squeezed to 16:9, 2 = only its centred 16:9 band (where the hybrid UI drew the loading art) at 16:9, 3 = that band stretched to the
+    // screen. Black side bars from the letterbox clear below; a squeeze / stretch samples linearly when the format allows it
+    int pmode=dm_present_pillarbox && w*9>h*16 ? dm_present_pillarbox() : 0;
+    bool pillar=pmode==1;
+    if(pmode==1)aw=h*16.0/9.0;
+    else if(pmode==2 || pmode==3){int band=std::min(w,int(std::lround(h*16.0/9.0)));bx=x+(w-band)/2;bw=band;if(pmode==2)aw=band;else pillar=true;}
 #endif
     double scale=std::min(double(extent.width)/aw,double(extent.height)/ah);int dw=std::max(1,int(aw*scale)),dh=std::max(1,int(ah*scale)),dx=(int(extent.width)-dw)/2,dy=(int(extent.height)-dh)/2;
     if(dx || dy || dw!=int(extent.width) || dh!=int(extent.height)){   // letterbox bars only where the blit leaves part of the image
         VkClearColorValue black{};vkCmdClearColorImage(cmd,images[index],VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,&black,1,&barrier.subresourceRange);
         barrier.oldLayout=barrier.newLayout;barrier.srcAccessMask=barrier.dstAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT;vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT,0,0,nullptr,0,nullptr,1,&barrier);}
-    VkImageBlit blit{};blit.srcSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};blit.dstSubresource=blit.srcSubresource;blit.srcOffsets[0]={x,y,0};blit.srcOffsets[1]={x+w,y+h,1};blit.dstOffsets[0]={dx,dy,0};blit.dstOffsets[1]={dx+dw,dy+dh,1};
+    VkImageBlit blit{};blit.srcSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};blit.dstSubresource=blit.srcSubresource;blit.srcOffsets[0]={bx,y,0};blit.srcOffsets[1]={bx+bw,y+h,1};blit.dstOffsets[0]={dx,dy,0};blit.dstOffsets[1]={dx+dw,dy+dh,1};
     // 最近邻不要求额外线性过滤能力。鸿蒙：游戏出图比屏幕小、要放大，格式支持时用线性，不然像素发硬、斜边锯齿。
     // Nearest needs no extra linear-filter support. HarmonyOS: the game image is smaller than the screen and gets upscaled; use linear when the format supports it, otherwise pixels look blocky and diagonals jagged.
     VkFilter filter=VK_FILTER_NEAREST;

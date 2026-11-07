@@ -6148,6 +6148,9 @@ void copy_texture(const p_copy_t2t &p);
 // replayed as a texture copy (copy_texture: a filtered, format-converting blit when the sizes or formats differ). Blending, the channel
 // mask and the sampler's wrap modes are not applied: Torchlight II draws its opaque full-window frames this way. Mirrored regions are drawn
 // unmirrored (logged).
+#ifdef DM_GAME_TL2
+extern "C" __attribute__((weak)) int dm_tl2_splash_band;   // hle_tl2_wide.c: nonzero in widescreen (weak: engine-only test builds)
+#endif
 void draw_texture(const p_draw_tex &a){
     int id=int(uint32_t(a.h)&0xfffff);
     if(!id || state.rt.n<1 || !state.rt.color[0]){static unsigned n=0;if(n++<8)xbg_logf("NVN DrawTexture skipped: texture %d, colour targets %d",id,int(state.rt.n));return;}
@@ -6162,6 +6165,16 @@ void draw_texture(const p_draw_tex &a){
     if(tex->second.has_view){c.sv=tex->second.view;c.has_sv=1;}
     if(state.rt.has_cview[0]){c.dv=state.rt.cview[0];c.has_dv=1;}
     if(!rect(a.s,s.width,s.height,c.sr) || !rect(a.d,d.width,d.height,c.dr)){static unsigned n=0;if(n++<8)xbg_logf("NVN DrawTexture skipped: empty region");return;}
+#ifdef DM_GAME_TL2
+    // [TL2] widescreen (hle_tl2_wide.c dm_tl2_splash_band): the boot splash (a 16:9 texture drawn over the whole window, or pinned to its
+    // left 16:9) goes into the window's centred 16:9 band, the rest cleared black, never stretched
+    {uint32_t bw=uint32_t(std::lround(d.height*16.0/9.0));
+     if(&dm_tl2_splash_band && dm_tl2_splash_band && d.width>bw+8 && uint64_t(c.sr.width)*9==uint64_t(c.sr.height)*16 && c.dr.xoffset==0 && c.dr.yoffset==0 && int64_t(c.dr.height)==int64_t(d.height) &&
+        (int64_t(c.dr.width)==int64_t(d.width) || int64_t(c.dr.width)==int64_t(bw))){
+         p_clear_color cc{};cc.index=0;cc.mask=0xf;cc.rgba[3]=1.f;clear_attachment(&cc,nullptr);
+         c.dr.xoffset=int((d.width-bw)/2);c.dr.width=bw;
+         static unsigned n=0;if(n++<8)xbg_logf("NVN DrawTexture [TL2 wide] 16:9 picture into the centred band %d..%d of the %ux%u window, black beside it",c.dr.xoffset,c.dr.xoffset+int(bw),d.width,d.height);}}
+#endif
     c.flags=1;   // NVN_COPY_FLAGS_LINEAR_FILTER_BIT: a scaled draw samples like the default linear sampler
     {static unsigned n=0;if(n++<16)xbg_logf("NVN DrawTexture tex %d (%ux%u fmt %#x) %d,%d %dx%d -> rt %ux%u fmt %#x %d,%d %dx%d%s",id,s.width,s.height,c.src->d.format,
         c.sr.xoffset,c.sr.yoffset,c.sr.width,c.sr.height,d.width,d.height,c.dst->d.format,c.dr.xoffset,c.dr.yoffset,c.dr.width,c.dr.height,
