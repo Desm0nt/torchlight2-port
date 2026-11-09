@@ -354,3 +354,40 @@ paused (...)` / `allowed again`.
 сдвинулся — обычный стик / мир. Проверка без фронта: файл `dm/map-now` («t» — переключить, «0/1/2» — этот режим). Лог: `[tl2map] on`,
 `[tl2map] mini|big map shown: … rect … = picture …`, `[tl2map] tap … on the map: toggle queued`, `[tl2map] map mode 1 -> 2 (big map …)`.
 Сверка слов 11 мест + GOT (vtable, id настроек); не та сборка → выкл. Возврат кнопкой «назад» не сделан (назад = меню фронта).
+
+## Совместимость с Mali / PowerVR и общие фиксы фреймворка (09.11.2026, ветка `tl2-mali-compat`; собрано, на устройстве не проверено)
+Своего Mali нет: проверено кодом, офлайн-тестами и по KB (`docs/port-kb` MALI/PVR/TEX/SYNC/APP/HLE, `port-common`).
+
+**«Чёрный экран при живом HUD» как в D3 (0.2.2–0.2.4):** у TL2 весь набор D3 уже есть и включается на не-Adreno сам —
+`DM_GFX_VTX_RETYPE` (1 не на Adreno, `vtx_retype_mode()`: `vendorID != 0x5143`), самотест d3-perf ключей (`DM_GFX_D3PERF=1`,
+`xbg_selftest.cpp`), `DM_GFX_DEPTH_FEEDBACK=0` не на Adreno, GVAL `DM_GFX_PASS_VALUES` (+`PASS_PROF` от DmActivity), `DM_GFX_CRUMBS=0`,
+`QUERY_WAIT`, фолбэки MALI-02. Набор `"DM_*"` строк TL2 — надмножество D3; `xbg_vertex_retype.h`, `xbg_vendor_policy.h`,
+`xbg_selftest.cpp` = D3 байт в байт (без CRLF). Покрытие форматов TL2: все 28 вершинных шейдеров `work/shaders-vk` переписаны
+`xbg_vertex_retype` во все uint и во все sint (56 модулей, 0 отказов) и прошли `spirv-val --target-env vulkan1.1` (84 модуля).
+Текстуры TL2 — BC1/BC2/BC3 + RGBA8 (XTX): на Mali/PowerVR идут через GPU-декод BC (ниже), DrawTexture — RGBA8→RGBA8 blit.
+
+**Перенесено (коммиты):**
+- `d7669f1` port-common: `audioout-keeper` (HLE-17, TL2 зовёт `OpenAudioOut`), `thread-exit-hoststack` (HLE-06), строки `[pc]` для
+  `lse-select` / `vma-guard` (уже как в D3). `pc_check`: всё in sync; `lse_audit`: 523 ARMv8.0-переходника.
+- `94e90a3` PVR-04 `DM_GFX_ANISO_FALLBACK=1`: без `samplerAnisotropy` сэмплер без анизотропии / выше лимита — до лимита, вместо fatal
+  `result=-5`; модель `DM_GFX_SIM_GPU=powervr` теперь с `noaniso`; `vendor_policy_test` проходит.
+- `4016472` (+`1d0d8a4`) TEX-02: шейдер GPU-декодера BC из D16 (06.11: экстрактор битов без UB, BC6H-блок раз на блок; `spv.h` сверен с
+  glslc) — у TL2 был шейдер 05.11, на котором драйвер давал BC6H mode 1 с нулевыми строками 1–3 (чёрные квадраты); `DM_GFX_BC_SELFTEST=1`
+  (2048 эталонных блоков на устройстве при первой текстуре формата; расхождение → этот формат на CPU; `=2` только лог, `=0` выкл.),
+  `DM_GFX_BC_BARRIER=full`. Лог: `NVN BC decode: self-test fmt=… bad=… -> gpu|cpu`. На Adreno (нативный BC) путь не исполняется.
+- `6e35989` SYNC-10: непривязанный VB → нулевой буфер 64 КБ + лог вместо FATAL `Unbound vertex buffer`.
+- `3a0cafd` APP-02 stall watch (`stall_android.c` из D16/ETR; `DM_STALL_WATCH_MS=2000`): отчёт `【红】[stall]` по потокам в boot.log.
+- `a047759` HLE-25 безопасный выход из меню: `nativeQuit` → `dm_hold_quit` ждёт фиксации и тишины сейва (`DM_QUIT_SAVE_QUIET_MS=750`,
+  максимум `DM_QUIT_SAVE_WAIT_MS=6000`); `hle_hold.c` = файл ETR (frontend-common + `g_quit`).
+
+**Уже было / неприменимо:** TEX-07 `CUBEMAP_ARRAY` — гейт «XC2 или D3» в `nvn_tex.c`, сборка tl2 определяет `DM_GAME_D3` (запись MATRIX
+была неверной); HLE-09 vma-guard, APP-04 LSE, SYNC-12, MALI-06/07/08 — как D3; TEX-03/04 ASTC-оверлей и санитайзер — оверлея у TL2 нет
+(текстуры в PAK/XTX, setup ASTC не делает) — n/a; MALI-04 clip-fix — у TL2 нет `CLIP_FIX` — n/a; PVR-01 fence guard / PVR-05
+`COMPILE_LOCK` — нет потока `dm-record`, модули и пайплайны под `PIPE_SERIAL` (1 на PowerVR) — n/a; MALI-03 тайловый набор и MALI-10/11
+zero-copy uncached на Mali — перф, не совместимость (на Mali zero-copy выключен, путь копий корректен) — не переносилось.
+
+**Осталось:** APP-01 PadSurface — пад TL2 (D3PadView + Tl2Touch) рисуется на окне; нужен `PadSurface.Painter` + один замок на всё
+состояние пада и отрисовку в потоке `dm-pad-draw` и `nativeWrap` в JNI — делать с проверкой на телефоне. SH-06 pipeguard v2 — у TL2 v1 +
+правило двух смертей для graphics/compute + списки по драйверу; нет заголовка версии (`.stale`) и ключей по SPIR-V.
+**Проверить на реальном Mali:** строки `NVN DM_GFX_VTX_RETYPE=1`, `NVN vertex input retype … refused` (должно не быть), `[selftest] …`,
+`NVN BC decode: self-test … -> gpu`, отсутствие `NVN unbound vertex buffer`; на PowerVR — `NVN sampler anisotropy 4 -> 1`.
