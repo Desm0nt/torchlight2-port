@@ -408,7 +408,7 @@ public class D3PadView extends View implements FrontMenu.Pad {
     private Runnable editDone;
     @Override public void startEdit(Runnable done) { if (tl2()) { tl2.startEdit(done); return; } editDone = done; startEdit(); }
     @Override public boolean editing() { return tl2() ? tl2.editing() : editMode; }
-    @Override public void endEdit(boolean save) { if (tl2()) { if (tl2.editing()) tl2.endEdit(); return; } endEdit(); }   // D3's editor keeps every drag at once ("Reset" / "Done" on its panel)
+    @Override public void endEdit(boolean save) { if (tl2()) { tl2.endEdit(save); return; } endEdit(); }   // D3's editor keeps every drag at once ("Reset" / "Done" on its panel); [TL2] DOOM's Save / Cancel
     @Override public void resetLayout() { if (tl2()) tl2.resetLayout(); else resetPlaces(); }
     @Override public String prefsName() { return "doom_controls"; }
     @Override public String[] sliderKeys() { return new String[] {"d3_opacity", "d3_scale"}; }

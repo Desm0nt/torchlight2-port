@@ -42,8 +42,15 @@ import java.util.Map;
 // Optional, off by default (gear dialog): "tl2_tap" a quick tap on the world (outside the stick zones) = A (or turn toward the point,
 //   then A); "tl2_hold_walk" touch and hold the world = walk toward the finger; "tl2_aim" dragging a fan skill aims with the right / left
 //   stick (the aim stick does this better).
-// Edit mode: a control drags its group; offsets "tl2_off_<layout>_<group>" = "fx,fy" of the view. The two stick zones are shown as
-//   outline there and drags like a group ("zmove") from any spot inside it that is not a button; the zoom slider drags as "zoom".
+// Edit mode (DOOM's editor UX, frontend-common DoomPadView): toolbar − + Grouped/Separate Hide/Show Reset Cancel Save; drag a control,
+//   a second finger resizes it, − / + with none chosen resize every group. Grouped (default): a control drags / resizes its whole group
+//   (offset + scale "tl2_off_[side_]<group>" = "fx,fy" or "fx,fy,scale", fx / fy fractions of the view, the scale about the group's
+//   default centre; a 2-field value from older builds still reads). Separate ("tl2_split" / "tl2_split_side"): every button on its own,
+//   "tl2_btn_[side_]<name>" = "dx;dy;scale;hidden" (dx / dy fractions of the view inside its group, scale x the group's, hidden 0 / 1).
+//   Hide / Show: the chosen button (Separate) or its group (Grouped) is neither drawn nor hit in game; the editor draws it dimmed and
+//   struck through so it can be shown again (the gear never hides; the zoom slider hides as "tl2_btn_[side_]zoom" = "0;0;1;1").
+//   Changes apply on Save; Cancel / Back drops them. The two stick zones are shown as outline there and drag like a group ("zmove")
+//   from any spot inside it that is not a button; the zoom slider drags / resizes as "zoom".
 final class Tl2Touch {
     static final int K_A = KeyEvent.KEYCODE_ENTER, K_B = KeyEvent.KEYCODE_ESCAPE, K_X = KeyEvent.KEYCODE_R, K_Y = KeyEvent.KEYCODE_F,
         K_L = KeyEvent.KEYCODE_Q, K_R = KeyEvent.KEYCODE_E, K_ZL = KeyEvent.KEYCODE_SHIFT_LEFT, K_ZR = KeyEvent.KEYCODE_CTRL_LEFT,
@@ -92,10 +99,11 @@ final class Tl2Touch {
     // where a button's (bx, by) is measured from (k units = dp x size); "belt" x is in D2R belt cell pitches (40 k) from the centre
     static final int A_BR = 0, A_TR = 1, A_TL = 2, A_TOP = 3, A_BELT = 4, A_LEFT = 5, A_RIGHT = 6;
     private static final class Btn {
-        final String label, group; final int key, kind, anchor; final float bx, by, br; boolean square;
-        float x, y, r;
-        Btn(String label, int key, int kind, String group, int anchor, float bx, float by, float br) {
-            this.label = label; this.key = key; this.kind = kind; this.group = group; this.anchor = anchor; this.bx = bx; this.by = by; this.br = br;
+        final String name, label, group; final int key, kind, anchor; final float bx, by, br; boolean square;
+        float x, y, r, x0, y0;                   // drawn centre / radius (px); x0 / y0 = the default centre before any player offset
+        float dx, dy, ps = 1; boolean hidden;    // the player's own place inside its group (fractions of the view), size and hide (editor)
+        Btn(String name, String label, int key, int kind, String group, int anchor, float bx, float by, float br) {
+            this.name = name; this.label = label; this.key = key; this.kind = kind; this.group = group; this.anchor = anchor; this.bx = bx; this.by = by; this.br = br;
         }
     }
     private static final int T_NONE = -1, T_JOY = -2, T_ZOOM = -3, T_WORLD = -4, T_MENU = -5;   // T_MENU: a console menu is up (DmActivity.nativeTl2MenuOpen), tap or not yet decided
@@ -115,13 +123,13 @@ final class Tl2Touch {
     private final RectF cell = new RectF();
     private float k = 1, op = 1, iso = ISO_DEFAULT / 100f, heroFy = HERO_Y_DEFAULT / 100f, joyR;
     private int tapMode = TAP_OFF, aimMode = AIM_OFF, modKey = K_ZL; private String modName = "ZL"; private boolean holdWalk;
-    private String editHint = "", resetLabel = "Reset", doneLabel = "Done";
     private boolean side, setII, editMode, controllerMode, pointer;
     private int lw, lh; private long seqN;
     private final Stick move = new Stick("zmove", "MOVE");
     static final float ZOOM_FULL_DP = 50, ZOOM_DEAD_DP = 4;
     private final RectF zoom = new RectF(); private int zoomPtr = -1; private float zoomY0;   // camera zoom slider (right stick Y)
     private static final String ZOOM_GROUP = "zoom";
+    private boolean zoomHidden, split;   // the zoom slider hidden (editor); the editor's Separate mode (every button on its own)
     private float joyMinX, joyMaxY;
     private final HashSet<Integer> sent = new HashSet<>();
     private float sLx, sLy, sRx, sRy; private boolean axesSent;
@@ -131,48 +139,50 @@ final class Tl2Touch {
         view = v; this.openSettings = openSettings; dp = v.getResources().getDisplayMetrics().density;
         line.setStyle(Paint.Style.STROKE); line.setStrokeWidth(2 * dp); text.setTextAlign(Paint.Align.CENTER);
     }
-    private Btn add(String label, int key, int kind, String group, int anchor, float bx, float by, float br) { Btn b = new Btn(label, key, kind, group, anchor, bx, by, br); btns.add(b); return b; }
+    // name: the button's own prefs id ("tl2_btn_[side_]<name>"), stable across the modifier choice and the label
+    private Btn add(String name, String label, int key, int kind, String group, int anchor, float bx, float by, float br) { Btn b = new Btn(name, label, key, kind, group, anchor, bx, by, br); btns.add(b); return b; }
     private void build() {
         btns.clear();
         if (!side) {   // D2R dm_tc_layout_make: main W - 86 + 12, H - 88 - 24 + 28
             final float mx = -74, my = -84;
-            add("A", K_A, KIND_MAIN, "fan", A_BR, mx, my, 40);
+            add("a", "A", K_A, KIND_MAIN, "fan", A_BR, mx, my, 40);
             // all eight HUD action-bar slots (A B X Y R ZR L ZL) around A, D2R style: an inner arc of four at 88 dp and an outer arc
             // of three at 150 dp (angles from the right, counter-clockwise; the thumb sweeps from lower left to top), II at the outer top
             String[] l = {"B", "X", "Y", "R", "ZL", "L", "ZR"}; int[] kk = {K_B, K_X, K_Y, K_R, K_ZL, K_L, K_ZR};
             float[] ang = {200, 155, 110, 70, 190, 158, 126}, rad = {88, 88, 88, 88, 150, 150, 150};
             for (int i = 0; i < l.length; i++) {
                 double a = Math.toRadians(ang[i]);
-                add(l[i], kk[i], KIND_SKILL, "fan", A_BR, mx + rad[i] * (float) Math.cos(a), my - rad[i] * (float) Math.sin(a), 26);
+                add(l[i].toLowerCase(Locale.ROOT), l[i], kk[i], KIND_SKILL, "fan", A_BR, mx + rad[i] * (float) Math.cos(a), my - rad[i] * (float) Math.sin(a), 26);
             }
             double ia = Math.toRadians(95);
-            add("II", 0, KIND_SWAP, "fan", A_BR, mx + 150 * (float) Math.cos(ia), my - 150 * (float) Math.sin(ia), 22);
-            add("R3", K_R3, KIND_PLAIN, "tr", A_TR, -30, 30, 19);
-            add("L3", K_L3, KIND_PLAIN, "tr", A_TR, -74, 30, 19);   // kept (not a HUD slot), next to R3 instead of the top-left row
-            add("⚙", 0, KIND_GEAR, "top", A_TOP, 0, 30, 20);
+            add("ii", "II", 0, KIND_SWAP, "fan", A_BR, mx + 150 * (float) Math.cos(ia), my - 150 * (float) Math.sin(ia), 22);
+            add("r3", "R3", K_R3, KIND_PLAIN, "tr", A_TR, -30, 30, 19);
+            add("l3", "L3", K_L3, KIND_PLAIN, "tr", A_TR, -74, 30, 19);   // kept (not a HUD slot), next to R3 instead of the top-left row
+            add("gear", "⚙", 0, KIND_GEAR, "top", A_TOP, 0, 30, 20);
             // bottom centre: only "-" and "+" (the owner: the d-pad arrows are not needed with menu taps always on)
-            add("-", K_MINUS, KIND_PLAIN, "belt", A_BELT, -0.7f, 0, 20); add("+", K_PLUS, KIND_PLAIN, "belt", A_BELT, 0.7f, 0, 20);
+            add("minus", "-", K_MINUS, KIND_PLAIN, "belt", A_BELT, -0.7f, 0, 20); add("plus", "+", K_PLUS, KIND_PLAIN, "belt", A_BELT, 0.7f, 0, 20);
         } else {   // quick access along the edges: cells 50 dp, pitch 56 dp, from 40 dp below the top
             String[] l = {"A", "B", "X", "Y", "R", "ZR"}; int[] kk = {K_A, K_B, K_X, K_Y, K_R, K_ZR};
             for (int i = 0; i < 6; i++) {
-                add(l[i], kk[i], KIND_PLAIN, "right", A_RIGHT, -30, 40 + 56 * i, 25).square = true;
-                add(modName + "+" + l[i], kk[i], KIND_COMBO, "right", A_RIGHT, -88, 40 + 56 * i, 25).square = true;
+                String n = l[i].toLowerCase(Locale.ROOT);
+                add(n, l[i], kk[i], KIND_PLAIN, "right", A_RIGHT, -30, 40 + 56 * i, 25).square = true;
+                add("c_" + n, modName + "+" + l[i], kk[i], KIND_COMBO, "right", A_RIGHT, -88, 40 + 56 * i, 25).square = true;
             }
-            String[] ll = {"L", "ZL", "↑", "←", "→", "↓"}; int[] lk = {K_L, K_ZL, K_UP, K_LEFT, K_RIGHT, K_DOWN};
-            for (int i = 0; i < 6; i++) add(ll[i], lk[i], KIND_PLAIN, "left", A_LEFT, 30, 40 + 56 * i, 25).square = true;
+            String[] ll = {"L", "ZL", "↑", "←", "→", "↓"}, ln = {"l", "zl", "up", "left", "right", "down"}; int[] lk = {K_L, K_ZL, K_UP, K_LEFT, K_RIGHT, K_DOWN};
+            for (int i = 0; i < 6; i++) add(ln[i], ll[i], lk[i], KIND_PLAIN, "left", A_LEFT, 30, 40 + 56 * i, 25).square = true;
             // L and ZL are HUD slots too: their set-II cells next to them, like the right edge's
-            add(modName + "+L", K_L, KIND_COMBO, "left", A_LEFT, 88, 40, 25).square = true;
-            add(modName + "+ZL", K_ZL, KIND_COMBO, "left", A_LEFT, 88, 96, 25).square = true;
-            add("L3", K_L3, KIND_PLAIN, "top", A_TOP, -110, 30, 19); add("-", K_MINUS, KIND_PLAIN, "top", A_TOP, -55, 30, 22);
-            add("⚙", 0, KIND_GEAR, "top", A_TOP, 0, 30, 20);
-            add("+", K_PLUS, KIND_PLAIN, "top", A_TOP, 55, 30, 22); add("R3", K_R3, KIND_PLAIN, "top", A_TOP, 110, 30, 19);
+            add("c_l", modName + "+L", K_L, KIND_COMBO, "left", A_LEFT, 88, 40, 25).square = true;
+            add("c_zl", modName + "+ZL", K_ZL, KIND_COMBO, "left", A_LEFT, 88, 96, 25).square = true;
+            add("l3", "L3", K_L3, KIND_PLAIN, "top", A_TOP, -110, 30, 19); add("minus", "-", K_MINUS, KIND_PLAIN, "top", A_TOP, -55, 30, 22);
+            add("gear", "⚙", 0, KIND_GEAR, "top", A_TOP, 0, 30, 20);
+            add("plus", "+", K_PLUS, KIND_PLAIN, "top", A_TOP, 55, 30, 22); add("r3", "R3", K_R3, KIND_PLAIN, "top", A_TOP, 110, 30, 19);
         }
         if (pointer) {   // [TL2] D2R Mobile's panel buttons along the top (a second row in tl2_side) and the radial menu's tab arrows next to the gear
             float py = side ? 86 : 30, ax = side ? 165 : 75;
             for (int i = 0; i < PANEL_LABELS.length; i++)
-                add(PANEL_LABELS[i], PANEL_TYPES[i], KIND_PANEL, "panels", A_TOP, i < 2 ? -240 + 50 * i : 140 + 50 * (i - 2), py, 19);
-            add("◀", -1, KIND_TAB, "panels", A_TOP, -ax, py, 18);
-            add("▶", 1, KIND_TAB, "panels", A_TOP, ax, py, 18);
+                add(PANEL_LABELS[i].toLowerCase(Locale.ROOT), PANEL_LABELS[i], PANEL_TYPES[i], KIND_PANEL, "panels", A_TOP, i < 2 ? -240 + 50 * i : 140 + 50 * (i - 2), py, 19);
+            add("tab_l", "◀", -1, KIND_TAB, "panels", A_TOP, -ax, py, 18);
+            add("tab_r", "▶", 1, KIND_TAB, "panels", A_TOP, ax, py, 18);
         }
         lw = -1;
     }
@@ -188,19 +198,54 @@ final class Tl2Touch {
         holdWalk = p.getBoolean("tl2_hold_walk", false);
         pointer = true;   // [TL2] menu taps are always on (the owner: convenient and works); the gear option was removed
         icons = p.getBoolean("tl2_icons", true); iconSerial = -2; iconPoll = 0;
-        editHint = ui.getString(R.string.d3_pad_edit_hint); resetLabel = ui.getString(R.string.d3_pad_reset); doneLabel = ui.getString(R.string.d3_pad_done);
         build();
-        off.clear();
-        List<String> groups = new ArrayList<>(); for (Btn b : btns) groups.add(b.group); groups.add(move.group); groups.add(ZOOM_GROUP);
-        for (String g : groups) {
-            if (off.containsKey(g)) continue;
-            String v = p.getString(offKey(g), null); if (v == null) continue;
-            String[] f = v.split(",");
-            try { if (f.length == 2) off.put(g, new float[] {Float.parseFloat(f[0]), Float.parseFloat(f[1])}); } catch (NumberFormatException e) { /* ignore */ }
-        }
+        loadPlaces(p);
         view.invalidate();
     }
+    // group offsets "fx,fy[,scale]" (2 fields = older builds, scale 1), every button's "dx;dy;scale;hidden", the zoom slider's hide, Separate
+    private void loadPlaces(SharedPreferences p) {
+        off.clear();
+        for (String g : groups()) {
+            String v = p.getString(offKey(g), null); if (v == null) continue;
+            String[] f = v.split(",");
+            try { if (f.length == 2 || f.length == 3) off.put(g, new float[] {Float.parseFloat(f[0]), Float.parseFloat(f[1]), f.length == 3 ? clampS(Float.parseFloat(f[2])) : 1}); }
+            catch (NumberFormatException e) { /* ignore */ }
+        }
+        for (Btn b : btns) {
+            b.dx = b.dy = 0; b.ps = 1; b.hidden = false;
+            String v = p.getString(btnKey(b.name), null); if (v == null) continue;
+            String[] f = v.split(";");
+            try { if (f.length >= 3) { b.dx = Float.parseFloat(f[0]); b.dy = Float.parseFloat(f[1]); b.ps = clampS(Float.parseFloat(f[2])); b.hidden = f.length >= 4 && "1".equals(f[3]) && b.kind != KIND_GEAR; } }
+            catch (NumberFormatException e) { b.dx = b.dy = 0; b.ps = 1; b.hidden = false; }
+        }
+        String z = p.getString(btnKey(ZOOM_GROUP), null); zoomHidden = z != null && z.endsWith(";1");
+        split = p.getBoolean(splitKey(), false);
+        lw = -1;
+    }
+    private void savePlaces() {
+        SharedPreferences.Editor ed = view.getContext().getSharedPreferences("doom_controls", Context.MODE_PRIVATE).edit();
+        for (String g : groups()) {
+            float[] o = off.get(g);
+            if (o == null || (o[0] == 0 && o[1] == 0 && o[2] == 1)) ed.remove(offKey(g));
+            else ed.putString(offKey(g), o[2] == 1 ? String.format(Locale.ROOT, "%.4f,%.4f", o[0], o[1]) : String.format(Locale.ROOT, "%.4f,%.4f,%.4f", o[0], o[1], o[2]));
+        }
+        for (Btn b : btns) {
+            if (b.dx == 0 && b.dy == 0 && b.ps == 1 && !b.hidden) ed.remove(btnKey(b.name));
+            else ed.putString(btnKey(b.name), String.format(Locale.ROOT, "%.5f;%.5f;%.4f;%d", b.dx, b.dy, b.ps, b.hidden ? 1 : 0));
+        }
+        if (zoomHidden) ed.putString(btnKey(ZOOM_GROUP), "0;0;1;1"); else ed.remove(btnKey(ZOOM_GROUP));
+        ed.apply();
+    }
+    private List<String> groups() {
+        List<String> g = new ArrayList<>(); for (Btn b : btns) if (!g.contains(b.group)) g.add(b.group);
+        g.add(move.group); g.add(ZOOM_GROUP); return g;
+    }
     private String offKey(String group) { return "tl2_off_" + (side ? "side_" : "") + group; }
+    private String btnKey(String name) { return "tl2_btn_" + (side ? "side_" : "") + name; }
+    private String splitKey() { return side ? "tl2_split_side" : "tl2_split"; }
+    static final float SCALE_MIN = 0.5f, SCALE_MAX = 2.5f;   // DOOM's editor limits
+    private static float clampS(float s) { return Float.isNaN(s) ? 1 : Math.max(SCALE_MIN, Math.min(SCALE_MAX, s)); }
+    private float gscale(String group) { float[] o = off.get(group); return o == null ? 1 : o[2]; }
     private static int clamp(int v, int lo, int hi) { return Math.max(lo, Math.min(hi, v)); }
 
     // ---------------- layout ----------------
@@ -208,6 +253,7 @@ final class Tl2Touch {
         int w = view.getWidth(), h = view.getHeight();
         if (w == lw && h == lh) return;
         lw = w; lh = h;
+        Map<String, float[]> piv = new HashMap<>();   // a group's default centre (sum x, sum y, n): its scale is about this point
         for (Btn b : btns) {
             float x, y;
             switch (b.anchor) {
@@ -217,23 +263,31 @@ final class Tl2Touch {
             case A_BELT: x = w / 2f + b.bx * 40 * k; y = h - 22 * k; break;   // D2R: pitch 120 / 1320 of the height, 78.5 / 1320 above the bottom
             default: x = b.bx * k; y = b.by * k; break;
             }
-            float[] o = off.get(b.group);
+            b.x0 = x; b.y0 = y;
+            float[] s = piv.get(b.group); if (s == null) piv.put(b.group, s = new float[3]);
+            s[0] += x; s[1] += y; s[2]++;
+        }
+        for (Btn b : btns) {   // own place inside the group, then the group's scale about its default centre, then the group's offset
+            float[] s = piv.get(b.group), o = off.get(b.group); float px = s[0] / s[2], py = s[1] / s[2], gs = o == null ? 1 : o[2];
+            float x = px + (b.x0 + b.dx * w - px) * gs, y = py + (b.y0 + b.dy * h - py) * gs;
             if (o != null) { x += o[0] * w; y += o[1] * h; }
-            b.x = x; b.y = y; b.r = b.br * k;
+            b.x = x; b.y = y; b.r = b.br * k * b.ps * gs;
         }
         joyR = 60 * k; joyMinX = joyR + 8 * k; joyMaxY = h - joyR - 8 * k;
         zone(move, 0, 0.25f, 0.45f, 1, w, h);   // floating sticks: where a finger that hits no button grabs them
         {   // zoom slider: tl2 = right edge between R3 / L3 and the fan's top (II at about h - 240 k); tl2_side = left of the cell columns
             float cx = side ? w - 140 * k : w - 18 * k, top = side ? 40 * k : 70 * k, bot = side ? 40 * k + 56 * 5 * k : Math.max(top + 90 * k, h - 260 * k);
-            float[] o = off.get(ZOOM_GROUP); float ox = o == null ? 0 : o[0] * w, oy = o == null ? 0 : o[1] * h;
-            zoom.set(cx - 9 * k + ox, top + oy, cx + 9 * k + ox, bot + oy);
+            float[] o = off.get(ZOOM_GROUP); float ox = o == null ? 0 : o[0] * w, oy = o == null ? 0 : o[1] * h, zs = o == null ? 1 : o[2];
+            float mid = (top + bot) / 2, half = (bot - top) / 2 * zs;   // the editor's size: width and length about its default centre
+            zoom.set(cx - 9 * k * zs + ox, mid - half + oy, cx + 9 * k * zs + ox, mid + half + oy);
         }
     }
     private void zone(Stick s, float l, float t, float r, float b, int w, int h) {
         float[] o = off.get(s.group); float ox = o == null ? 0 : o[0] * w, oy = o == null ? 0 : o[1] * h;
         s.zone.set(l * w + ox, t * h + oy, r * w + ox, b * h + oy);
     }
-    private boolean shown(Btn b) { return editMode || !controllerMode || b.kind == KIND_GEAR; }
+    // hidden (editor's Hide): neither drawn nor hit in game; the editor shows (and hits) it dimmed so it can be shown again
+    private boolean shown(Btn b) { return editMode || b.kind == KIND_GEAR || (!controllerMode && !b.hidden); }
     private Btn hit(float x, float y) {
         Btn best = null; float bd = Float.MAX_VALUE;
         for (Btn b : btns) {
@@ -245,9 +299,9 @@ final class Tl2Touch {
         return best;
     }
     private Btn btnOf(Finger f) { return f.target >= 0 && f.target < btns.size() ? btns.get(f.target) : null; }
-    private boolean inMinus(float x, float y) { for (Btn b : btns) if (b.key == K_MINUS) return Math.abs(x - b.x) <= b.r && Math.abs(y - b.y) <= b.r; return false; }
+    private boolean inMinus(float x, float y) { for (Btn b : btns) if (b.key == K_MINUS && !b.hidden) return Math.abs(x - b.x) <= b.r && Math.abs(y - b.y) <= b.r; return false; }
     private boolean moveZone(float x, float y) { return move.zone.contains(x, y); }
-    private boolean zoomHit(float x, float y) { return !controllerMode && x >= zoom.left - 14 * k && x <= zoom.right + 14 * k && y >= zoom.top - 10 * k && y <= zoom.bottom + 10 * k; }
+    private boolean zoomHit(float x, float y) { return !controllerMode && (editMode || !zoomHidden) && x >= zoom.left - 14 * k && x <= zoom.right + 14 * k && y >= zoom.top - 10 * k && y <= zoom.bottom + 10 * k; }
     private float zoomAxis(Finger f) {   // drag up = right stick up (negative Y, Android axis convention as nativePadAxes gets it)
         float d = (f.y - zoomY0) / dp, a = Math.abs(d);
         if (a <= ZOOM_DEAD_DP) return 0;
@@ -442,41 +496,132 @@ final class Tl2Touch {
     }
 
     // ---------------- edit mode ----------------
-    private Runnable editDone; private int editPtr = -1; private String editGroup; private float editX0, editY0; private float[] editO0;
-    private final RectF resetRect = new RectF(), doneRect = new RectF(), panelRect = new RectF();
+    // DOOM's layout editor (frontend-common DoomPadView, same gestures and toolbar look): drag a control; a second finger resizes it;
+    // toolbar − + Grouped/Separate Hide/Show Reset Cancel Save. Grouped moves / resizes the chosen control's whole group, Separate the
+    // chosen button alone (inside its group). − / + with nothing chosen resize every group. Nothing is written before Save.
+    private static final int SEL_NONE = 0, SEL_BTN = 1, SEL_ZOOM = 2, SEL_MOVE = 3, ED_BUTTONS = 7;
+    private Runnable editDone; private int edPtr = -1, edPtr2 = -1, edBtnDown = -1, edSel = SEL_NONE; private Btn edBtn;
+    private float edX0, edY0, edD0, edDx0, edDy0, edPs0; private float[] edO0 = {0, 0, 1};
+    private final Map<String, float[]> edSavedOff = new HashMap<>(); private float[][] edSavedBtn = new float[0][]; private boolean edSavedZoom;
+    private final RectF[] edRects = new RectF[ED_BUTTONS]; private final RectF selRect = new RectF();
     boolean editing() { return editMode; }
-    void startEdit(Runnable done) { releaseAll(); editDone = done; editMode = true; view.invalidate(); }
-    void endEdit() { editMode = false; editPtr = -1; Runnable d = editDone; editDone = null; view.invalidate(); if (d != null) d.run(); }
-    void resetLayout() {
-        SharedPreferences.Editor ed = view.getContext().getSharedPreferences("doom_controls", Context.MODE_PRIVATE).edit();
-        for (Btn b : btns) ed.remove(offKey(b.group));
-        ed.remove(offKey(move.group)); ed.remove(offKey(ZOOM_GROUP)); ed.remove(offKey("zaim"));
-        ed.apply(); off.clear(); lw = -1; view.invalidate();
+    void startEdit(Runnable done) {
+        releaseAll(); editDone = done; editMode = true; edSel = SEL_NONE; edBtn = null; edPtr = edPtr2 = edBtnDown = -1;
+        edSavedOff.clear(); for (Map.Entry<String, float[]> en : off.entrySet()) edSavedOff.put(en.getKey(), en.getValue().clone());
+        edSavedBtn = new float[btns.size()][];
+        for (int i = 0; i < btns.size(); i++) { Btn b = btns.get(i); edSavedBtn[i] = new float[] {b.dx, b.dy, b.ps, b.hidden ? 1 : 0}; }
+        edSavedZoom = zoomHidden;
+        android.util.Log.i("dm", "[java] tl2 layout editor open (" + (side ? "tl2_side" : "tl2") + ")");
+        view.invalidate();
+    }
+    // save: write every place / size / hide (Save); else back to what it was when the editor opened (Cancel, Back)
+    void endEdit(boolean save) {
+        if (!editMode) return;
+        if (save) savePlaces();
+        else {
+            off.clear(); for (Map.Entry<String, float[]> en : edSavedOff.entrySet()) off.put(en.getKey(), en.getValue().clone());
+            for (int i = 0; i < btns.size() && i < edSavedBtn.length; i++) { Btn b = btns.get(i); float[] s = edSavedBtn[i]; b.dx = s[0]; b.dy = s[1]; b.ps = s[2]; b.hidden = s[3] != 0; }
+            zoomHidden = edSavedZoom;
+        }
+        editMode = false; edPtr = edPtr2 = edBtnDown = -1; edSel = SEL_NONE; edBtn = null; lw = -1;
+        android.util.Log.i("dm", "[java] tl2 layout editor " + (save ? "saved" : "cancelled"));
+        Runnable d = editDone; editDone = null; view.invalidate(); if (d != null) d.run();
+    }
+    private void clearPlaces() { off.clear(); for (Btn b : btns) { b.dx = b.dy = 0; b.ps = 1; b.hidden = false; } zoomHidden = false; lw = -1; }
+    void resetLayout() {   // FrontMenu "Reset layout": every place, size and hide back to the defaults, saved at once
+        clearPlaces(); savePlaces();
+        view.getContext().getSharedPreferences("doom_controls", Context.MODE_PRIVATE).edit().remove(offKey("zaim")).apply();
+        view.invalidate();
+    }
+    private boolean selOne() { return edSel == SEL_BTN && split; }   // Separate: the chosen button alone
+    private String selGroup() { return edSel == SEL_BTN ? edBtn.group : edSel == SEL_ZOOM ? ZOOM_GROUP : edSel == SEL_MOVE ? move.group : null; }
+    private boolean inSel(Btn b) { return editMode && edSel == SEL_BTN && (b == edBtn || (!split && b.group.equals(edBtn.group))); }
+    private void edGrab(float x, float y) {   // the chosen control's place / size when the finger went down (or the pinch changed)
+        edX0 = x; edY0 = y;
+        float[] o = selGroup() == null ? null : off.get(selGroup()); edO0 = o == null ? new float[] {0, 0, 1} : o.clone();
+        if (edBtn != null) { edDx0 = edBtn.dx; edDy0 = edBtn.dy; edPs0 = edBtn.ps; }
+    }
+    private void edMove(float x, float y) {
+        int w = view.getWidth(), h = view.getHeight(); if (w <= 0 || h <= 0 || edSel == SEL_NONE) return;
+        float ddx = x - edX0, ddy = y - edY0;
+        if (selOne()) { float gs = gscale(edBtn.group); edBtn.dx = edDx0 + ddx / (gs * w); edBtn.dy = edDy0 + ddy / (gs * h); }
+        else off.put(selGroup(), new float[] {edO0[0] + ddx / w, edO0[1] + ddy / h, edO0[2]});
+        lw = -1;
+    }
+    private void edScale(float f) {   // f relative to the grab; the move zone has no size
+        if (selOne()) edBtn.ps = clampS(edPs0 * f);
+        else if (edSel == SEL_BTN || edSel == SEL_ZOOM) off.put(selGroup(), new float[] {edO0[0], edO0[1], clampS(edO0[2] * f)});
+        lw = -1;
+    }
+    private void edScaleAll(float f) {
+        for (String g : groups()) {
+            if (g.equals(move.group)) continue;
+            float[] o = off.get(g); off.put(g, o == null ? new float[] {0, 0, clampS(f)} : new float[] {o[0], o[1], clampS(o[2] * f)});
+        }
+        lw = -1;
+    }
+    private boolean canHide() {
+        if (edSel == SEL_ZOOM) return true;
+        if (edSel == SEL_BTN) for (Btn b : btns) if (inSel(b) && b.kind != KIND_GEAR) return true;
+        return false;
+    }
+    private boolean selHidden() {   // the toolbar says Show when everything chosen is hidden
+        if (edSel == SEL_ZOOM) return zoomHidden;
+        boolean any = false;
+        if (edSel == SEL_BTN) for (Btn b : btns) if (inSel(b) && b.kind != KIND_GEAR) { if (!b.hidden) return false; any = true; }
+        return any;
+    }
+    private void edToggleHide() {
+        if (edSel == SEL_ZOOM) { zoomHidden = !zoomHidden; return; }
+        if (!canHide()) return;
+        boolean hide = !selHidden();
+        for (Btn b : btns) if (inSel(b) && b.kind != KIND_GEAR) b.hidden = hide;
+    }
+    private RectF edButton(int i) {   // the toolbar (DOOM's look), centred a little above the middle where the layouts keep no buttons
+        float W = view.getWidth(), H = view.getHeight(), gap = H * 0.02f, bw = Math.min(H * 0.17f, (W - 32 * dp - (ED_BUTTONS - 1) * gap) / ED_BUTTONS), bh = H * 0.085f;
+        float total = ED_BUTTONS * bw + (ED_BUTTONS - 1) * gap, x0 = (W - total) / 2, y0 = H * 0.30f;
+        if (edRects[i] == null) edRects[i] = new RectF();
+        edRects[i].set(x0 + i * (bw + gap), y0, x0 + i * (bw + gap) + bw, y0 + bh); return edRects[i];
+    }
+    private int edButtonAt(float x, float y) { for (int i = 0; i < ED_BUTTONS; i++) if (edButton(i).contains(x, y)) return i; return -1; }
+    private boolean edAction(int bt) {   // true = the editor closed
+        switch (bt) {
+        case 0: case 1: { float f = bt == 1 ? 1.1f : 1 / 1.1f; if (edSel == SEL_NONE || edSel == SEL_MOVE) edScaleAll(f); else { edGrab(edX0, edY0); edScale(f); } break; }
+        case 2: split = !split; view.getContext().getSharedPreferences("doom_controls", Context.MODE_PRIVATE).edit().putBoolean(splitKey(), split).apply();
+            android.util.Log.i("dm", "[java] tl2 layout editor: " + (split ? "every button on its own" : "groups move as one")); break;
+        case 3: edToggleHide(); break;
+        case 4: clearPlaces(); edSel = SEL_NONE; edBtn = null; break;
+        case 5: endEdit(false); return true;
+        default: endEdit(true); return true;
+        }
+        return false;
     }
     private void editTouch(MotionEvent e, int a, int id, float x, float y) {
-        switch (a) {
-        case MotionEvent.ACTION_DOWN: case MotionEvent.ACTION_POINTER_DOWN:
-            if (resetRect.contains(x, y)) { resetLayout(); break; }
-            if (doneRect.contains(x, y)) { endEdit(); break; }
-            if (editPtr < 0) {   // a button drags its group; an empty spot inside a stick zone drags that zone
-                Btn b = hit(x, y); String g = b != null ? b.group : zoomHit(x, y) ? ZOOM_GROUP : moveZone(x, y) ? move.group : null;
-                if (g != null) { editPtr = id; editGroup = g; editX0 = x; editY0 = y; float[] o = off.get(g); editO0 = o == null ? new float[] {0, 0} : o.clone(); }
+        if (a == MotionEvent.ACTION_DOWN || a == MotionEvent.ACTION_POINTER_DOWN) {
+            int bt = edButtonAt(x, y);
+            if (bt >= 0 && edPtr < 0) { edBtnDown = bt; edPtr = id; }
+            else if (edPtr >= 0 && edBtnDown < 0 && edPtr2 < 0 && (edSel == SEL_BTN || edSel == SEL_ZOOM)) {   // a second finger pinches the chosen control
+                int k1 = e.findPointerIndex(edPtr);
+                if (k1 >= 0) { edD0 = (float) Math.hypot(x - e.getX(k1), y - e.getY(k1)); edPtr2 = id; edGrab(e.getX(k1), e.getY(k1)); }
+            } else if (edPtr < 0) {   // a button (hidden ones too), the zoom slider or an empty spot of the move zone; elsewhere = none chosen
+                Btn b = hit(x, y); edBtn = b; edBtnDown = -1;
+                edSel = b != null ? SEL_BTN : zoomHit(x, y) ? SEL_ZOOM : moveZone(x, y) ? SEL_MOVE : SEL_NONE;
+                edPtr = edSel != SEL_NONE ? id : -1;
+                if (edSel != SEL_NONE) edGrab(x, y);
             }
-            break;
-        case MotionEvent.ACTION_MOVE:
-            for (int n = 0; n < e.getPointerCount(); n++) if (e.getPointerId(n) == editPtr && view.getWidth() > 0 && view.getHeight() > 0) {
-                off.put(editGroup, new float[] {editO0[0] + (e.getX(n) - editX0) / view.getWidth(), editO0[1] + (e.getY(n) - editY0) / view.getHeight()});
-                lw = -1;
+        } else if (a == MotionEvent.ACTION_MOVE) {
+            if (edPtr >= 0 && edBtnDown < 0 && edSel != SEL_NONE) {
+                int k1 = e.findPointerIndex(edPtr), k2 = edPtr2 >= 0 ? e.findPointerIndex(edPtr2) : -1;
+                if (k1 >= 0 && k2 >= 0 && edD0 > 1) edScale((float) Math.hypot(e.getX(k1) - e.getX(k2), e.getY(k1) - e.getY(k2)) / edD0);
+                else if (k1 >= 0) edMove(e.getX(k1), e.getY(k1));
             }
-            break;
-        case MotionEvent.ACTION_UP: case MotionEvent.ACTION_POINTER_UP: case MotionEvent.ACTION_CANCEL:
-            if (editPtr >= 0 && (id == editPtr || a != MotionEvent.ACTION_POINTER_UP)) {
-                float[] o = off.get(editGroup);
-                if (o != null) view.getContext().getSharedPreferences("doom_controls", Context.MODE_PRIVATE).edit()
-                    .putString(offKey(editGroup), String.format(Locale.ROOT, "%.4f,%.4f", o[0], o[1])).apply();
-                editPtr = -1;
+        } else if (a == MotionEvent.ACTION_UP || a == MotionEvent.ACTION_POINTER_UP || a == MotionEvent.ACTION_CANCEL) {
+            if (a == MotionEvent.ACTION_POINTER_UP && id == edPtr2) {   // the pinch ends: the drag goes on from where the first finger is now
+                edPtr2 = -1; int k1 = e.findPointerIndex(edPtr); if (k1 >= 0) edGrab(e.getX(k1), e.getY(k1));
+            } else if (id == edPtr || a != MotionEvent.ACTION_POINTER_UP) {
+                int bt = edBtnDown; edPtr = edPtr2 = edBtnDown = -1;
+                if (bt >= 0 && a != MotionEvent.ACTION_CANCEL && bt == edButtonAt(x, y) && edAction(bt)) return;
             }
-            break;
         }
         view.invalidate();
     }
@@ -492,7 +637,10 @@ final class Tl2Touch {
             for (Finger f : fingers.values()) if (f.target == T_WORLD && f.walking) { line.setColor(0xffffffff); line.setAlpha(Math.round(0x90 * op)); c.drawCircle(f.x, f.y, 22 * dp, line); }
         }
         for (Btn b : btns) if (shown(b)) drawBtn(c, b);
-        if (editMode) drawEditPanel(c);
+        if (editMode) drawEditor(c);
+    }
+    private void strike(Canvas c, float cx, float cy, float r) {   // the editor's mark on a hidden control: a red slash across it
+        line.setColor(0xffff5050); line.setAlpha(0xe0); float d = r * 0.75f; c.drawLine(cx - d, cy + d, cx + d, cy - d, line);
     }
     private void drawStick(Canvas c, Stick s) {
         Finger f = s.ptr >= 0 ? fingers.get(s.ptr) : null;
@@ -508,8 +656,9 @@ final class Tl2Touch {
         }
     }
     private void drawZoom(Canvas c) {   // thin track with + / - ends; while held a knob at the finger and the bar filled toward the drag
+        if (zoomHidden && !editMode) return;
         Finger f = zoomPtr >= 0 ? fingers.get(zoomPtr) : null;
-        float kk = editMode ? Math.max(op, 0.5f) : op, rr = zoom.width() / 2;
+        float kk = editMode ? (edSel == SEL_ZOOM ? 1 : Math.max(op, 0.5f)) * (zoomHidden ? 0.4f : 1) : op, rr = zoom.width() / 2;
         fill.setColor(0xffffffff); fill.setAlpha(Math.round((f != null ? 0x50 : 0x22) * kk)); c.drawRoundRect(zoom, rr, rr, fill);
         line.setColor(editMode ? 0xffffd040 : 0xffffffff); line.setAlpha(editMode ? 0xe0 : Math.round(0x80 * kk)); c.drawRoundRect(zoom, rr, rr, line);
         float ts = Math.max(10 * dp, 1.1f * rr * 2); text.setTextSize(ts); text.setColor(0xffffffff); text.setAlpha(Math.round(0xd0 * kk));
@@ -518,6 +667,7 @@ final class Tl2Touch {
             float ky = Math.max(zoom.top + rr, Math.min(zoom.bottom - rr, f.y));
             fill.setAlpha(Math.round(0xa0 * op)); c.drawCircle(zoom.centerX(), ky, rr * 1.6f, fill);
         }
+        if (editMode && zoomHidden) strike(c, zoom.centerX(), zoom.centerY(), Math.max(rr * 2, 24 * dp));
     }
     private boolean held(Btn b) {
         if (b.kind == KIND_SWAP) return setII;
@@ -525,8 +675,12 @@ final class Tl2Touch {
         return false;
     }
     private void drawBtn(Canvas c, Btn b) {
+        drawBtnBody(c, b);
+        if (editMode && b.hidden) strike(c, b.x, b.y, b.r);
+    }
+    private void drawBtnBody(Canvas c, Btn b) {
         boolean on = held(b);
-        float kk = b.kind == KIND_GEAR ? 1f : (editMode ? Math.max(op, 0.5f) : op);
+        float kk = b.kind == KIND_GEAR ? 1f : (editMode ? (inSel(b) ? 1 : Math.max(op, 0.5f)) * (b.hidden ? 0.4f : 1) : op);
         int tint = b.kind == KIND_SWAP && setII ? 0xffffb030 : b.kind == KIND_COMBO ? 0xffffd890 : 0xffffffff;
         fill.setColor(tint); fill.setAlpha(Math.round((on ? 0x80 : 0x30) * kk));
         line.setColor(editMode ? 0xffffd040 : tint); line.setAlpha(editMode ? 0xe0 : Math.round(0x90 * kk));
@@ -553,18 +707,32 @@ final class Tl2Touch {
         text.setColor(0xffffffff); text.setAlpha(Math.round((empty ? 0x70 : 0xd8) * kk));   // nothing bound to that button in the game: dim
         c.drawText(b.label, b.x, b.y + ts * 0.35f, text);
     }
-    private void drawEditPanel(Canvas c) {
-        float w = view.getWidth(), h = view.getHeight(), pw = Math.min(w * 0.8f, 440 * dp), bh = 44 * dp, bw = (pw - 36 * dp) / 2, top = h * 0.30f;
-        text.setTextSize(16 * dp); text.setAlpha(0xff);
-        panelRect.set((w - pw) / 2, top, (w + pw) / 2, top + 28 * dp + bh + 24 * dp);
-        fill.setColor(0xc0202020); c.drawRoundRect(panelRect, 12 * dp, 12 * dp, fill);
-        text.setColor(0xffffffff); c.drawText(editHint, w / 2, top + 26 * dp, text);
-        float by = top + 40 * dp;
-        resetRect.set(panelRect.left + 12 * dp, by, panelRect.left + 12 * dp + bw, by + bh);
-        doneRect.set(panelRect.right - 12 * dp - bw, by, panelRect.right - 12 * dp, by + bh);
-        fill.setColor(0xff505050); c.drawRoundRect(resetRect, 8 * dp, 8 * dp, fill);
-        fill.setColor(0xff2f7d32); c.drawRoundRect(doneRect, 8 * dp, 8 * dp, fill);
-        c.drawText(resetLabel, resetRect.centerX(), resetRect.centerY() + 6 * dp, text);
-        c.drawText(doneLabel, doneRect.centerX(), doneRect.centerY() + 6 * dp, text);
+    private void drawEditor(Canvas c) {   // DOOM's toolbar look (DoomPadView.drawEditor), the chosen control framed
+        boolean ru = Ui.ru(view.getContext()), sh = selHidden(), ch = canHide();
+        String[] names = ru ? new String[] {"−", "+", split ? "Раздельно" : "Группами", sh ? "Показать" : "Скрыть", "Сброс", "Отмена", "Сохранить"}
+                            : new String[] {"−", "+", split ? "Separate" : "Grouped", sh ? "Show" : "Hide", "Reset", "Cancel", "Save"};
+        float H = view.getHeight(), W = view.getWidth();
+        line.setStrokeWidth(1.5f * dp);
+        for (int i = 0; i < ED_BUTTONS; i++) {
+            RectF r = edButton(i);
+            fill.setColor(i == edBtnDown ? 0xff1fb6c9 : i == ED_BUTTONS - 1 ? 0xe0157c8a : 0xd0202833); line.setColor(0xff7fe3f0);
+            float rad = r.height() / 2; c.drawRoundRect(r, rad, rad, fill); c.drawRoundRect(r, rad, rad, line);
+            float ts = H * 0.04f; text.setTextSize(ts); float tw = text.measureText(names[i]); if (tw > r.width() * 0.9f) { ts *= r.width() * 0.9f / tw; text.setTextSize(ts); }
+            text.setColor(0xffffffff); text.setAlpha(i == 3 && !ch ? 0x60 : 0xff);   // Hide is grey while nothing hideable is chosen
+            c.drawText(names[i], r.centerX(), r.centerY() + ts * 0.35f, text);
+        }
+        line.setStrokeWidth(2 * dp);
+        selRect.setEmpty();
+        if (edSel == SEL_BTN) { for (Btn b : btns) if (inSel(b)) selRect.union(b.x - b.r, b.y - b.r, b.x + b.r, b.y + b.r); }
+        else if (edSel == SEL_ZOOM) selRect.set(zoom);
+        else if (edSel == SEL_MOVE) selRect.set(move.zone);
+        if (!selRect.isEmpty()) {   // one frame around the chosen control, or around its whole group
+            line.setColor(0xff7fe3f0); selRect.inset(-4 * dp, -4 * dp); c.drawRoundRect(selRect, 12 * dp, 12 * dp, line);
+        }
+        String hint = ru ? (split ? "Тяните кнопку пальцем (каждая отдельно)" : "Тяните кнопку пальцем (группа — целиком)") + ", второй палец — размер; −/+ без выбора меняют все; «Скрыть» убирает выбранное из игры"
+                         : (split ? "Drag a button (every button on its own)" : "Drag a button (its group moves as one)") + "; a second finger resizes it; − / + with none chosen resize all; Hide takes the chosen out of the game";
+        float ts = H * 0.032f; text.setTextSize(ts); float tw = text.measureText(hint); if (tw > W * 0.96f) { ts *= W * 0.96f / tw; text.setTextSize(ts); }
+        text.setColor(0xffffffff); text.setAlpha(220);
+        c.drawText(hint, W / 2f, edButton(0).bottom + H * 0.06f, text);
     }
 }
