@@ -663,6 +663,26 @@ JNIEXPORT jboolean JNICALL Java_com_xiaoboluo_d2r_DmActivity_nativeTl2OpenPanel(
 #endif
 }
 
+// [TL2] The automap (hle_tl2_map.c): is (x, y) (picture fractions) on the shown minimap / big map now (no console menu up), and switch it
+// minimap <-> big map the game's own way (its D-pad Right mode setting, 1 <-> 2). nativeTl2UiTap also does the switch for a tap on the map.
+// Java: `static native boolean nativeTl2MapHit(float x, float y);` / `static native boolean nativeTl2ToggleMap();` -> false when off / not this build.
+JNIEXPORT jboolean JNICALL Java_com_xiaoboluo_d2r_DmActivity_nativeTl2MapHit(JNIEnv *env, jclass cls, jfloat x, jfloat y) {
+    (void)env; (void)cls;
+#ifdef DM_GAME_TL2
+    int dm_tl2_map_hit(float x, float y); return dm_tl2_map_hit(x, y) ? JNI_TRUE : JNI_FALSE;
+#else
+    (void)x; (void)y; return JNI_FALSE;
+#endif
+}
+JNIEXPORT jboolean JNICALL Java_com_xiaoboluo_d2r_DmActivity_nativeTl2ToggleMap(JNIEnv *env, jclass cls) {
+    (void)env; (void)cls;
+#ifdef DM_GAME_TL2
+    int dm_tl2_map_toggle(void); return dm_tl2_map_toggle() ? JNI_TRUE : JNI_FALSE;
+#else
+    return JNI_FALSE;
+#endif
+}
+
 // [TL2] Button icons (hle_tl2_icons.c): the HUD action bar's slot icons as the game drew them. nativeTl2IconSerial() = change counter
 // (-1 = off); nativeTl2Icons(int[8*64*64] argb, int[8*4] meta) fills both (meta per slot: button code 1 A / 3 B / 2 X / 0 Y / 8 R / 9 ZR /
 // 10 L / 11 ZL, state 0 not yet / 1 icon / 2 nothing bound, 0, 0) and returns the serial.

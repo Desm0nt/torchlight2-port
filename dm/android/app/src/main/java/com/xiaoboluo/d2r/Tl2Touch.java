@@ -365,6 +365,9 @@ final class Tl2Touch {
     private void grab(Stick s, int id, float x, float y) {
         s.ptr = id; s.tx = x; s.ty = y; s.bx = Math.min(Math.max(x, joyMinX), view.getWidth() - joyMinX); s.by = Math.min(y, joyMaxY);
     }
+    // [TL2] map tap (hle_tl2_map.c): a finger that lands on the shown minimap / big map waits like a menu tap (T_MENU above); a short still
+    // tap then goes to nativeTl2UiTap, which with no menu up switches minimap <-> big map; moved, it becomes the stick / world finger as usual
+    private boolean mapHit(float x, float y) { int w = view.getWidth(), h = view.getHeight(); return w > 0 && h > 0 && DmActivity.nativeTl2MapHit(x / w, y / h); }
     private void begin(int id, float x, float y) {
         if (fingers.containsKey(id)) return;
         Finger f = new Finger(); f.x = f.x0 = x; f.y = f.y0 = y; f.t0 = now();
@@ -377,7 +380,7 @@ final class Tl2Touch {
         else if (zoomPtr < 0 && zoomHit(x, y)) { f.target = T_ZOOM; zoomPtr = id; zoomY0 = y; }
         // [TL2] pointer (hle_tl2_ui.c, gear "tap on menu items", DM_TL2_POINTER): while a console menu is up a finger off the overlay buttons
         // waits: a short still tap goes to the menu item under it; moving it first makes it the stick / world finger it would have been
-        else if (DmActivity.nativeTl2MenuOpen()) { f.target = T_MENU; f.zone = move.ptr < 0 && moveZone(x, y) ? T_JOY
+        else if (DmActivity.nativeTl2MenuOpen() || mapHit(x, y)) { f.target = T_MENU; f.zone = move.ptr < 0 && moveZone(x, y) ? T_JOY
                                                   : y > 60 * k && !moveZone(x, y) ? T_WORLD : T_NONE; }
         else if (move.ptr < 0 && moveZone(x, y)) { f.target = T_JOY; grab(move, id, x, y); }
         else if (y > 60 * k && !moveZone(x, y)) f.target = T_WORLD;

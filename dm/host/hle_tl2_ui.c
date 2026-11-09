@@ -288,6 +288,7 @@ static _Atomic uint64_t g_tap_xy; static _Atomic int g_tap_pending;
 int dm_tl2_ui_tap(float x, float y);
 int dm_tl2_ui_tap(float x, float y) {
     static int mode = -1; if (mode < 0) { const char *e = getenv("DM_TL2_POINTER"); mode = e && *e ? atoi(e) : 0; }   // before the first poll too
+    { int dm_tl2_map_tap(float, float); if (!atomic_load_explicit(&g_menu_open, memory_order_acquire) && dm_tl2_map_tap(x, y)) return 1; }   // hle_tl2_map.c: minimap <-> big map
     if (g_ok == 0 || mode <= 0 || !(x >= 0 && x <= 1 && y >= 0 && y <= 1)) return 0;
     if (g_ok > 0 && !atomic_load_explicit(&g_menu_open, memory_order_acquire)) return 0;   // plain gameplay: the caller keeps the touch
     uint32_t xb, yb; memcpy(&xb, &x, 4); memcpy(&yb, &y, 4);
@@ -686,6 +687,7 @@ static void op_step(void) {
 void dm_tl2_ui_pump(uint64_t *buttons);
 void dm_tl2_ui_pump(uint64_t *buttons) {
     (void)buttons;
+    { void dm_tl2_map_pump(void); dm_tl2_map_pump(); }   // hle_tl2_map.c (own gate DM_TL2_MAP): map tap requests, the map's hit rect
     if (g_ok < 0) setup();
     if (g_ok <= 0) return;
     if (g_mode > 0) {
