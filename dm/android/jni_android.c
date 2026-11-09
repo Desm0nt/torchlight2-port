@@ -41,6 +41,7 @@ void front_android_set_window(void *win, int w, int h);
 void front_android_set_refresh(float hz);
 int dm_main(int argc, char **argv);
 void front_android_boot_failed(int code);
+void dm_stall_watch_start(void); void dm_stall_quiet(int bit, int on);   // [TL2] APP-02 stall_android.c: the frame stall watch (DOOM 2016 2.45 / Eternal anrfix)
 
 static char g_files[1024], g_ext[1024], g_src[1024], g_runtime[1100];
 static FILE *g_logf;
@@ -519,7 +520,7 @@ JNIEXPORT jint JNICALL Java_com_xiaoboluo_d2r_DmActivity_nativeStart(JNIEnv *env
     dm_haptics_android_start();   // rumble thread, after the env file (DM_RUMBLE...) and before the game asks for vibration devices
     pthread_attr_t a; pthread_attr_init(&a); pthread_attr_setstacksize(&a, 8u << 20);
     pthread_t th; int rc = pthread_create(&th, &a, host_thread, NULL); pthread_attr_destroy(&a);
-    if (!rc) { started = 1; pthread_detach(th); }
+    if (!rc) { started = 1; pthread_detach(th); dm_stall_watch_start(); }   // [TL2] APP-02 stall_android.c: 【红】 thread report when a frame takes > 2 s
     LOG("boot: host thread %s", rc ? "NOT started" : "started");
     return rc ? -1 : n;
 }
@@ -573,6 +574,7 @@ JNIEXPORT void JNICALL Java_com_xiaoboluo_d2r_DmActivity_nativeFocus(JNIEnv *env
     { static const char *const names[] = {"unfocused (onPause)", "background (onStop)", "foreground (onStart)", "active (onResume)"};
       LOG("[life] %s", ev >= 0 && ev <= 3 ? names[ev] : "?"); }   // [DOOM] breadcrumb
     dm_android_touch_focus(ev == 2 || ev == 3);
+    dm_stall_quiet(2, ev <= 1);                         // [TL2] APP-02 no stall reports while unfocused / in the background
     front_android_sensors(ev == 2 || ev == 3);          // motion sensors only while in front
     dm_haptics_android_foreground(ev == 2 || ev == 3);  // no rumble left running in the background
     if (lifecycle_ready()) {
@@ -730,6 +732,7 @@ JNIEXPORT void JNICALL Java_com_xiaoboluo_d2r_DmActivity_nativeHold(JNIEnv *env,
     (void)env; (void)cls;
     dm_haptics_android_foreground(on ? 0 : 1);   // no rumble left running under the menu
     dm_hold_menu(on ? 1 : 0);
+    dm_stall_quiet(1, on);                       // [TL2] APP-02 the held game presents nothing: not a stall
 }
 // [DOOM] Java breadcrumbs into boot.log (DmActivity.crumb: trim memory, driver decision, first frame, crash report written) and the log
 // file's path for CrashLog.java (the same rule as here; "" before nativeStart).

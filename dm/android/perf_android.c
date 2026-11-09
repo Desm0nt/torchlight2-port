@@ -204,7 +204,9 @@ static int perf_off(void) {
     if (off) LOG("[perf] performance hints off (%s)", e && !strcmp(e, "0") ? "DM_ADPF=0" : "ARM translation layer detected");
     return off;
 }
+void dm_stall_present(void);   // [TL2] APP-02 stall_android.c: the frame stall watch's present clock (before any early return)
 void dm_aperf_present(ANativeWindow *w, float marker_vote) {
+    dm_stall_present();
     if (perf_off()) return;
     double period = dm_present_period();
     int64_t p = period > 0 && period < 1 ? (int64_t)(period * 1e9) : 16666667, t = perf_now();
