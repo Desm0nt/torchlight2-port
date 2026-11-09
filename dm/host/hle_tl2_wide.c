@@ -179,6 +179,14 @@ static void ui_layout(uint64_t node, const float *pr) {   // = 0x19f5a90
     }
     g_ui_layout_orig(node, pr);
 }
+// [TL2] hle_tl2_icons.c: is this screen-layer child a HUD one (keeps the whole width)? -1 = not known (hybrid band not installed),
+// 1 = added by a HUD site, 0 = any other screen (menus, panels, dialogs; also a child never seen being added, as ui_layout treats it)
+int dm_tl2_ui_screen_is_hud(uint64_t el);
+int dm_tl2_ui_screen_is_hud(uint64_t el) {
+    if (!g_ui_layout_orig) return -1;
+    for (int i = 0; i < UI_NTAG; i++) if (g_tag[i].el == el) return g_tag[i].wide ? 1 : 0;
+    return 0;
+}
 static int ui_jump(module_t *m, uint32_t off, void *to) {   // ldr x16, #8; br x16; .quad to
     uint32_t w[4] = {0x58000050, 0xd61f0200, (uint32_t)(uintptr_t)to, (uint32_t)((uint64_t)(uintptr_t)to >> 32)};
     return tw_poke(m, off, w, 4);

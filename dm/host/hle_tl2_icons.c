@@ -10,6 +10,12 @@
 // rectangles of the slots that changed (or are due a refresh: every 5 s, never while their cooldown runs) out of the presented frame into a
 // host buffer (vkCmdCopyImageToBuffer inside its own command buffer, read back after that frame's fence: no extra GPU sync), at most
 // 4 times a second; they are scaled to 64 x 64 ARGB and published with a serial for Java (JNI nativeTl2IconSerial / nativeTl2Icons).
+// No crop while anything may cover the bar (the crop takes whatever the frame shows there: an open inventory / quest panel gave "mush"):
+// the console UI's menu stack (+0x58 / top +0x60) not empty (radial menus = inventory / skills / quests / stash, pause, options...), the
+// modal dialog (+0x50) or the loading screen (+0x90) drawn, or (hybrid widescreen UI, hle_tl2_wide.c) a drawn non-HUD child of the screen
+// layer (+0xa0) over the bar's rectangle; then 600 ms after the last cover before the next crop (fade-outs). Checked on the game thread
+// every npad read and again by the presenter when it takes a request; a batch whose frame was presented across a cover is thrown away
+// (cover generation). The icons already published stay.
 //   DM_TL2_ICONS=0 turns it off (default on: it reads only; a wrong rectangle can only give a wrong picture on a touch button).
 #ifdef DM_GAME_TL2
 #include "hle.h"
@@ -21,6 +27,7 @@
 
 enum {
     U_MGR = 0x74cfe70, U_GOT_MGR = 0x23a3590, P_MGR = 0x927a970, M_W = 0x2f8, M_H = 0x2fc, U_LOADING = 0x90,
+    U_STACK = 0x58, U_TOP = 0x60, U_MODAL = 0x50, U_LAYER = 0xa0, E_FIRST = 0x40, E_NEXT = 0x58,
     VT_HUD = 0x230a470, VT_LOCAL = 0x230a100, VT_BAR = 0x230a548, HUD_OF_MGR = 0x68, LOCAL_OF_HUD = 0x38, BAR_OF_LOCAL = 0xb8,
     BAR_SLOTS = 0x40, BAR_SLOTS_END = 0x48, SLOT = 0x68, S_CODE = 0, S_HASH = 8, S_ICON = 0x18, S_COOL = 0x30, COOL_FILL = 0x134,
     E_PARENT = 0x38, E_RECT = 0x60, E_DRAWN = 0x74,
@@ -44,10 +51,36 @@ static uint64_t rq(uint64_t a) { uint64_t v = 0; return rd(a, &v, 8) ? v : 0; }
 static uint64_t img(uint32_t o) { return (uint64_t)(uintptr_t)g_base + o; }
 static int drawn_chain(uint64_t e) { uint8_t v; for (int d = 0; e && d < 48; d++, e = rq(e + E_PARENT)) if (!rd(e + E_DRAWN, &v, 1) || !v) return 0; return 1; }
 
+// ---- "something may cover the action bar"
+// cheap part (any thread): menu stack not empty, modal dialog drawn, loading screen drawn
+static int ui_cover_now(void) {
+    uint64_t m = img(U_MGR); uint8_t v = 0;
+    uint64_t load = rq(m + U_LOADING); if (load && rd(load + E_DRAWN, &v, 1) && v) return 1;
+    int32_t top = -1; rd(m + U_TOP, &top, 4);
+    if (top >= 0 && top < 64) { uint64_t st = rq(m + U_STACK); if (st && rq(st + 8ull * top)) return 2; }
+    uint64_t modal = rq(m + U_MODAL); v = 0;
+    if (modal && rd(modal + E_DRAWN, &v, 1) && v) return 3;
+    return 0;
+}
+int dm_tl2_ui_screen_is_hud(uint64_t el);   // hle_tl2_wide.c (-1 = unknown)
+// game thread: a drawn non-HUD screen over the bar (rect = the union of the bar's icon rectangles, canvas units)
+static int ui_screen_over(const float bar[4]) {
+    if (!(bar[2] > bar[0] && bar[3] > bar[1])) return 0;
+    uint64_t layer = rq(img(U_MGR) + U_LAYER), c = layer ? rq(layer + E_FIRST) : 0;
+    for (int n = 0; c && n < 128; n++, c = rq(c + E_NEXT)) {
+        uint8_t v = 0; float r[4];
+        if (!rd(c + E_DRAWN, &v, 1) || !v || !rd(c + E_RECT, r, 16)) continue;
+        int hud = dm_tl2_ui_screen_is_hud(c); if (hud < 0) return 0; if (hud) continue;
+        if (r[0] < bar[2] && r[2] > bar[0] && r[1] < bar[3] && r[3] > bar[1]) return 4;
+    }
+    return 0;
+}
+static _Atomic int g_cover_gen, g_covered;   // bumped / set while covered (game thread or presenter); a batch spanning a bump is dropped
+
 // ---- shared state (game thread <-> translation thread <-> Java)
 static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
 static struct { int code; int64_t hash; float r[4]; int vis, cool; } g_slot[NSLOT];   // game thread's latest look
-static struct { int n, idx[NSLOT]; float r[NSLOT][4]; float cw, ch; int64_t hash[NSLOT]; uint64_t t; int taken, used[NSLOT], nused; } g_req;   // under g_mu
+static struct { int n, idx[NSLOT]; float r[NSLOT][4]; float cw, ch; int64_t hash[NSLOT]; uint64_t t; int taken, used[NSLOT], nused, gen; } g_req;   // under g_mu
 static int64_t g_have[NSLOT]; static uint64_t g_got_t[NSLOT];                             // game thread: hash captured, when
 static uint32_t g_px[NSLOT][ICON * ICON]; static int g_meta[NSLOT][4]; static _Atomic int g_serial;   // published (under g_mu)
 
@@ -80,14 +113,24 @@ void dm_tl2_icons_poll(void);
 void dm_tl2_icons_poll(void) {
     if (g_ok < 0) setup();
     if (g_ok <= 0) return;
-    static uint64_t next; uint64_t now = now_ns();
+    static uint64_t next, clear_since; static int last_why = -1; static float bar_r[4]; uint64_t now = now_ns();
+    int why = ui_cover_now();   // every npad read (cheap): a panel that opens shows in the next frame
+    if (!why) why = ui_screen_over(bar_r);
+    if (why != last_why) { static int told; if (told++ < 100) LOG("[tl2icons] crop %s (%s)", why ? "paused" : "allowed again in 600 ms",
+        (const char *const[]){"HUD only", "loading screen", "menu / panel open", "modal dialog", "screen over the action bar"}[why]); last_why = why; }
+    if (why) {
+        if (!atomic_load(&g_covered)) atomic_store(&g_covered, 1);
+        atomic_fetch_add(&g_cover_gen, 1); clear_since = 0;
+        pthread_mutex_lock(&g_mu); if (!g_req.taken) g_req.n = 0; pthread_mutex_unlock(&g_mu);   // a waiting request would crop the cover
+    } else { atomic_store(&g_covered, 0); if (!clear_since) clear_since = now; }
     if (now < next) return;
     next = now + 50000000ull;   // 20 Hz is plenty
+    int settled = !why && clear_since && now - clear_since >= 600000000ull;
     uint64_t bar = bar_now(), s0 = bar ? rq(bar + BAR_SLOTS) : 0, s1 = bar ? rq(bar + BAR_SLOTS_END) : 0;
     int n = s1 > s0 ? (int)((s1 - s0) / SLOT) : 0; if (n > NSLOT) n = NSLOT;
     uint64_t load = rq(img(U_MGR) + U_LOADING); uint8_t lv = 0; int loading = load && rd(load + E_DRAWN, &lv, 1) && lv;
     int32_t cwh[2] = {1920, 1080}; rd(img(P_MGR) + M_W, cwh, 8);
-    int want[NSLOT], nw = 0, published_change = 0;
+    int want[NSLOT], nw = 0, published_change = 0; float ub[4] = {0};
     for (int i = 0; i < NSLOT; i++) {
         uint64_t s = s0 + (uint64_t)i * SLOT; int code = -1; int64_t hash = -1; float r[4] = {0}; int vis = 0, cool = 0;
         if (i < n) {
@@ -107,6 +150,7 @@ void dm_tl2_icons_poll(void) {
             static float last_r[NSLOT][4]; static int same[NSLOT];
             if (memcmp(last_r[i], r, 16)) { memcpy(last_r[i], r, 16); same[i] = 0; } else if (same[i] < 100) same[i]++;
             if (same[i] < 3) cool = 1;
+            if (vis) { if (!(ub[2] > ub[0])) memcpy(ub, r, 16); else { if (r[0] < ub[0]) ub[0] = r[0]; if (r[1] < ub[1]) ub[1] = r[1]; if (r[2] > ub[2]) ub[2] = r[2]; if (r[3] > ub[3]) ub[3] = r[3]; } }
         }
         g_slot[i].code = code; g_slot[i].hash = hash; memcpy(g_slot[i].r, r, 16); g_slot[i].vis = vis; g_slot[i].cool = cool;
         int empty = i < n && (hash == -1 || hash == 0x499602d2ll);
@@ -114,14 +158,15 @@ void dm_tl2_icons_poll(void) {
         if (g_meta[i][0] != code) { g_meta[i][0] = code; g_meta[i][1] = 0; published_change = 1; }   // slot code known (button)
         if (empty && g_meta[i][1] != 2) { g_meta[i][1] = 2; g_have[i] = hash; published_change = 1; }   // became empty: no pixels
         pthread_mutex_unlock(&g_mu);
-        if (empty || !vis || cool) continue;
+        if (empty || !vis || cool || !settled) continue;
         if (hash != g_have[i] || now - g_got_t[i] > 5000000000ull) want[nw++] = i;
     }
+    if (ub[2] > ub[0]) memcpy(bar_r, ub, 16);   // the bar's area for the next screen-over test (kept while the bar is not drawn)
     if (published_change) atomic_fetch_add(&g_serial, 1);
     if (!nw) return;
     pthread_mutex_lock(&g_mu);
     if (!g_req.n || (g_req.taken && now - g_req.t > 1000000000ull) || (!g_req.taken && now - g_req.t > 250000000ull)) {
-        g_req.n = nw; g_req.cw = (float)(cwh[0] > 0 ? cwh[0] : 1920); g_req.ch = (float)(cwh[1] > 0 ? cwh[1] : 1080); g_req.t = now; g_req.taken = 0;
+        g_req.n = nw; g_req.cw = (float)(cwh[0] > 0 ? cwh[0] : 1920); g_req.ch = (float)(cwh[1] > 0 ? cwh[1] : 1080); g_req.t = now; g_req.taken = 0; g_req.gen = atomic_load(&g_cover_gen);
         for (int k = 0; k < nw; k++) { g_req.idx[k] = want[k]; memcpy(g_req.r[k], g_slot[want[k]].r, 16); g_req.hash[k] = g_slot[want[k]].hash; }
     }
     pthread_mutex_unlock(&g_mu);
@@ -159,6 +204,7 @@ static int icon_want(int32_t px, int32_t py, int32_t pw, int32_t ph, int32_t out
     if (g_ok <= 0 || pw <= 0 || ph <= 0) return 0;
     static uint64_t last; uint64_t now = now_ns(); int n = 0;
     pthread_mutex_lock(&g_mu);
+    if (g_req.n && !g_req.taken && (atomic_load(&g_covered) || g_req.gen != atomic_load(&g_cover_gen) || ui_cover_now())) g_req.n = 0;   // covered since
     if (g_req.n && !g_req.taken && now - last >= 250000000ull) {
         for (int k = 0; k < g_req.n && n < max; k++) {
             const float *r = g_req.r[k]; float a, b, c, d;
@@ -179,6 +225,7 @@ static void icon_done(int n, const int32_t rect[][4], const uint8_t *pix, int bg
     if (g_ok <= 0) return;
     pthread_mutex_lock(&g_mu);
     int m = g_req.taken ? g_req.nused : 0, k = 0;
+    if (m && (atomic_load(&g_covered) || g_req.gen != atomic_load(&g_cover_gen))) m = 0;   // a cover came between the request and this frame
     for (; k < m && k < n; k++) {
         int j = g_req.used[k], i = g_req.idx[j], w = rect[k][2], h = rect[k][3];
         uint32_t *o = g_px[i];
