@@ -112,7 +112,7 @@ static int tl_loading_up(void) {
 // PUI::Element (hle_tl2_ui.c): +0x38 parent, +0x40 first / +0x48 last child, +0x50 prev / +0x58 next sibling, +0x60 l,t,r,b laid-out rect
 // (canvas units), +0x70 child count. Layout = vt+0x70, base 0x19f5a90 (CConsoleUILoading, CConsoleUIDialog, plain elements):
 // rect = parent rect l + anchor (+0x10..+0x1c) x parent size + offset (+0x20..+0x2c), pivot +0x30 for fixed-size axes, then the
-// children (vt+0x78). AddChild: vt+0x58 = 0x19f59a0 (in front), vt+0x50 = 0x19f59e0 (at the back).
+// children (vt+0x78). AddChild: vt+0x50 = 0x19f59a0 (first in the list = drawn first), vt+0x58 = 0x19f59e0 (last = drawn on top).
 //   * 0x19f59a0 / 0x19f59e0 are replaced by the same list code in C (ui_add_front / ui_add_back), which also notes, for a child of the
 //     screen layer, whether its caller is a HUD site (return address below): those keep the whole width;
 //   * 0x19f5a90 is entered through ui_layout: a child of the screen layer that is not a HUD one, the loading screen and the modal dialog
@@ -123,26 +123,87 @@ static int tl_loading_up(void) {
 //   MultiPlayerHud 0x1227ec, TextEventsHud 0xbc77c, TargetEnemyHud 0xbded4, StoryHud 0xbed1c, Loot (item labels) 0x1193ac,
 //   CConsoleAutomap 0x129ce0 / 0x129da0 / 0x129e3c / 0x12bfec / 0x12c010 / 0x12c034 / 0x12c44c.
 // DM_TL2_WIDE_KEEP=<hex>,<hex>,... more return addresses that keep the whole width (the log names each new screen-layer child's caller).
+//
+// In-game menus (inventory / character / skills / quests / pet / stash / NPC vendors ...) are NOT screen-layer children: they are all
+// CConsoleUIRadialMenu (vt 0x230d6d8; the panels, class Panel, live inside it, docs "Радиальные меню и панели"), whose Show (vt slot 6 =
+// 0x137760) puts its root (+0x50, a plain PUI::Element 0x88 bytes made in Create 0x134ec0, anchors 0..1) straight onto the PUI root
+// (PUI manager main+0x927a970 +0x308, root->AddChild vt+0x58 = 0x19f59e0, return address 0x13778c) - so it laid out on the whole wide
+// canvas and its 1920-designed children (anchor 0 + offsets) sat at the left edge. Root children added from a "band" site
+// (k_root_band: 0x13778c; DM_TL2_WIDE_BAND=<hex>,... adds more; the log names every other root child's caller once) are laid out in the
+// centred band like the layer screens. The other root children stay as they are: the screen layer +0xa0, loading +0x90 / dialog +0x50
+// (banded by pointer), toasts +0xf8 / +0x100, texts, the per-player elements +0x198 (re-added on each menu push, 0x1121d4).
+// The wheel itself (PUI::Radial, vt 0x2365628) places its segments without its rect: Layout 0x19fd5e0 (after the base Layout) and
+// SetSegments 0x19fd7a0 (from the radial menu 0x13ab70) write each segment centre (+0xa8.. x 0x118, +0x4c x / +0x50 y) from the radial's
+// own offsets (+0x20 / +0x28) only, so they would stay at the left while the frame / lists moved. Both enter through C wrappers that,
+// after the original, add the band shifts of the radial's ancestors (recorded by ui_layout) to every centre x. Taps follow without
+// changes: hle_tl2_ui.c hit-tests the laid-out rects (+0x60, list areas +0x84 come from the rect) and these segment centres, all in
+// canvas units of the same wide canvas.
 enum { UI_LAYOUT = 0x19f5a90, UI_ADD_FRONT = 0x19f59a0, UI_ADD_BACK = 0x19f59e0, E_PARENT = 0x38, E_FIRST = 0x40, E_LAST = 0x48, E_PREV = 0x50,
-       E_NEXT = 0x58, E_COUNT = 0x70 };
+       E_NEXT = 0x58, E_COUNT = 0x70,
+       P_MGR = 0x927a970, P_ROOT = 0x308, RA_LAYOUT = 0x19fd5e0, RA_SETSEG = 0x19fd7a0, RM_SHOW = 0x137760, RA_SEG = 0xa8, RA_SEGEND = 0xb0,
+       SEG_STRIDE = 0x118, SEG_X = 0x4c, VT_RADMENU = 0x230d6d8, RM_ROOT = 0x50, RM_TYPE = 0x2c, RM_TAB = 0x44, RM_PANEL = 0x2d8,
+       U_STACK = 0x58, U_TOP = 0x60 };
 static const uint32_t k_ui_layout[4] = {0xfc1d0fe8 /* str d8,[sp,#-0x30]! */, 0xa9014ff4, 0xa9027bfd, 0x910083fd /* add x29,sp,#0x20 */};
 static const uint32_t k_ui_add_front[14] = {0xf9402008, 0xb40000c8, 0xf9002c28, 0xf9402008, 0xf9002901, 0xf9002001, 0x14000003, 0xa9040401,
                                             0xa9057c3f, 0xf9001c20, 0xb9407008, 0x11000508, 0xb9007008, 0xd65f03c0};
 static const uint32_t k_ui_add_back[14] = {0xf9402408, 0xb40000c8, 0xf9002828, 0xf9402408, 0xf9002d01, 0xf9002401, 0x14000003, 0xa9040401,
                                            0xa9057c3f, 0xf9001c20, 0xb9407008, 0x11000508, 0xb9007008, 0xd65f03c0};
-static const tw_site k_ui_sites[] = {{UI_LAYOUT, 4, k_ui_layout}, {UI_ADD_FRONT, 14, k_ui_add_front}, {UI_ADD_BACK, 14, k_ui_add_back}};
+// PUI::Radial Layout 0x19fd5e0: prologue (4, no PC-relative ones), bl base Layout, ..., the centre store 0x19fd658 str s0,[x20,#0x4c]
+static const uint32_t k_ra_layout[8] = {0xfc1c0fea /* str d10,[sp,#-0x40]! */, 0x6d00a3e9, 0xf9000ff5, 0xa9024ff4, 0xa9037bfd, 0x9100c3fd, 0xaa0003f3,
+                                        0x97ffe125 /* bl 0x19f5a90 */};
+static const uint32_t k_ra_layout_x[2] = {0xbd004e80 /* str s0,[x20,#0x4c] */, 0xbd400e80};
+// PUI::Radial SetSegments 0x19fd7a0 (radial, node): prologue (4, no PC-relative ones); its centre store 0x19fe2c8; its only caller 0x13ab70
+static const uint32_t k_ra_setseg[4] = {0xfc170fec /* str d12,[sp,#-0x90]! */, 0x6d012beb, 0x6d0223e9, 0xa9036ffc};
+static const uint32_t k_ra_setseg_x[2] = {0xbd004e80 /* str s0,[x20,#0x4c] */, 0xbd400e80};
+static const uint32_t k_ra_setseg_call[1] = {0x94630b0c /* bl 0x19fd7a0 */};
+// CConsoleUIRadialMenu Show 0x137760: PUI root (GOT 0x23a3678 -> +0x308)->AddChild vt+0x58 (this +0x50), return address 0x13778c
+static const uint32_t k_rm_show[11] = {0xf81e0ff3, 0xa9017bfd, 0x910043fd, 0x90011373, 0xf9433e73 /* ldr x19,[GOT 0x23a3678] */,
+                                       0xf9418668 /* ldr x8,[x19,#0x308] */, 0xf9400109, 0xf9402801 /* ldr x1,[x0,#0x50] */, 0xaa0803e0,
+                                       0xf9402d29 /* ldr x9,[x9,#0x58] */, 0xd63f0120 /* blr x9 */};
+static const tw_site k_ui_sites[] = {{UI_LAYOUT, 4, k_ui_layout}, {UI_ADD_FRONT, 14, k_ui_add_front}, {UI_ADD_BACK, 14, k_ui_add_back},
+                                     {RA_LAYOUT, 8, k_ra_layout}, {0x19fd658, 2, k_ra_layout_x}, {RA_SETSEG, 4, k_ra_setseg},
+                                     {0x19fe2c8, 2, k_ra_setseg_x}, {0x13ab70, 1, k_ra_setseg_call}, {RM_SHOW, 11, k_rm_show}};
 static uint32_t g_keep[48]; static int g_nkeep;
 static const uint32_t k_keep[] = {0x125cfc, 0x124a24, 0x124a9c, 0x124b30, 0x124bec, 0x12013c, 0x1227ec, 0xbc77c, 0xbded4, 0xbed1c, 0x1193ac,
                                   0x129ce0, 0x129da0, 0x129e3c, 0x12bfec, 0x12c010, 0x12c034, 0x12c44c};
+static uint32_t g_rband[16]; static int g_nrband;
+static const uint32_t k_root_band[] = {0x13778c /* CConsoleUIRadialMenu Show */};
 static uintptr_t g_ui_base;
 static void (*g_ui_layout_orig)(uint64_t node, const float *pr);   // the copied prologue + jump to 0x19f5aa0
+static void (*g_ra_layout_orig)(uint64_t node, const float *pr);   // PUI::Radial Layout, prologue copy + jump to 0x19fd5f0
+static void (*g_ra_setseg_orig)(uint64_t radial, uint64_t node);   // PUI::Radial SetSegments, prologue copy + jump to 0x19fd7b0
 #define UI_NTAG 128
 static struct { uint64_t el; uint32_t wide; } g_tag[UI_NTAG];   // screen-layer children seen being added (game main thread only)
+#define UI_NROOT 16
+static struct { uint64_t el; uint32_t ra; } g_root[UI_NROOT];  // PUI root children added from a band site (ring; radial menu roots)
+static int g_root_next;
+#define UI_NBAND 64
+static struct { uint64_t el; float shift; } g_band[UI_NBAND];   // nodes ui_layout last laid out in the band, and by how much they moved
 static int ui_is_keep(uint32_t ra) { for (int i = 0; i < g_nkeep; i++) if (g_keep[i] == ra) return 1; return 0; }
+static int ui_is_rband(uint32_t ra) { for (int i = 0; i < g_nrband; i++) if (g_rband[i] == ra) return 1; return 0; }
+static uint64_t ui_root(void) { return *(const uint64_t *)(g_ui_base + P_MGR + P_ROOT); }
+static void ui_note_root(uint64_t child, uint32_t ra) {
+    int band = ra && ui_is_rband(ra), at = -1;
+    for (int i = 0; i < UI_NROOT; i++) if (g_root[i].el == child) { at = i; break; }
+    if (band) {
+        if (at < 0) { at = g_root_next; g_root_next = (g_root_next + 1) % UI_NROOT; }
+        int is_new = g_root[at].el != child;
+        g_root[at].el = child; g_root[at].ra = ra;
+        static int told; if (is_new && told < 200) { told++; LOG("[wide] UI panel root %#llx added to the PUI root by main+%#x (%s): centred 1920 band",
+                                                               (unsigned long long)child, ra, ra == 0x13778c ? "CConsoleUIRadialMenu Show: inventory / character / skills / quests / pet / NPC menus" : "DM_TL2_WIDE_BAND"); }
+    } else {
+        if (at >= 0) g_root[at].el = 0;   // the address was reused by something else
+        static uint32_t seen[32]; static int nseen;
+        int known = 0; for (int i = 0; i < nseen; i++) if (seen[i] == ra) { known = 1; break; }
+        if (!known && nseen < 32) { seen[nseen++] = ra; LOG("[wide] PUI root child %#llx added by main+%#x: whole width (DM_TL2_WIDE_BAND=%x would centre it)",
+                                                            (unsigned long long)child, ra, ra); }
+    }
+}
 static void ui_note(uint64_t parent, uint64_t child, uintptr_t lr) {
     uint64_t layer = *(const uint64_t *)(g_tl_uimgr + U_LAYER);
-    if (!layer || parent != layer) return;
     uint32_t ra = lr >= g_ui_base && lr - g_ui_base < 0x8000000 ? (uint32_t)(lr - g_ui_base) : 0;
+    if (parent && parent == ui_root()) { ui_note_root(child, ra); return; }
+    if (!layer || parent != layer) return;
     int wide = ra && ui_is_keep(ra), slot = -1;
     for (int i = 0; i < UI_NTAG; i++) { if (g_tag[i].el == child) { slot = i; break; } if (slot < 0 && !g_tag[i].el) slot = i; }
     if (slot < 0) slot = (int)(child >> 4) % UI_NTAG;   // full (should not happen: a few dozen screens): overwrite one
@@ -166,17 +227,63 @@ static void ui_add_back(uint64_t p, uint64_t c) {   // = 0x19f59e0
     *(uint64_t *)(c + E_PARENT) = p; (*(int32_t *)(p + E_COUNT))++;
     ui_note(p, c, lr);
 }
+static void ui_band_set(uint64_t node, float shift) {
+    int at = -1;
+    for (int i = 0; i < UI_NBAND; i++) { if (g_band[i].el == node) { at = i; break; } if (at < 0 && !g_band[i].el) at = i; }
+    if (shift == 0.f) { if (at >= 0 && g_band[at].el == node) g_band[at].el = 0; return; }
+    if (at < 0) at = (int)(node >> 4) % UI_NBAND;
+    g_band[at].el = node; g_band[at].shift = shift;
+}
+static float ui_band_of(uint64_t node) { for (int i = 0; i < UI_NBAND; i++) if (g_band[i].el == node) return g_band[i].shift; return 0.f; }
+// The radial menu on top of the UI manager's stack whose root is `root` (0 = none): for the log only (main thread, live objects)
+static uint64_t ui_top_radial(uint64_t root) {
+    int32_t top = *(const int32_t *)(g_tl_uimgr + U_TOP);
+    uint64_t st = *(const uint64_t *)(g_tl_uimgr + U_STACK);
+    for (int i = top; st && i >= 0 && i > top - 4 && i < 64; i--) {
+        uint64_t mn = *(const uint64_t *)(st + 8ull * i);
+        if (mn && *(const uint64_t *)mn == (uint64_t)(g_ui_base + VT_RADMENU) && *(const uint64_t *)(mn + RM_ROOT) == root) return mn;
+    }
+    return 0;
+}
+static const char *ui_panel_name(uint64_t vt) {
+    static const struct { uint32_t vt; const char *n; } k[] = {{0x23036f8, "PanelEquipment (inventory / pet)"}, {0x2302200, "PanelSkills"},
+        {0x2303870, "PanelAssignStats (character)"}, {0x2303240, "PanelQuests"}};
+    for (size_t i = 0; i < sizeof k / sizeof *k; i++) if (vt == (uint64_t)(g_ui_base + k[i].vt)) return k[i].n;
+    return vt ? "panel" : "no panel yet (wheel)";
+}
+// One line per change of (radial root, tab, hosted panel): which in-game menu / panel now sits in the band, and where
+static void ui_log_panel(uint64_t root) {
+    static uint64_t last_root, last_vt; static int last_tab = -2, told;
+    uint64_t mn = ui_top_radial(root), pn = mn ? *(const uint64_t *)(mn + RM_PANEL) : 0, vt = pn ? *(const uint64_t *)pn : 0;
+    int tab = mn ? *(const int32_t *)(mn + RM_TAB) : -1;
+    if ((root == last_root && vt == last_vt && tab == last_tab) || told >= 300) return;
+    told++; last_root = root; last_vt = vt; last_tab = tab;
+    uint32_t vto = vt >= g_ui_base && vt - g_ui_base < 0x8000000 ? (uint32_t)(vt - g_ui_base) : 0;
+    const float *b = (const float *)(root + 0x60), *c = (const float *)(ui_root() + 0x60);
+    LOG("[wide] centred 1920 band: radial menu %#llx (type %d, tab %d), %s (vt main+%#x), root %#llx at x %.0f..%.0f of canvas %.0f..%.0f",
+        (unsigned long long)mn, mn ? *(const int32_t *)(mn + RM_TYPE) : -1, tab, ui_panel_name(vt), vto, (unsigned long long)root, b[0], b[2], c[0], c[2]);
+}
 static void ui_layout(uint64_t node, const float *pr) {   // = 0x19f5a90
     float w = pr[2] - pr[0];
     if (w > 1920.5f) {
         uint64_t parent = *(const uint64_t *)(node + E_PARENT), layer = *(const uint64_t *)(g_tl_uimgr + U_LAYER);
-        int band = 0;
+        int band = 0, panel = 0;
         if (parent && parent == layer) {
             band = 1;
             for (int i = 0; i < UI_NTAG; i++) if (g_tag[i].el == node) { band = !g_tag[i].wide; break; }
+        } else if (parent && parent == ui_root()) {
+            for (int i = 0; i < UI_NROOT; i++) if (g_root[i].el == node) { band = panel = 1; break; }
+            if (!band && (node == *(const uint64_t *)(g_tl_uimgr + U_LOADING) || node == *(const uint64_t *)(g_tl_uimgr + U_DIALOG))) band = 1;
         } else if (node == *(const uint64_t *)(g_tl_uimgr + U_LOADING) || node == *(const uint64_t *)(g_tl_uimgr + U_DIALOG)) band = 1;
-        if (band) { float l = pr[0] + floorf((w - 1920.f) * 0.5f), b[4] = {l, pr[1], l + 1920.f, pr[3]}; g_ui_layout_orig(node, b); return; }
+        if (band) {
+            float sh = floorf((w - 1920.f) * 0.5f), l = pr[0] + sh, b[4] = {l, pr[1], l + 1920.f, pr[3]};
+            ui_band_set(node, sh);
+            g_ui_layout_orig(node, b);
+            if (panel) ui_log_panel(node);
+            return;
+        }
     }
+    ui_band_set(node, 0.f);
     g_ui_layout_orig(node, pr);
 }
 // [TL2] hle_tl2_icons.c: is this screen-layer child a HUD one (keeps the whole width)? -1 = not known (hybrid band not installed),
@@ -187,6 +294,25 @@ int dm_tl2_ui_screen_is_hud(uint64_t el) {
     for (int i = 0; i < UI_NTAG; i++) if (g_tag[i].el == el) return g_tag[i].wide ? 1 : 0;
     return 0;
 }
+// The wheel: move every segment centre by the band shifts of the radial's ancestors (its own Layout / SetSegments placed them from its
+// offsets alone, as if every ancestor sat at x 0)
+static void ui_radial_fix(uint64_t ra, const char *who) {
+    float dx = 0.f; uint64_t p = *(const uint64_t *)(ra + E_PARENT), top = 0;
+    for (int d = 0; p && d < 48; d++, p = *(const uint64_t *)(p + E_PARENT)) {
+        float s = ui_band_of(p); dx += s;
+        if (s != 0.f) for (int i = 0; i < UI_NROOT; i++) if (g_root[i].el == p) top = p;
+    }
+    if (top) ui_log_panel(top);   // SetSegments runs on a tab / ring change, often without a relayout of the menu
+    if (dx == 0.f) return;
+    uint64_t s0 = *(const uint64_t *)(ra + RA_SEG), s1 = *(const uint64_t *)(ra + RA_SEGEND);
+    int n = s1 > s0 && (s1 - s0) / SEG_STRIDE <= 256 ? (int)((s1 - s0) / SEG_STRIDE) : 0;
+    for (int i = 0; i < n; i++) *(float *)(s0 + (uint64_t)i * SEG_STRIDE + SEG_X) += dx;
+    static uint64_t last; static int last_n, told;
+    if ((ra != last || n != last_n) && told < 200) { told++; last = ra; last_n = n;
+        LOG("[wide] radial wheel %#llx (%s): %d segment centres moved +%.0f with the centred band", (unsigned long long)ra, who, n, dx); }
+}
+static void ui_ra_layout(uint64_t node, const float *pr) { g_ra_layout_orig(node, pr); ui_radial_fix(node, "Layout"); }      // = 0x19fd5e0
+static void ui_ra_setseg(uint64_t ra, uint64_t node) { g_ra_setseg_orig(ra, node); ui_radial_fix(ra, "SetSegments"); }    // = 0x19fd7a0
 static int ui_jump(module_t *m, uint32_t off, void *to) {   // ldr x16, #8; br x16; .quad to
     uint32_t w[4] = {0x58000050, 0xd61f0200, (uint32_t)(uintptr_t)to, (uint32_t)((uint64_t)(uintptr_t)to >> 32)};
     return tw_poke(m, off, w, 4);
@@ -203,19 +329,36 @@ static int ui_band_install(module_t *m) {
         if (v) g_keep[g_nkeep++] = (uint32_t)v;
         s = *end == ',' ? end + 1 : end;
     }
-    // the original Layout's prologue (4 instructions, no PC-relative ones) + a jump to the rest of it, in a page of its own
+    g_nrband = 0;
+    for (size_t i = 0; i < sizeof k_root_band / sizeof k_root_band[0]; i++) g_rband[g_nrband++] = k_root_band[i];
+    const char *be = getenv("DM_TL2_WIDE_BAND");
+    for (const char *s = be; s && *s && g_nrband < (int)(sizeof g_rband / sizeof g_rband[0]);) {
+        char *end; unsigned long v = strtoul(s, &end, 16); if (end == s) break;
+        if (v) g_rband[g_nrband++] = (uint32_t)v;
+        s = *end == ',' ? end + 1 : end;
+    }
+    if (m->size < P_MGR + P_ROOT + 8) { LOG("【红】[wide] main is smaller than the PUI manager main+%#x: no centred UI band", P_MGR); return -1; }
+    // each original's prologue (4 instructions, no PC-relative ones) + a jump to the rest of it, in a page of their own
     uint32_t *t = mmap(NULL, 0x4000, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (t == MAP_FAILED) { LOG("【红】[wide] mmap failed: no centred UI band"); return -1; }
-    uint64_t rest = (uint64_t)(uintptr_t)(m->base + UI_LAYOUT + 16);
-    memcpy(t, k_ui_layout, 16); t[4] = 0x58000050; t[5] = 0xd61f0200; t[6] = (uint32_t)rest; t[7] = (uint32_t)(rest >> 32);
+    static const struct { uint32_t off; const uint32_t *pro; } tr[3] = {{UI_LAYOUT, k_ui_layout}, {RA_LAYOUT, k_ra_layout}, {RA_SETSEG, k_ra_setseg}};
+    for (int i = 0; i < 3; i++) {
+        uint32_t *s = t + 8 * i; uint64_t rest = (uint64_t)(uintptr_t)(m->base + tr[i].off + 16);
+        memcpy(s, tr[i].pro, 16); s[4] = 0x58000050 /* ldr x16,#8 */; s[5] = 0xd61f0200 /* br x16 */; s[6] = (uint32_t)rest; s[7] = (uint32_t)(rest >> 32);
+    }
     if (mprotect(t, 0x4000, PROT_READ | PROT_EXEC)) { LOG("【红】[wide] mprotect RX failed: no centred UI band"); munmap(t, 0x4000); return -1; }
-    __builtin___clear_cache((char *)t, (char *)(t + 8));
+    __builtin___clear_cache((char *)t, (char *)(t + 24));
     g_ui_layout_orig = (void (*)(uint64_t, const float *))(void *)t;
+    g_ra_layout_orig = (void (*)(uint64_t, const float *))(void *)(t + 8);
+    g_ra_setseg_orig = (void (*)(uint64_t, uint64_t))(void *)(t + 16);
     g_ui_base = (uintptr_t)m->base;
-    if (ui_jump(m, UI_ADD_FRONT, (void *)ui_add_front) || ui_jump(m, UI_ADD_BACK, (void *)ui_add_back) || ui_jump(m, UI_LAYOUT, (void *)ui_layout)) {
+    if (ui_jump(m, UI_ADD_FRONT, (void *)ui_add_front) || ui_jump(m, UI_ADD_BACK, (void *)ui_add_back) || ui_jump(m, UI_LAYOUT, (void *)ui_layout) ||
+        ui_jump(m, RA_LAYOUT, (void *)ui_ra_layout) || ui_jump(m, RA_SETSEG, (void *)ui_ra_setseg)) {
         LOG("【红】[wide] mprotect RW failed: the UI hooks may be half in"); return -1; }
     LOG("[wide] hybrid UI: HUD on the whole %s canvas, screens / dialog / loading screen in the centred 1920 band (Layout main+%#x, AddChild "
-        "main+%#x / +%#x; %d HUD sites)", "wide", UI_LAYOUT, UI_ADD_FRONT, UI_ADD_BACK, g_nkeep);
+        "main+%#x / +%#x; %d HUD sites); in-game menus (CConsoleUIRadialMenu roots on the PUI root, %d band sites) centred too, wheel "
+        "segments follow (Radial Layout main+%#x, SetSegments main+%#x)", "wide", UI_LAYOUT, UI_ADD_FRONT, UI_ADD_BACK, g_nkeep, g_nrband,
+        RA_LAYOUT, RA_SETSEG);
     return 0;
 }
 
