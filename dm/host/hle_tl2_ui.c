@@ -54,6 +54,11 @@
 //                    follow the finger in row steps. Both write +0x10c and let the list's own SetRowHeight 0x1a02150 clamp it and place the thumb;
 //                    a selection that left the shown rows is moved to the nearest shown row the owner's own way (panel focus move / SetSelected,
 //                    like the stick on Switch), so the game's next EnsureVisible keeps the new scroll.
+//   panel lists:     a panel that keeps its own PUI::List (PanelQuests vt 0x2303240: quest list +0x20, HandleInput 0x65e50) is found by the
+//                    list pointer in the panel (or one object down); a tap moves its selection with the panel's own Up / Down (events 6 / 7
+//                    through the UI manager, as the D-pad), a tap on the selected row = Accept (quests: "track").
+//   text panes:      PUI::RichText (vt 0x23654f8) in a scroll group (+0x200): a vertical drag moves its offset +0x1ec with the finger inside
+//                    the game's own clamp (scroll group update 0x19f96d0), its arrows +0x250..+0x268 = a page.
 //   Not covered: custom-drawn grids (if a panel draws cells itself), hold-to-confirm dialog choices.
 //
 // "A menu is open" (dm_tl2_menu_open, published every npad read; clicks happen only while it holds, never in plain gameplay): the console UI
@@ -89,6 +94,10 @@ enum {
     E_PARENT = 0x38, E_FIRST = 0x40, E_NEXT = 0x58, E_RECT = 0x60, E_DRAWN = 0x74, E_LAYER = 0x80,
     L_AREA = 0x84, L_ROWH = 0x100, L_COUNT = 0x104, L_SEL = 0x108, L_SCROLL = 0x10c, L_SHOWSEL = 0x116, L_MAXSCROLL = 0x110, L_ARROWS = 0x118,
     F_LIST_ROWH = 0x1a02150,
+    // PUI::RichText (vt main+0x23654f8, Draw 0x19f9fa0): scrollable text panes (quest text, details); see "text panes" above
+    P_VT_RICH = 0x23654f8, P_RICH_DRAW = 0x19f9fa0,
+    T_CONTENT = 0x1c4, T_OFF = 0x1ec, T_VEL = 0x1f0, T_TOP = 0x1f4, T_PAD = 0x1f8, T_ON = 0x200, T_ARROWS = 0x250, T_VIEW = 0x88,
+    EV_UP = 6, EV_DOWN = 7,
     B_ENABLED = 0xc3, B_HILITE = 0xc4,
     F_SETSEL = 0x1a02460, F_SETHI = 0x1a05020, F_DISPATCH = 0x143800, VT_UIMGR = 0x230d7f0,
     VT_MAIN = 0x230ddb8, VT_NETWORK = 0x2309e28, VT_CREATE = 0x232b008, VT_OPTIONS = 0x23043d8, VT_INVITE = 0x232a938, VT_PARTY = 0x232b2e8,
@@ -124,6 +133,14 @@ static const struct { uint32_t off, n, w[14]; } k_sites[] = {
     {0x1a02188, 3, {0xb9010001 /* str w1,[x0,#0x100] */, 0xbd011004 /* str s4,[x0,#0x110] */, 0xbd010c03 /* str s3,[x0,#0x10c] */}},
     {0x1a01b84, 6, {0xf9408e88 /* ldr x8,[x20,#0x118] */, 0xb4001128, 0xf9409289 /* ldr x9,[x20,#0x120] */, 0xb40010e9, 0xf9409689, 0xb40010a9}},
     {0x1a01c60, 1, {0xf9408e88 /* ldr x8,[x20,#0x118] (up shown) */}}, {0x1a01d10, 1, {0xf9409288 /* ldr x8,[x20,#0x120] (down shown) */}},
+    // PUI::RichText: the scroll group's per-frame update 0x19f96d0 (on +0x200, content +0x1c4 vs view +0x94 - +0x8c, offset +0x1ec clamped to
+    // +0x1f8 + view - content .. +0x1f4, velocity +0x1f0) and Draw's arrows +0x250..+0x268 (0x19fa080, up while +0x1ec < +0x1f4)
+    {0x19f9740, 1, {0x3948014b /* ldrb w11,[x10,#0x200] */}},
+    {0x19f9760, 4, {0xbd41f144 /* ldr s4,[x10,#0x1f0] */, 0x1f000484, 0xbd41ed45 /* ldr s5,[x10,#0x1ec] */, 0x1e223862}},
+    {0x19f9784, 1, {0xbd01ed44 /* str s4,[x10,#0x1ec] */}}, {0x19f978c, 1, {0xbd41f542 /* ldr s2,[x10,#0x1f4] */}}, {0x19f979c, 1, {0xbd01ed42}},
+    {0x19fa080, 1, {0xf9412a88 /* ldr x8,[x20,#0x250] */}}, {0x19fa0bc, 1, {0x39480288 /* ldrb w8,[x20,#0x200] */}},
+    {0x19fa0d0, 5, {0xbd41fa82 /* ldr s2,[x20,#0x1f8] */, 0xbd41f680 /* ldr s0,[x20,#0x1f4] */, 0x1e202842, 0x1e222821, 0xbd41c682 /* ldr s2,[x20,#0x1c4] */}},
+    {0x19fa13c, 1, {0xbd41ee81 /* ldr s1,[x20,#0x1ec] */}},
     {0x1a05020, 6, {0xf9404808, 0x1e2e1000, 0x1e2703e1, 0x12000029, 0xb900c81f, 0x39031009 /* strb w9,[x0,#0xc4] */}},
     {0x19f57c0, 3, {0x3941d008 /* ldrb w8,[x0,#0x74] */, 0x34000508, 0xb9408008 /* ldr w8,[x0,#0x80] */}},
     {0x19f5ac0, 4, {0x1e252842, 0x2d431c05, 0xbd006002 /* str s2,[x0,#0x60] */, 0xbd400022}},
@@ -197,6 +214,7 @@ static int setup(void) {
             LOG("【红】[tl2ui] main+%#x differs: not TL2 v5 main (build a0c6c2d2), pointer / dump off", k_sites[i].off); return 0; }
     if (rq(img(P_GOT_MGR)) != img(P_MGR) || rq(img(U_GOT_MGR)) != img(U_MGR) || rq(img(P_VT_LIST + 0x10)) != img(P_LIST_DRAW) || rq(img(P_VT_ELEM + 0x10)) != img(P_ELEM_DRAW) ||
         rq(img(P_VT_BUTTON + 8)) != img(P_BUTTON_DTOR) || rq(img(P_VT_RADIAL + 0x10)) != img(P_RADIAL_DRAW) || rq(img(VT_UIMGR)) != img(F_DISPATCH) ||
+        rq(img(P_VT_RICH + 0x10)) != img(P_RICH_DRAW) ||
         rq(img(VT_MAIN)) != img(0x1457e0) || rq(img(VT_NETWORK)) != img(0x112ab0) || rq(img(VT_CREATE)) != img(0x75fde0) ||
         rq(img(VT_OPTIONS)) != img(0xc05f0) || rq(img(VT_INVITE)) != img(0x73bb10) || rq(img(VT_PARTY)) != img(0x766fa0)) {
         LOG("【红】[tl2ui] PUI vtables / GOT do not match: pointer / dump off"); return 0; }
@@ -209,16 +227,18 @@ static int setup(void) {
 }
 
 // ---- snapshot of the PUI tree (visible part, or all with dump 2)
-enum { K_ELEM, K_LIST, K_BUTTON, K_RADIAL, K_OTHER };
-static const char *const k_kind[] = {"Element", "List", "Button", "Radial", "other"};
+enum { K_ELEM, K_LIST, K_BUTTON, K_RADIAL, K_RICH, K_OTHER };
+static const char *const k_kind[] = {"Element", "List", "Button", "Radial", "RichText", "other"};
 typedef struct {
     uint64_t a, vt; int parent, depth, kind, layer, vis;
     float r[4];
     float area[4]; int rowh, rows, sel, showsel; float scroll, maxs;   // List
     int hilite, enabled;                                            // Button
+    float t_off, t_lo, t_hi, t_content, t_view; int t_on;           // RichText: offset, its range lo..hi, content / view height, in the scroll group
 } el;
 static el g_el[MAX_EL];
 static int kind_of(uint64_t vt) {
+    if (vt == img(P_VT_RICH)) return K_RICH;
     if (vt == img(P_VT_LIST)) return K_LIST;
     if (vt == img(P_VT_BUTTON)) return K_BUTTON;
     if (vt == img(P_VT_RADIAL)) return K_RADIAL;
@@ -248,6 +268,13 @@ static int snapshot(int all, float *cw, float *ch) {
             memcpy(&e->sel, raw + L_SEL, 4); memcpy(&e->scroll, raw + L_SCROLL, 4); memcpy(&e->maxs, raw + L_MAXSCROLL, 4); e->showsel = raw[L_SHOWSEL];
         } else if (e->kind == K_BUTTON) {
             uint8_t hb[2] = {0, 0}; if (rd(a + B_ENABLED, hb, 2)) { e->enabled = hb[0]; e->hilite = hb[1]; }
+        } else if (e->kind == K_RICH) {
+            uint8_t t[0x40]; float v[4];
+            if (rd(a + T_CONTENT, t, 0x40) && rd(a + T_VIEW, v, 16)) {   // +0x1c4 .. +0x203
+                float top, pad; memcpy(&e->t_content, t, 4); memcpy(&e->t_off, t + (T_OFF - T_CONTENT), 4); memcpy(&top, t + (T_TOP - T_CONTENT), 4);
+                memcpy(&pad, t + (T_PAD - T_CONTENT), 4); e->t_on = t[T_ON - T_CONTENT];
+                e->t_view = v[3] - v[1]; e->t_hi = top; e->t_lo = pad + e->t_view - e->t_content;   // the update 0x19f96d0's clamp
+            }
         }
         int me = n++;
         if (depth + 1 >= MAX_DEPTH) continue;
@@ -286,6 +313,7 @@ static void dump(void) {
             }
         }
         if (e->kind == K_BUTTON) fprintf(f, "hilite %d enabled %d", e->hilite, e->enabled);
+        if (e->kind == K_RICH) fprintf(f, "text offset %.1f range %.1f..%.1f content %.1f view %.1f scroll group %d", e->t_off, e->t_lo, e->t_hi, e->t_content, e->t_view, e->t_on);
         fputc('\n', f);
     }
     dump_stack(f);
@@ -439,6 +467,33 @@ static void panel_view_toggle(uint64_t menu, uint64_t panel, int right) {
     sound(r8(menu + (right ? R_VIEW_R : R_VIEW_L)) ? SND_VIEW_ON : SND_VIEW_OFF);
     call1(F_EQ_REBUILD, panel); call1(F_EQ_PROMPTS, panel);
 }
+// A panel's own list (PanelQuests keeps its quest list at +0x20 and moves it in its HandleInput 0x65e50 with SetSelected + 0x662d0 + refresh
+// vt+0x68 + text reset 0x19f9b10; other panels alike): the list pointer in the panel, or one level down in an object the panel points to.
+static int holds_deep(uint64_t obj, uint64_t p) {
+    uint64_t q[0x80]; if (!obj || !rd(obj, q, sizeof q)) return 0;
+    for (int i = 1; i < 0x80; i++) if (q[i] == p) return 1;
+    for (int i = 1; i < 0x80; i++) {
+        uint64_t s = q[i], w[0x40];
+        if (s < 0x10000 || s >= (1ull << 48) || (s >= img(0) && s < img(0) + g_size) || s == p || !rd(s, w, sizeof w)) continue;
+        for (int j = 0; j < 0x40; j++) if (w[j] == p) return 1;
+    }
+    return 0;
+}
+// Move the selection of a panel-held list to row with the panel's own Up / Down (logical events 6 / 7 through the UI manager, as the D-pad /
+// stick): the panel does SetSelected + its refresh itself. Stops when a step does not bring the list's selection closer.
+static int panel_step_to(uint64_t list, int row) {
+    int sel = r32(list + L_SEL), steps = 0, first = sel;
+    while (sel != row && steps < 64) {
+        uint32_t ev[4] = {0, sel < row ? EV_DOWN : EV_UP, 0, 0};
+        ((int (*)(uint64_t, int, const uint32_t *))img(F_DISPATCH))(img(U_MGR), 0, ev);
+        int now = r32(list + L_SEL); steps++;
+        if (now == sel || (sel >= 0 && abs(row - now) >= abs(row - sel))) { sel = now; break; }
+        sel = now;
+    }
+    LOG("[tl2ui]   panel list %#llx: %d %s step(s) of the panel's own Up / Down: selected %d -> %d (wanted %d)%s", (unsigned long long)list, steps,
+        first < row ? "Down" : "Up", first, sel, row, sel == row ? "" : " [the panel did not follow]");
+    return sel == row;
+}
 static int radial_click(uint64_t menu, float ux, float uy, int lbest, int lrow) {
     uint64_t ra = rq(menu + R_PUI), panel = rq(menu + R_PANEL); int state = r32(menu + R_STATE);
     if (!ra || rq(ra) != img(P_VT_RADIAL)) { LOG("[tl2ui]   radial menu %#llx without its PUI::Radial", (unsigned long long)menu); return 1; }
@@ -470,7 +525,23 @@ static int radial_click(uint64_t menu, float ux, float uy, int lbest, int lrow) 
         LOG("[tl2ui]   selected (details refreshed); tap it again to activate");
         return 1;
     }
-    if (lbest >= 0) return 0;   // a list the radial menu does not host: the generic list path
+    if (lbest >= 0 && panel && holds_deep(panel, g_el[lbest].a)) {   // the panel's own list (PanelQuests' quest list +0x20, ...)
+        uint64_t l = g_el[lbest].a;
+        LOG("[tl2ui]   radial menu (type %d, state %d): the panel's own list %#llx (panel vt main+%#llx) row %d of %d (selected %d)", r32(menu + R_TYPE), state,
+            (unsigned long long)l, (unsigned long long)(rq(panel) - img(0)), lrow, g_el[lbest].rows, r32(l + L_SEL));
+        if (state != 1) {
+            dispatch(EV_ACCEPT, "enter the panel");
+            if (r32(menu + R_STATE) != 1) { LOG("[tl2ui]   the panel did not take the input: nothing more"); return 1; }
+        }
+        if (lrow == r32(l + L_SEL)) { dispatch(EV_ACCEPT, "Accept on the selected row (the panel's own Accept)"); return 1; }
+        if (panel_step_to(l, lrow)) LOG("[tl2ui]   selected (details refreshed); tap it again to activate");
+        return 1;
+    }
+    if (lbest >= 0) {   // a list the radial menu does not host: the generic list path
+        LOG("[tl2ui]   list %#llx is neither hosted by the radial menu nor held by its panel %#llx (vt main+%#llx, state %d)", (unsigned long long)g_el[lbest].a,
+            (unsigned long long)panel, (unsigned long long)(panel ? rq(panel) - img(0) : 0), state);
+        return 0;
+    }
     int nseg, seg = radial_segment(ra, ux, uy, &nseg);
     if (seg < 0) {
         float r[4] = {0}; rd(ra + E_RECT, r, 16);
@@ -538,7 +609,9 @@ static int list_scroll(uint64_t menu, uint64_t list, int rows, const char *why) 
         if (hosted && r32(menu + R_STATE) == 1 && (panel = rq(menu + R_PANEL))) {
             panel_row(menu, panel, rq(menu + R_RLIST) == list, to, sel); how = "selection moved by the panel's own focus move"; }
         else if (!hosted && menu && menu_holds(menu, list)) { ((void (*)(uint64_t, int))img(F_SETSEL))(list, to); how = "selection moved by the list's SetSelected"; }
-        else how = hosted ? "panel only previewed: selection kept" : "list not held by the top menu: selection kept";
+        else if (!hosted && vt == img(VT_RADIAL) && r32(menu + R_STATE) == 1 && (panel = rq(menu + R_PANEL)) && holds_deep(panel, list)) {
+            panel_step_to(list, to); how = "selection moved by the panel's own Up / Down"; }
+        else how = hosted ? "panel only previewed: selection kept" : "list not held by the top menu / its panel: selection kept";
     }
     float now = 0; rd(list + L_SCROLL, &now, 4);
     LOG("[tl2ui] scroll (%s) list %#llx %+d rows: scroll %.0f -> %.0f (max %.0f, row %d, %d rows, shown %d..%d), selected %d -> %d (%s)%s", why,
@@ -553,14 +626,35 @@ static void watch_step(void) {   // a scroll the game undid afterwards (e.g. a p
         LOG("[tl2ui] scroll: list %#llx scroll is %.0f 20 polls later (was set to %.0f): reset by the game", (unsigned long long)g_watch.list, now, g_watch.want);
     g_watch.list = 0;
 }
-// Scroll arrow of a shown list under (ux, uy) (padded: the arrows are small; a row under the point wins): +1 down / -1 up, 0 none; *li = its g_el index
+// ---- text panes (PUI::RichText: quest text, item / skill details, lore). Not a list: the game scrolls them with a stick through its scroll
+// group's per-frame update 0x19f96d0 (velocity +0x1f0 from the stick, offset +0x1ec += velocity * dt, clamped to +0x1f8 + view - content ..
+// +0x1f4; +0x1f4 = top, smaller = later text). Only elements in a scroll group (+0x200) with content > view scroll. Here: the offset is set
+// directly inside that same range, velocity 0 (the update then keeps it); the game resets it to +0x1f4 itself on a new text (0x19f9b10).
+static int rich_scrollable(const el *e) { return e->kind == K_RICH && e->vis && e->t_on && e->t_hi - e->t_lo > .5f; }
+static int rich_set(uint64_t t, float off, const char *why, int quiet) {
+    float c[0x40 / 4], v[4];
+    if (rq(t) != img(P_VT_RICH) || !rd(t + T_CONTENT, c, sizeof c) || !rd(t + T_VIEW, v, 16)) { LOG("[tl2ui] text scroll (%s) %#llx: not a RichText any more", why, (unsigned long long)t); return 0; }
+    float content = c[0], cur = c[(T_OFF - T_CONTENT) / 4], hi = c[(T_TOP - T_CONTENT) / 4], pad = c[(T_PAD - T_CONTENT) / 4], view = v[3] - v[1], lo = pad + view - content;
+    uint8_t on = r8(t + T_ON);
+    if (!on || !(hi - lo > .5f)) { LOG("[tl2ui] text scroll (%s) %#llx: nothing to scroll (content %.0f, view %.0f, scroll group %d)", why, (unsigned long long)t, content, view, on); return 0; }
+    if (off > hi) off = hi;
+    if (off < lo) off = lo;
+    if (fabsf(off - cur) < .5f) return 0;
+    *(volatile float *)(uintptr_t)(t + T_VEL) = 0;
+    *(volatile float *)(uintptr_t)(t + T_OFF) = off;
+    if (!quiet) LOG("[tl2ui] text scroll (%s) RichText %#llx: offset %.0f -> %.0f (range %.0f..%.0f, content %.0f, view %.0f)", why, (unsigned long long)t, cur, off, lo, hi, content, view);
+    return 1;
+}
+// Scroll arrow of a shown list (+0x118..+0x130) or text pane (+0x250..+0x268) under (ux, uy) (padded: the arrows are small; a list row under
+// the point wins): +1 down / -1 up, 0 none; *li = its g_el index
 static int arrow_at(int n, float ux, float uy, int *li) {
     const float pad = 36;
     for (int i = n - 1; i >= 0; i--) {
         const el *e = &g_el[i];
-        if (e->kind != K_LIST || !e->vis || e->rowh <= 0 || list_row_at(e, ux, uy) >= 0) continue;
+        int list = e->kind == K_LIST && e->vis && e->rowh > 0 && list_row_at(e, ux, uy) < 0;
+        if (!list && !rich_scrollable(e)) continue;
         for (int k = 0; k < 4; k++) {
-            uint64_t a = rq(e->a + L_ARROWS + 8u * k); float r[4];
+            uint64_t a = rq(e->a + (list ? L_ARROWS : T_ARROWS) + 8u * k); float r[4];
             if (!is_elem(a) || !r8(a + E_DRAWN) || !rd(a + E_RECT, r, 16) || !(r[2] > r[0] && r[3] > r[1])) continue;
             if (ux >= r[0] - pad && ux < r[2] + pad && uy >= r[1] - pad && uy < r[3] + pad) { *li = i; return k & 1 ? 1 : -1; }
         }
@@ -574,6 +668,16 @@ static int list_at(int n, float ux, float uy, int want_scroll) {
     for (int i = 0; i < n; i++) {
         const el *e = &g_el[i];
         if (e->kind != K_LIST || !e->vis || e->rowh <= 0 || e->rows <= 0 || !in_rect(e->area, ux, uy) || (want_scroll && !(e->maxs > .5f))) continue;
+        if (best < 0 || above(e, i, &g_el[best], best)) best = i;
+    }
+    return best;
+}
+// Topmost shown scrollable text pane whose rect holds (ux, uy). -1 none.
+static int rich_at(int n, float ux, float uy) {
+    int best = -1;
+    for (int i = 0; i < n; i++) {
+        const el *e = &g_el[i];
+        if (!rich_scrollable(e) || !in_rect(e->r, ux, uy)) continue;
         if (best < 0 || above(e, i, &g_el[best], best)) best = i;
     }
     return best;
@@ -604,8 +708,11 @@ static void click(float fx, float fy) {
     unsigned long long vto = (unsigned long long)(vt - img(0));
     { int li = -1, dir = arrow_at(n, ux, uy, &li);   // a list's scroll arrow: one page
       if (dir) {
-          LOG("[tl2ui] tap %.3f,%.3f = UI %.0f,%.0f on the %s scroll arrow of list %#llx (menu %s)", fx, fy, ux, uy, dir > 0 ? "down" : "up", (unsigned long long)g_el[li].a, mn);
-          list_scroll(menu, g_el[li].a, dir * list_page(&g_el[li]), "arrow");
+          const el *e = &g_el[li];
+          LOG("[tl2ui] tap %.3f,%.3f = UI %.0f,%.0f on the %s scroll arrow of %s %#llx (menu %s)", fx, fy, ux, uy, dir > 0 ? "down" : "up",
+              e->kind == K_RICH ? "text pane" : "list", (unsigned long long)e->a, mn);
+          if (e->kind == K_RICH) rich_set(e->a, e->t_off - dir * .8f * e->t_view, "arrow", 0);   // a page (80 % of the view)
+          else list_scroll(menu, e->a, dir * list_page(e), "arrow");
           return;
       } }
     if (vt == img(VT_RADIAL)) {
@@ -788,7 +895,7 @@ static void op_step(void) {
 // (fraction of the picture height, + = down); phase 0 start, 1 move, 2 end. Only the latest state is kept; the input thread follows it.
 static _Atomic uint32_t g_drag_gen, g_drag_end, g_drag_dy; static _Atomic uint64_t g_drag_xy;
 static _Atomic uint64_t g_scroll_xy; static _Atomic int g_scroll_rows;
-static struct { uint32_t gen; uint64_t list; int applied, rowh; float ux, uy, x0, y0; } g_drag;
+static struct { uint32_t gen; uint64_t list; int applied, rowh, rich; float ux, uy, x0, y0, off0, off; } g_drag;   // list = the list or text pane
 enum { MAX_PUB = 8 };
 static float g_pub[MAX_PUB][4]; static _Atomic int g_npub;   // scrollable list row areas in picture fractions (input thread writes)
 static uint64_t pack_xy(float x, float y) { uint32_t xb, yb; memcpy(&xb, &x, 4); memcpy(&yb, &y, 4); return (uint64_t)yb << 32 | xb; }
@@ -820,8 +927,10 @@ static void publish_lists(int open) {
     float cw, ch; int n = snapshot(0, &cw, &ch), k = 0;
     for (int i = 0; i < n && k < MAX_PUB; i++) {
         const el *e = &g_el[i];
-        if (e->kind != K_LIST || e->rowh <= 0 || e->rows <= 0 || !(e->maxs > .5f) || !(e->area[2] > e->area[0])) continue;
-        float f[4]; dm_tl2_ui_canvas_to_frame(e->area[0], e->area[1], cw, ch, &f[0], &f[1]); dm_tl2_ui_canvas_to_frame(e->area[2], e->area[3], cw, ch, &f[2], &f[3]);
+        const float *a = e->kind == K_RICH ? e->r : e->area;
+        if (!(e->kind == K_LIST && e->vis && e->rowh > 0 && e->rows > 0 && e->maxs > .5f) && !rich_scrollable(e)) continue;
+        if (!(a[2] > a[0] && a[3] > a[1])) continue;
+        float f[4]; dm_tl2_ui_canvas_to_frame(a[0], a[1], cw, ch, &f[0], &f[1]); dm_tl2_ui_canvas_to_frame(a[2], a[3], cw, ch, &f[2], &f[3]);
         memcpy(g_pub[k++], f, sizeof f);
     }
     atomic_store_explicit(&g_npub, k, memory_order_release);
@@ -831,32 +940,45 @@ static void scroll_step(int open) {
     if (rows && open) {
         float x, y, cw, ch, ux, uy; unpack_xy(atomic_load(&g_scroll_xy), &x, &y);
         int n = snapshot(0, &cw, &ch); dm_tl2_ui_frame_to_canvas(x, y, cw, ch, &ux, &uy);
-        int li = list_at(n, ux, uy, 0), top;
-        if (li < 0) LOG("[tl2ui] scroll %.3f,%.3f = UI %.0f,%.0f %+d rows: no list under it", x, y, ux, uy, rows);
-        else list_scroll(top_menu(&top), g_el[li].a, rows, "request");
+        int li = list_at(n, ux, uy, 0), ti = li < 0 ? rich_at(n, ux, uy) : -1, top;
+        if (li >= 0) list_scroll(top_menu(&top), g_el[li].a, rows, "request");
+        else if (ti >= 0) rich_set(g_el[ti].a, g_el[ti].t_off - rows * 40.f, "request", 0);   // a text "row" = 40 canvas units
+        else LOG("[tl2ui] scroll %.3f,%.3f = UI %.0f,%.0f %+d rows: no list / text pane under it", x, y, ux, uy, rows);
     }
     uint32_t gen = atomic_load_explicit(&g_drag_gen, memory_order_acquire);
     if (gen != g_drag.gen) {   // a new drag: the list under its start point
-        g_drag.gen = gen; g_drag.list = 0; g_drag.applied = 0;
+        g_drag.gen = gen; g_drag.list = 0; g_drag.applied = 0; g_drag.rich = 0;
         float cw, ch; unpack_xy(atomic_load(&g_drag_xy), &g_drag.x0, &g_drag.y0);
         int n = snapshot(0, &cw, &ch); dm_tl2_ui_frame_to_canvas(g_drag.x0, g_drag.y0, cw, ch, &g_drag.ux, &g_drag.uy);
-        int li = open ? list_at(n, g_drag.ux, g_drag.uy, 1) : -1;
-        if (li < 0) LOG("[tl2ui] drag at %.3f,%.3f = UI %.0f,%.0f: no scrollable list under it%s", g_drag.x0, g_drag.y0, g_drag.ux, g_drag.uy, open ? "" : " (no menu open)");
-        else { g_drag.list = g_el[li].a; g_drag.rowh = g_el[li].rowh;
-               LOG("[tl2ui] drag start at UI %.0f,%.0f on list %#llx (%d rows of %d, scroll %.0f of %.0f, selected %d)", g_drag.ux, g_drag.uy, (unsigned long long)g_drag.list,
+        int li = open ? list_at(n, g_drag.ux, g_drag.uy, 1) : -1, ti = open && li < 0 ? rich_at(n, g_drag.ux, g_drag.uy) : -1;
+        if (li >= 0) { g_drag.list = g_el[li].a; g_drag.rowh = g_el[li].rowh;
+               LOG("[tl2ui] drag start at UI %.0f,%.0f on list %#llx (rows %d, row height %d, scroll %.0f of %.0f, selected %d)", g_drag.ux, g_drag.uy, (unsigned long long)g_drag.list,
                    g_el[li].rows, g_el[li].rowh, g_el[li].scroll, g_el[li].maxs, g_el[li].sel); }
+        else if (ti >= 0) { const el *e = &g_el[ti]; g_drag.list = e->a; g_drag.rich = 1; g_drag.off0 = g_drag.off = e->t_off;
+               LOG("[tl2ui] drag start at UI %.0f,%.0f on text pane RichText %#llx (offset %.0f, range %.0f..%.0f, content %.0f, view %.0f)", g_drag.ux, g_drag.uy,
+                   (unsigned long long)e->a, e->t_off, e->t_lo, e->t_hi, e->t_content, e->t_view); }
+        else LOG("[tl2ui] drag at %.3f,%.3f = UI %.0f,%.0f: no scrollable list / text pane under it%s", g_drag.x0, g_drag.y0, g_drag.ux, g_drag.uy, open ? "" : " (no menu open)");
     }
     if (!g_drag.list) return;
     int ended = atomic_load_explicit(&g_drag_end, memory_order_acquire) == g_drag.gen;
-    if (open && drawn_chain(g_drag.list) && rq(g_drag.list) == img(P_VT_LIST)) {
+    if (open && drawn_chain(g_drag.list) && rq(g_drag.list) == img(g_drag.rich ? P_VT_RICH : P_VT_LIST)) {
         uint32_t db = atomic_load_explicit(&g_drag_dy, memory_order_acquire); float dy; memcpy(&dy, &db, 4);
         float cw, ch, ux, uy; int32_t wh[2] = {0, 0}; rd(img(P_MGR) + M_W, wh, 8);
         cw = wh[0] > 0 ? (float)wh[0] : 1920.f; ch = wh[1] > 0 ? (float)wh[1] : 1080.f;
         dm_tl2_ui_frame_to_canvas(g_drag.x0, g_drag.y0 + dy, cw, ch, &ux, &uy);
+        if (g_drag.rich) {   // the text follows the finger 1:1 (finger up = later text = smaller offset)
+            float want = g_drag.off0 + (uy - g_drag.uy);
+            if (fabsf(want - g_drag.off) >= 1.f && rich_set(g_drag.list, want, "drag", 1)) { float o = 0; rd(g_drag.list + T_OFF, &o, 4); g_drag.off = o; }
+        } else {
         int want = (int)lroundf(-(uy - g_drag.uy) / (float)g_drag.rowh);   // finger up = later rows; one row per row height moved
         if (want != g_drag.applied) { int top; list_scroll(top_menu(&top), g_drag.list, want - g_drag.applied, "drag"); g_drag.applied = want; }
+        }
     } else if (!ended) { LOG("[tl2ui] drag: list %#llx gone (menu %s)", (unsigned long long)g_drag.list, open ? "open" : "closed"); g_drag.list = 0; return; }
-    if (ended) { LOG("[tl2ui] drag end: %+d rows on list %#llx", g_drag.applied, (unsigned long long)g_drag.list); g_drag.list = 0; }
+    if (ended) {
+        if (g_drag.rich) LOG("[tl2ui] drag end: text pane RichText %#llx offset %.0f -> %.0f", (unsigned long long)g_drag.list, g_drag.off0, g_drag.off);
+        else LOG("[tl2ui] drag end: %+d rows on list %#llx", g_drag.applied, (unsigned long long)g_drag.list);
+        g_drag.list = 0;
+    }
 }
 
 // ---- per npad read (hle_hid.c fill(), after the front end's buttons; the buttons are left alone)

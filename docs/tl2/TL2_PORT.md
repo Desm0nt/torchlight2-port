@@ -297,6 +297,24 @@ scroll < max и есть выбор), Draw `0x1a01bc0..0x1a01d98` включае
   `max` и `arrow+0x118 … drawn`.
 - Тест без пальца: файл `dm/ui-scroll-now` «x y rows» (доли картинки, rows + = дальше). Гейт тот же `DM_TL2_POINTER`.
 
+**Задания: свои списки панелей и текст (09.11.2026, после теста на телефоне; собрано, не проверено).** Лог хозяина: тап по квесту →
+`list … row N is not held by the top menu RadialMenu: nothing`. Причина: PanelQuests (тип 12, ctor `0x64fd0`, vt `0x2303240`, HandleInput
+`0x65e50`) в режиме `+0xe0 = 0` держит **свой** список квестов `+0x20` (не списки радиала `+0x240/+0x270`) и двигает его сам: Up/Down →
+SetSelected, `0x662d0`, обновление vt+0x68, сброс текста `0x19f9b10(+0xe8, +0x28)`, звук 0x50; Accept = «Следить за заданием» (`0x2c0880`).
+Теперь: список, найденный в панели (указатель в панели или на один объект глубже, `holds_deep`), выбирается собственными Up/Down панели
+(события 6/7 через менеджер UI, как D-pad; шаги с проверкой, что выбор приближается), тап по выбранной строке = Accept. То же для
+прокрутки свайпом (выбор, ушедший за край, догоняется Up/Down панели). Покрывает любую панель радиала со своим списком (живьём проверить
+навыки / питомца / тайник / торговца / путевые точки — в логе видно, какой путь сработал).
+Текст справа — `PUI::RichText` (vt `0x23654f8`, Draw `0x19f9fa0`): в группе прокрутки (`+0x200`) его смещение `+0x1ec` ведёт покадровое
+обновление группы `0x19f96d0` от стика (скорость `+0x1f0`), зажим `+0x1f8 + вид − контент .. +0x1f4` (`+0x1f4` = верх, меньше = дальше по
+тексту; контент `+0x1c4`, вид = `+0x94 − +0x8c`); стрелки `+0x250..+0x268`. Свайп над текстом: смещение = начальное + сдвиг пальца
+(канвас 1:1) в том же зажиме, скорость 0; тап по его стрелке = 80 % вида. `nativeTl2UiListHit` теперь «список или текст».
+Лог: `[tl2ui]   radial menu (…): the panel's own list 0x… (panel vt main+0x2303240) row R of N (selected S)`, `[tl2ui]   panel list 0x…: K Down
+step(s) of the panel's own Up / Down: selected S -> R (wanted R)`, при неудаче `[the panel did not follow]`; если список не найден —
+`list 0x… is neither hosted by the radial menu nor held by its panel 0x… (vt main+…)`. Текст: `drag start at UI … on text pane RichText 0x…
+(offset O, range lo..hi, content C, view V)`, `drag end: text pane RichText 0x… offset A -> B`, стрелка/файл — `text scroll (arrow|request)
+RichText 0x…: offset A -> B (…)`. Дамп: у RichText `text offset … range … content … view … scroll group`.
+
 ## Моды PC (менеджер модов, 07.11.2026; на телефоне не проверено)
 Вывод: PC-моды (.MOD из GUTS) подключаются как дополнительные паки данных — **частично**: данные (DAT/LAYOUT/ANIMATION/MESH/SKELETON/
 MATERIAL/звук) совместимы байт в байт, текстуры конвертируются, но консольный UI (UICONSOLE, PUI) PC-модами не покрывается, а собственный
