@@ -99,6 +99,7 @@ final class Tl2Touch {
         }
     }
     private static final int T_NONE = -1, T_JOY = -2, T_ZOOM = -3, T_WORLD = -4, T_MENU = -5;   // T_MENU: a console menu is up (DmActivity.nativeTl2MenuOpen), tap or not yet decided
+    private static final int T_DRAG = -6;   // [TL2] a T_MENU finger that moved vertically on a scrollable menu list: scrolls it (nativeTl2UiDrag), no tap
     private static final class Finger { int target = T_NONE, zone; float x, y, x0, y0; long t0, keyT; boolean keyDown, cancelled, moved, walking; long seq; }
     private static final class Pulse { final int key; final long start, end; final float ax, ay; final boolean mod;
         Pulse(int key, long start, long end, float ax, float ay, boolean mod) { this.key = key; this.start = start; this.end = end; this.ax = ax; this.ay = ay; this.mod = mod; } }
@@ -368,6 +369,8 @@ final class Tl2Touch {
     // [TL2] map tap (hle_tl2_map.c): a finger that lands on the shown minimap / big map waits like a menu tap (T_MENU above); a short still
     // tap then goes to nativeTl2UiTap, which with no menu up switches minimap <-> big map; moved, it becomes the stick / world finger as usual
     private boolean mapHit(float x, float y) { int w = view.getWidth(), h = view.getHeight(); return w > 0 && h > 0 && DmActivity.nativeTl2MapHit(x / w, y / h); }
+    private boolean listHit(float x, float y) { int w = view.getWidth(), h = view.getHeight(); return w > 0 && h > 0 && DmActivity.nativeTl2UiListHit(x / w, y / h); }
+    private void drag(Finger f, int phase) { int w = view.getWidth(), h = view.getHeight(); if (w > 0 && h > 0) DmActivity.nativeTl2UiDrag(f.x0 / w, f.y0 / h, (f.y - f.y0) / h, phase); }
     private void begin(int id, float x, float y) {
         if (fingers.containsKey(id)) return;
         Finger f = new Finger(); f.x = f.x0 = x; f.y = f.y0 = y; f.t0 = now();
@@ -390,6 +393,9 @@ final class Tl2Touch {
         Finger f = fingers.get(id); if (f == null) return;
         f.x = x; f.y = y;
         if (dist(f) > MOVE_DP * dp) f.moved = true;
+        // [TL2] hle_tl2_ui.c list scroll: a mostly vertical move from a scrollable list scrolls it (rows follow the finger); release = no tap
+        if (f.target == T_MENU && f.moved && Math.abs(f.y - f.y0) > Math.abs(f.x - f.x0) && listHit(f.x0, f.y0)) { f.target = T_DRAG; drag(f, 0); }
+        if (f.target == T_DRAG) { drag(f, 1); return; }
         if (f.target == T_MENU && f.moved) {   // not a tap: the finger becomes what it would have been without the menu, from where it went down
             if (f.zone == T_JOY && move.ptr < 0) { f.target = T_JOY; grab(move, id, f.x0, f.y0); }
             else f.target = f.zone == T_WORLD ? T_WORLD : T_NONE;
@@ -404,6 +410,7 @@ final class Tl2Touch {
         Finger f = fingers.remove(id); if (f == null) return;
         if (id == move.ptr) move.ptr = -1;
         if (id == zoomPtr) zoomPtr = -1;
+        if (f.target == T_DRAG) { drag(f, 2); return; }
         if (cancel) return;
         long t = now(), held = t - f.t0;
         Btn b = btnOf(f);

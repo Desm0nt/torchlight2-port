@@ -262,6 +262,26 @@ Java: `DmActivity.nativeTl2MenuOpen()` / `nativeTl2UiTap(x, y)`; Tl2Touch: па�
 Java (не подключено, Tl2Touch.java правится параллельно): `static native boolean nativeTl2UiTap(float x, float y);` в DmActivity; в
 Tl2Touch, режим меню, короткий тап: вместо `pulse(K_A, 0, 0, 0, false)` —
 `if (!DmActivity.nativeTl2UiTap(f.x0 / view.getWidth(), f.y0 / view.getHeight())) pulse(K_A, 0, 0, 0, false);` (картинка TL2 = весь view).
+### Прокрутка списков: стрелка и свайп (09.11.2026, ветка `tl2-uiscroll`; собрано, на телефоне не проверено)
+
+Жалоба хозяина: синяя стрелка вниз под списком (радиал «Действия», категории) не листает. Разбор `PUI::List`: `+0x10c` прокрутка, `+0x110`
+максимум; EnsureVisible `0x1a024b0` (хвост SetSelected) докручивает до выбранной строки; SetRowHeight `0x1a02150` (и SetCount `0x1a023a0`)
+зажимают `+0x10c` в 0..max и ставят ползунок. Стрелки — элементы списка `+0x118`/`+0x128` (вверх, scroll > 0) и `+0x120`/`+0x130` (вниз,
+scroll < max и есть выбор), Draw `0x1a01bc0..0x1a01d98` включает им `+0x74` каждый кадр. На Switch это только индикатор: листает стик (выбор
++ EnsureVisible).
+- Тап по стрелке (rect элемента ±36 ед. канваса, строка под пальцем важнее) = страница (видимых строк) вниз / вверх.
+- Вертикальный свайп над прокручиваемым списком: Tl2Touch, палец `T_MENU` сдвинулся (> MOVE_DP), |dy| > |dx| и `nativeTl2UiListHit(x0, y0)`
+  (поток ввода публикует области строк списков с max > 0, раз в 4 опроса) → `T_DRAG`: `nativeTl2UiDrag(x0, y0, dy, 0/1/2)`; строки идут за
+  пальцем шагами по высоте строки (палец вверх = дальше по списку), отпускание тапа не даёт. Горизонтальные движения и тапы — как было.
+- Механизм: `+0x10c` += rows × rowh, затем собственный SetRowHeight списка (зажим + ползунок). Если выбранная строка ушла из видимых, выбор
+  переносится на ближнюю видимую способом владельца (список панели радиала — фокус панели, как тап, со звуком; список верхнего меню —
+  SetSelected), чтобы следующий EnsureVisible игры не откатил прокрутку. В превью панели (state ≠ 1) выбор не трогается.
+- Лог: `[tl2ui] tap … on the down scroll arrow of list …`, `[tl2ui] scroll (arrow|drag|request) list … +N rows: scroll A -> B (max M, …),
+  selected S -> T (…)`, `[tl2ui] drag start at UI … on list …` / `drag end: +N rows`, `… already at the end`; если игра потом вернула
+  прокрутку — `[tl2ui] scroll: list … scroll is X 20 polls later (was set to Y): reset by the game`. Дамп `dm/tl2-ui-dump.tsv`: у списков
+  `max` и `arrow+0x118 … drawn`.
+- Тест без пальца: файл `dm/ui-scroll-now` «x y rows» (доли картинки, rows + = дальше). Гейт тот же `DM_TL2_POINTER`.
+
 ## Моды PC (менеджер модов, 07.11.2026; на телефоне не проверено)
 Вывод: PC-моды (.MOD из GUTS) подключаются как дополнительные паки данных — **частично**: данные (DAT/LAYOUT/ANIMATION/MESH/SKELETON/
 MATERIAL/звук) совместимы байт в байт, текстуры конвертируются, но консольный UI (UICONSOLE, PUI) PC-модами не покрывается, а собственный

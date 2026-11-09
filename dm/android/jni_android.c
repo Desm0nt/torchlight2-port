@@ -641,6 +641,27 @@ JNIEXPORT jboolean JNICALL Java_com_xiaoboluo_d2r_DmActivity_nativeTl2UiTap(JNIE
 #endif
 }
 
+// [TL2] List scroll (hle_tl2_ui.c): nativeTl2UiListHit(x, y) = the point (picture fractions) is on a shown console-menu list that can scroll;
+// nativeTl2UiDrag(x0, y0, dy, phase) = a vertical drag that went down at x0 y0, dy = total y move since (fraction of the picture height,
+// + = down), phase 0 start / 1 move / 2 end: the list's rows follow the finger in row steps. Both false while DM_TL2_POINTER is off.
+// Java: `static native boolean nativeTl2UiListHit(float x, float y);` / `static native boolean nativeTl2UiDrag(float x0, float y0, float dy, int phase);`
+JNIEXPORT jboolean JNICALL Java_com_xiaoboluo_d2r_DmActivity_nativeTl2UiListHit(JNIEnv *env, jclass cls, jfloat x, jfloat y) {
+    (void)env; (void)cls;
+#ifdef DM_GAME_TL2
+    int dm_tl2_ui_list_hit(float x, float y); return dm_tl2_ui_list_hit(x, y) ? JNI_TRUE : JNI_FALSE;
+#else
+    (void)x; (void)y; return JNI_FALSE;
+#endif
+}
+JNIEXPORT jboolean JNICALL Java_com_xiaoboluo_d2r_DmActivity_nativeTl2UiDrag(JNIEnv *env, jclass cls, jfloat x0, jfloat y0, jfloat dy, jint phase) {
+    (void)env; (void)cls;
+#ifdef DM_GAME_TL2
+    int dm_tl2_ui_drag(float x0, float y0, float dy, int phase); return dm_tl2_ui_drag(x0, y0, dy, phase) ? JNI_TRUE : JNI_FALSE;
+#else
+    (void)x0; (void)y0; (void)dy; (void)phase; return JNI_FALSE;
+#endif
+}
+
 // [TL2] Is a console menu / panel up (hle_tl2_ui.c dm_tl2_menu_open: the console UI stack is not empty or its modal is drawn, no loading
 // screen), as the game's input thread published it at its last npad read; false while DM_TL2_POINTER is off.
 // Java: `static native boolean nativeTl2MenuOpen();`
