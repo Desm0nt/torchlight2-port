@@ -84,6 +84,13 @@ int main(){
     g=f;xbg_sim_features(XBG_SIM_PROFILE_MALI,&g);CHECK(!g.textureCompressionBC && !g.depthBounds && !g.fillModeNonSolid && !g.shaderClipDistance && g.geometryShader && g.shaderImageGatherExtended);
     g=f;xbg_sim_features(XBG_SIM_PROFILE_MALI|XBG_SIM_NOGS,&g);CHECK(!g.geometryShader);
     g=f;xbg_sim_features(XBG_SIM_NOGATHER|XBG_SIM_NOANISO,&g);CHECK(!g.shaderImageGatherExtended && !g.samplerAnisotropy && g.textureCompressionBC);
+    // [pvr] DM_GFX_ANISO_FALLBACK (DOOM 2016 2.47): the PowerVR profile has no anisotropy; the sampler anisotropy a device can take
+    // (moto g64: feature off, the game asked 4 -> 1; with the feature: unchanged up to the limit, clamped above).
+    g=f;xbg_sim_features(XBG_SIM_PROFILE_POWERVR,&g);CHECK(!g.samplerAnisotropy);
+    CHECK(xbg_aniso_allowed(4,false,16)==1);CHECK(xbg_aniso_allowed(16,false,1)==1);
+    CHECK(xbg_aniso_allowed(4,true,16)==4);CHECK(xbg_aniso_allowed(16,true,16)==16);CHECK(xbg_aniso_allowed(16,true,8)==8);
+    CHECK(xbg_aniso_allowed(1,false,16)==1);CHECK(xbg_aniso_allowed(1,true,16)==1);
+    {const float bad=xbg_aniso_allowed(0.5f,true,16);CHECK(bad==0.5f);}   // invalid values reach the converter unchanged (its -5 stays)
     VkPhysicalDeviceSubgroupProperties s{};s.subgroupSize=64;s.supportedStages=VK_SHADER_STAGE_ALL;s.supportedOperations=0xff;s.quadOperationsInAllStages=VK_TRUE;
     VkPhysicalDeviceSubgroupProperties t=s;xbg_sim_subgroup(XBG_SIM_PROFILE_MALI,&t);
     CHECK(t.subgroupSize==16 && t.supportedStages==(VK_SHADER_STAGE_FRAGMENT_BIT|VK_SHADER_STAGE_COMPUTE_BIT) && !t.quadOperationsInAllStages && t.supportedOperations==0xff);

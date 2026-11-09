@@ -3858,6 +3858,14 @@ VkSampler sampler(const samp_par &input,Image &im,VkFormat viewed,bool integer_b
 }
 VkSampler sampler_slow(const samp_par &p,Image &im,VkFormat viewed,bool integer_border){
     xbg_nvn_sampler_desc input{p.minf,p.magf,p.ws,p.wt,p.wr,p.cmp_mode,p.cmp_func,p.lod_min,p.lod_max,p.lod_bias,p.aniso,{p.border[0],p.border[1],p.border[2],p.border[3]}};
+    // [pvr] DM_GFX_ANISO_FALLBACK (default 1; DOOM 2016 BUGS_AND_FIXES 2.47, docs/port-kb PVR-04): a game may set anisotropy on a sampler
+    // even when NVN reports a maximum of 1 (moto g64 / PowerVR BXM 1.15: samplerAnisotropy=0, a fatal "result=-5" at level load in DOOM
+    // v0.4.19). Without the feature such a sampler is trilinear, above maxSamplerAnisotropy it is clamped; logged for the first 4 cases.
+    // Acts only where the conversion below returned -5 before. DM_GFX_ANISO_FALLBACK=0: the old fatal.
+    {static const bool fallback=xbg_env_or(getenv("DM_GFX_ANISO_FALLBACK"),true);
+     const float allowed=xbg_aniso_allowed(p.aniso,cfg.enabled_core.samplerAnisotropy!=VK_FALSE,properties.limits.maxSamplerAnisotropy);
+     if(fallback && allowed!=p.aniso){input.anisotropy=allowed;static unsigned told=0;if(told++<4)xbg_logf("NVN sampler anisotropy %g -> %g (samplerAnisotropy=%u maxSamplerAnisotropy=%g; DM_GFX_ANISO_FALLBACK) texture=%llu format=%#x vk=%u",
+         p.aniso,allowed,unsigned(cfg.enabled_core.samplerAnisotropy),properties.limits.maxSamplerAnisotropy,(unsigned long long)im.source.serial,im.source.d.format,unsigned(viewed));}}
     xbg_sampler_limits limits{cfg.enabled_core.samplerAnisotropy,sampler_mirror_clamp_enabled,VkBool32(integer_border),properties.limits.maxSamplerAnisotropy,properties.limits.maxSamplerLodBias};
     VkSamplerCreateInfo s{};int result=xbg_sampler_from_nvn(&input,&limits,&s);
     if(result)xbg_fatalf("NVN sampler %s result=%d min=%u mag=%u wrap=%u/%u/%u lod=%g/%g bias=%g aniso=%g compare=%u/%u border=%g,%g,%g,%g texture=%llu format=%#x vk=%u mirrorEnabled=%u",xbg_sampler_error(result),result,p.minf,p.magf,p.ws,p.wt,p.wr,p.lod_min,p.lod_max,p.lod_bias,p.aniso,p.cmp_mode,p.cmp_func,p.border[0],p.border[1],p.border[2],p.border[3],(unsigned long long)im.source.serial,im.source.d.format,unsigned(viewed),sampler_mirror_clamp_enabled);
