@@ -68,6 +68,12 @@ static int is_d2s(const char *p) { size_t n = strlen(p); return n > 4 && !strcmp
 static uint8_t g_fsave[65536];              // fd → 是否在事务式存档挂载上（存档写注入点只数这些） | fd → whether it is on a transactional save mount (the save write injection point only counts these)
 static _Atomic int g_save_writes;           // 存档挂载上的写次数（注入点与提交日志共用） | number of writes on the save mount (shared by the injection point and the commit log)
 static _Atomic uint64_t g_txn_first_ns;     // 本事务第一次存档写的时刻（提交日志报耗时用；提交时清 0） | time of this transaction's first save write (used by the commit log to report timing; cleared to 0 at commit)
+// [ETERNAL ui2] Save activity for a save-safe quit (dm_fs_save_quiesce, JNI nativeQuit): any change on the transactional save mount since the
+// last Commit (write, size, create, delete, rename, a file opened for writing) marks it dirty; Commit / Unmount clear it. The quit waits
+// until the save is clean, no save file is open for writing and nothing touched it for a quiet spell (a game that commits several
+// times in a row, file by file, is not caught between two commits), then holds the fs locks so no new write starts before _exit.
+static _Atomic int g_save_dirty, g_save_wopen; static _Atomic uint64_t g_save_last_ns;
+static void save_touch(void) { atomic_store(&g_save_dirty, 1); atomic_store(&g_save_last_ns, now_ns()); }
 // 写失败按事务拒绝：真机存档空间建档时预留，覆盖写不会失败，游戏也不看 WriteFile / SetFileSize 的返回值，失败后照常 Commit
 // （注入第 1 次写失败后提交进去的 joe.d2s 为 0 字节＝角色丢失）。宿主写失败（盘满等，iOS 上真实可能）时：
 // 从上次 Commit 到这次 Commit 之间有任一存档写 / 定长失败，这次 Commit 拒绝——已提交版本不变，工作目录丢弃、从已提交版重新克隆，
@@ -322,10 +328,10 @@ static Result err_res(const char *op, const char *path) {
 // Name resolution shares one lock with create/rename/enumerate, aliases and xattr are published to the guest together.
 #define HP_EX(path, create) PATH_LOCK(); char hp[1024]; int ro = 0; if (!host_path_ex(path, hp, sizeof hp, &ro, create)) return err_res("path", path)
 #define HP(path) HP_EX(path, 0)
-#define RW() if (ro) { LOG("fs 写只读挂载：%s", hp); return RES_FAIL; }
+#define RW() do { if (ro) { LOG("fs 写只读挂载：%s", hp); return RES_FAIL; } if (in_txn_dir(hp)) save_touch(); } while (0)
 // 建目录 / 建文件：目标已存在就照可写挂载的语义回「已存在」——游戏只认得这一种失败（原版存档盘不会写失败），回通用失败它会拿空句柄继续走（iOS 只读回退局在 CloseDirectory 崩）
 // Create directory / create file: if the target exists, answer "already exists" as a writable mount would. That is the only failure the game understands (the original save storage never fails to write); with a generic failure it carries on with a null handle (the iOS read-only fallback crashed in CloseDirectory)
-#define RW_CREATE() if (ro) { if (!access(hp, F_OK)) return RES_PATH_EXISTS; LOG("fs 写只读挂载：%s", hp); return RES_FAIL; }
+#define RW_CREATE() do { if (ro) { if (!access(hp, F_OK)) return RES_PATH_EXISTS; LOG("fs 写只读挂载：%s", hp); return RES_FAIL; } if (in_txn_dir(hp)) save_touch(); } while (0)
 
 #ifdef DM_GAME_TL2
 // [TL2] PC mods as extra data packs (docs/tl2/TL2_PORT.md, "Моды PC"), DM_TL2_MODS=1, default off:
@@ -571,6 +577,30 @@ void (*g_dm_pre_commit_hook[5])(const char *workdir);   // 提交前调（工作
 void (*g_dm_save_commit_hook)(const char *commit_dir);   // 存档提交成功后调（已提交目录）；iOS 的 iCloud 同步设它，宿主为空 | called after a save commit succeeds (committed directory); the iOS iCloud sync sets it, NULL on the host
 static _Atomic uint64_t g_save_commits;   // 成功提交过几次（前端进后台时等「游戏这次存盘已提交」用） | number of successful commits (used by the front end when going to background to wait for "the game's current save has been committed")
 uint64_t dm_fs_commit_count(void) { return atomic_load(&g_save_commits); }
+// [ETERNAL ui2] Save-safe quit: wait (up to timeout_ms) until the save is committed (not dirty), no save file is open for writing and the
+// save has been quiet for quiet_ms; then take the fs locks and keep them (the caller exits: no new save write can start in between).
+// Returns 1 when the save was quiet, 0 on timeout (the committed version is still intact: Commit swaps atomically).
+int dm_fs_save_quiesce(int timeout_ms, int quiet_ms) {
+    uint64_t t0 = now_ns(), until = t0 + (uint64_t)timeout_ms * 1000000ull; int said = 0;
+    for (;;) {
+        uint64_t t = now_ns(), last = atomic_load(&g_save_last_ns);
+        int dirty = atomic_load(&g_save_dirty), wopen = atomic_load(&g_save_wopen), quiet = !last || t - last >= (uint64_t)quiet_ms * 1000000ull;
+        if (!dirty && wopen <= 0 && quiet) {
+            pthread_mutex_lock(&g_path_lock); pthread_mutex_lock(&g_lock);   // kept: the process ends
+            if (!atomic_load(&g_save_dirty) && atomic_load(&g_save_wopen) <= 0) {
+                LOG("[quit] save quiet after %.0f ms (commits %llu): fs locked for the exit", (now_ns() - t0) / 1e6, (unsigned long long)atomic_load(&g_save_commits));
+                return 1;
+            }
+            pthread_mutex_unlock(&g_lock); pthread_mutex_unlock(&g_path_lock);
+        }
+        if (!timeout_ms) return 0;   // a probe: busy now
+        if (!said++) LOG("[quit] waiting for the save: %s, %d file(s) open for writing, last save activity %.0f ms ago", dirty ? "uncommitted changes" : "committed",
+                         wopen, last ? (t - last) / 1e6 : -1.0);
+        if (t >= until) { LOG("【红】[quit] the save is still busy after %d ms (%s, %d open for writing): exiting anyway; the last committed save stays intact",
+                              timeout_ms, dirty ? "uncommitted changes" : "committed", wopen); return 0; }
+        usleep(20000);
+    }
+}
 HLE_FORCE("_ZN2nn2fs6CommitEPKc", "fsp-srv；事务式存档：工作目录整树 clone 后与已提交目录原子互换（renamex_np RENAME_SWAP）", Result, h_fs_Commit, const char *name) {
     PATH_LOCK(); pthread_mutex_lock(&g_lock);
     int i = 0; while (i < g_nmnt && strcmp(g_mnt[i].name, name)) i++;
@@ -620,6 +650,7 @@ HLE_FORCE("_ZN2nn2fs6CommitEPKc", "fsp-srv；事务式存档：工作目录整�
     static int n; if (r == RES_OK) { uint64_t tc2 = clock_gettime_nsec_np(CLOCK_MONOTONIC);
         LOG("存档提交 #%d：%s 原子换入 %s（此前存档写 %d 次）（钩子 %llu 微秒、克隆换入 %llu 微秒、自本事务首次写起 %llu 微秒）", ++n, g_mnt[i].dir, g_mnt[i].commit, atomic_load(&g_save_writes),
             (unsigned long long)((tc1 - tc0) / 1000), (unsigned long long)((tc2 - tc1) / 1000), (unsigned long long)(tw0 ? (tc2 - tw0) / 1000 : 0)); atomic_fetch_add(&g_save_commits, 1);
+        atomic_store(&g_save_dirty, 0); atomic_store(&g_save_last_ns, now_ns());
         if (g_dm_save_commit_hook) g_dm_save_commit_hook(g_mnt[i].commit); }   // iCloud 同步（cloud_ios.m）：持着锁调，那边只做 clonefile 快照 | iCloud sync (cloud_ios.m): called with the lock held, that side only takes a clonefile snapshot
     pthread_mutex_unlock(&g_lock);
     return r;
@@ -643,7 +674,7 @@ HLE_FORCE("_ZN2nn2fs7UnmountEPKc", "fsp-srv: unmount (a transactional save drops
         else if (!access(re, F_OK) && rm_tree(re)) rerr = errno ? errno : EIO;
         else if (clonefile(g_mnt[i].commit, re, 0)) { rerr = errno ? errno : EIO; rm_tree(re); }
         else if (renamex_np(re, g_mnt[i].dir, RENAME_SWAP)) { rerr = errno ? errno : EIO; rm_tree(re); }
-        else { rm_tree(re); atomic_store(&g_save_poison, 0); }   // the working directory is the committed version again, intact
+        else { rm_tree(re); atomic_store(&g_save_poison, 0); atomic_store(&g_save_dirty, 0); }   // the working directory is the committed version again, intact
         if (rerr) LOG("【红】fs Unmount %s: could not reset the working directory (errno %d); uncommitted changes stay until the next commit", name, rerr);
         else if (!nopen && g_flag.fs) LOG("fs Unmount %s: uncommitted changes dropped", name);
     }
@@ -754,6 +785,7 @@ HLE_FORCE("_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci", "fsp-srv → open(2)", Re
     g_hm[fd] = NULL; if (!(mode & (MODE_WRITE | MODE_APPEND))) dm_data_note_fd(fd, hp);
     { const char *c = strchr(path, ':'); size_t ln = c ? (size_t)(c - path) : 0; g_fsave[fd] = 0;
       for (int i = 0; c && i < g_nmnt; i++) if (strlen(g_mnt[i].name) == ln && !strncmp(g_mnt[i].name, path, ln)) g_fsave[fd] = g_mnt[i].commit[0] != 0; }
+    if (g_fsave[fd] && (mode & (MODE_WRITE | MODE_APPEND))) { atomic_fetch_add(&g_save_wopen, 1); save_touch(); }
     fslog_init();
     if (g_fslog && fd < 4096) { pthread_mutex_lock(&g_fslog_lock); free(g_fdpath[fd]); g_fdpath[fd] = strdup(path); pthread_mutex_unlock(&g_fslog_lock); }
     if (g_flag.fs) LOG("fs open [%.2fs] %s mode=%d → fd %d", (now_ns() - g_t0_ns) / 1e9, path, mode, fd);
@@ -840,7 +872,7 @@ HLE_FORCE("_ZN2nn2fs9WriteFileENS0_10FileHandleElPKvmRKNS0_11WriteOptionE", "fsp
             kill_n = k && !strncmp(k, "write:", 6) ? atoi(k + 6) : 0;
             if (f && !strncmp(f, "write:", 6)) { fail_n = atoi(f + 6); const char *c = strchr(f + 6, ':'); fail_e = c ? atoi(c + 1) : ENOSPC; }
             cfg = 1; }
-        int n = atomic_fetch_add(&g_save_writes, 1) + 1;
+        int n = atomic_fetch_add(&g_save_writes, 1) + 1; save_touch();
         { uint64_t z = 0; atomic_compare_exchange_strong(&g_txn_first_ns, &z, clock_gettime_nsec_np(CLOCK_MONOTONIC)); }
         if (kill_n && n == kill_n) { LOG("DM_TEST_KILL_AT：存档第 %d 次写，直接 _exit（模拟写到一半被杀）", n); _exit(9); }
         if (fail_n && n == fail_n) { LOG("DM_TEST_FS_FAIL：存档第 %d 次写返回失败 errno=%d", n, fail_e); errno = fail_e; save_poison(fail_e); return err_res("pwrite（注入）", "fd"); }
@@ -860,13 +892,16 @@ HLE_FORCE("_ZN2nn2fs11GetFileSizeEPlNS0_10FileHandleE", "fsp-srv → fstat(2)", 
 }
 HLE_FORCE("_ZN2nn2fs11SetFileSizeENS0_10FileHandleEl", "fsp-srv → ftruncate(2)", Result, h_fs_SetFileSize, uint64_t h, int64_t sz) {
     if (!h) return RES_FAIL;
+    if (g_fsave[(int)h & 0xffff]) save_touch();
     if (!ftruncate((int)h, sz)) return RES_OK;
     if (g_fsave[(int)h & 0xffff]) save_poison(errno);
     return err_res("ftruncate", "fd");
 }
 HLE_FORCE("_ZN2nn2fs9FlushFileENS0_10FileHandleE", "fsp-srv；宿主 write 已进页缓存，刷新为空操作", Result, h_fs_FlushFile, uint64_t h) { (void)h; return RES_OK; }
 HLE_FORCE("_ZN2nn2fs9CloseFileENS0_10FileHandleE", "fsp-srv → close(2)", void, h_fs_CloseFile, uint64_t h) {
-    if (!h) return;  g_fmode[(int)h & 0xffff] = 0; g_fsave[(int)h & 0xffff] = 0;
+    if (!h) return;
+    if (g_fsave[(int)h & 0xffff] && (g_fmode[(int)h & 0xffff] & (MODE_WRITE | MODE_APPEND))) { atomic_fetch_sub(&g_save_wopen, 1); atomic_store(&g_save_last_ns, now_ns()); }
+    g_fmode[(int)h & 0xffff] = 0; g_fsave[(int)h & 0xffff] = 0;
     int d2s = g_fd2s[(int)h & 0xffff]; g_fd2s[(int)h & 0xffff] = 0;
     if ((int)h >= 0 && (int)h < 4096 && g_hm[(int)h]) { holemap *m = g_hm[(int)h]; g_hm[(int)h] = NULL; free(m->log); free(m->len); free(m->phys); free(m); }
     close((int)h); if (d2s) atomic_store(&g_d2s_wseq, dm_seq_next()); }   // 先关再取号：取号时内容已落到文件 | Close first, then take the number: by then the content is in the file

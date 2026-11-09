@@ -742,6 +742,9 @@ JNIEXPORT void JNICALL Java_com_xiaoboluo_d2r_DmActivity_nativeLog(JNIEnv *env, 
     LOG("[java] %s", t); (*env)->ReleaseStringUTFChars(env, text, t);
 }
 JNIEXPORT jstring JNICALL Java_com_xiaoboluo_d2r_DmActivity_nativeLogPath(JNIEnv *env, jclass cls) { (void)cls; return (*env)->NewStringUTF(env, g_log_path); }
-JNIEXPORT void JNICALL Java_com_xiaoboluo_d2r_DmActivity_nativeQuit(JNIEnv *env, jclass cls) { (void)env; (void)cls; LOG("[java] the app ends (pause menu)"); dm_host_shutdown("pause menu: quit"); }
+// [TL2] HLE-25 (DOOM Eternal ui2 8ccce66): nativeQuit waits for a save in progress (hle_hold.c dm_hold_quit: the game runs on muted until the
+// save is committed and quiet, at most DM_QUIT_SAVE_WAIT_MS = 6000, quiet spell DM_QUIT_SAVE_QUIET_MS = 750), then exits gracefully.
+void dm_hold_quit(void);
+JNIEXPORT void JNICALL Java_com_xiaoboluo_d2r_DmActivity_nativeQuit(JNIEnv *env, jclass cls) { (void)env; (void)cls; LOG("[java] the app ends (pause menu)"); dm_hold_quit(); }
 JNIEXPORT jint JNICALL Java_com_xiaoboluo_d2r_DmActivity_nativeOpmode(JNIEnv *env, jclass cls) { (void)env; (void)cls; return dm_opmode(); }
 JNIEXPORT void JNICALL Java_com_xiaoboluo_d2r_DmActivity_nativeSetOpmode(JNIEnv *env, jclass cls, jint m) { (void)env; (void)cls; dm_set_opmode(m ? 1 : 0); }

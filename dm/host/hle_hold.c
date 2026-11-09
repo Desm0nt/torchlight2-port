@@ -14,19 +14,20 @@
 #include "hle.h"
 #include <pthread.h>
 #include <stdatomic.h>
+#include <stdlib.h>
 void dm_gfx_suspend(int on);
 void dm_audio_suspend(int on);
 void guest_clock_freeze_for(int reason, int on);
 
 enum { HOLD_REASON = 3 };   // hle_os.c: 0 tests / loading screen, 1 background, 2 system keyboard, 3 the pause menu
 static pthread_mutex_t g_apply = PTHREAD_MUTEX_INITIALIZER;     // the applies (they may wait for the GPU)
-static int g_bg_audio, g_bg_gfx, g_menu, g_on_audio, g_on_gfx;   // under g_apply: wanted by the lifecycle / the menu, applied
+static int g_bg_audio, g_bg_gfx, g_menu, g_quit, g_on_audio, g_on_gfx;   // under g_apply: wanted by the lifecycle / the menu / the quit, applied
 static pthread_mutex_t g_req_mu = PTHREAD_MUTEX_INITIALIZER; static pthread_cond_t g_req_cv = PTHREAD_COND_INITIALIZER;
 static int g_req = -1;                                           // under g_req_mu: the menu state the UI asked for last (-1 none pending)
 static _Atomic int g_held;                                       // the menu hold as applied (dm_hold_active)
 
 static void apply_locked(void) {
-    int gfx = g_bg_gfx || g_menu, audio = g_bg_audio || g_menu;
+    int gfx = g_bg_gfx || g_menu, audio = g_bg_audio || g_menu || g_quit;   // the quit lets the game run on (a save to finish) without sound
     if (gfx != g_on_gfx) { dm_gfx_suspend(gfx); g_on_gfx = gfx; }
     if (audio != g_on_audio) { dm_audio_suspend(audio); g_on_audio = audio; }
 }
@@ -64,4 +65,27 @@ static void hold_start(void) { pthread_t th; if (!pthread_create(&th, NULL, hold
 void dm_hold_menu(int on) {
     pthread_once(&g_once, hold_start);
     pthread_mutex_lock(&g_req_mu); g_req = on != 0; pthread_cond_signal(&g_req_cv); pthread_mutex_unlock(&g_req_mu);
+}
+
+// [ETERNAL ui2] Save-safe quit (JNI nativeQuit): a force-stop in the middle of an autosave once cost the owner his progress. The pause menu
+// holds the game (the clock frozen: an autosave the menu opened on is frozen half-way), so if the save is busy the hold is let go -
+// graphics and the clock run on, the sound stays off - until hle_fs.c says the save is committed and quiet; then the fs locks are taken
+// and the graceful exit runs. DM_QUIT_SAVE_WAIT_MS (default 6000) bounds the wait, DM_QUIT_SAVE_QUIET_MS (default 750) is the quiet spell
+// (Eternal may commit several times in a row). The committed save is intact either way (Commit swaps the directory atomically).
+int dm_fs_save_quiesce(int timeout_ms, int quiet_ms);
+void dm_host_shutdown(const char *why);
+void dm_hold_quit(void) {
+    const char *e = getenv("DM_QUIT_SAVE_WAIT_MS"), *q = getenv("DM_QUIT_SAVE_QUIET_MS");
+    int wait = e && *e ? atoi(e) : 6000, quiet = q && *q ? atoi(q) : 750;
+    LOG("[quit] quit asked: the game %s", atomic_load(&g_held) ? "is held by the pause menu" : "runs");
+    if (!dm_fs_save_quiesce(0, quiet)) {   // busy (or touched in the last quiet spell): let the game finish it
+        pthread_mutex_lock(&g_apply);
+        g_quit = 1;
+        if (g_menu) { guest_clock_freeze_for(HOLD_REASON, 0); g_menu = 0; atomic_store(&g_held, 0); }
+        apply_locked();
+        pthread_mutex_unlock(&g_apply);
+        LOG("[quit] the save is busy: the game runs on (no sound) until it is committed");
+        dm_fs_save_quiesce(wait, quiet);
+    }
+    dm_host_shutdown("pause menu: quit");
 }
