@@ -7,6 +7,7 @@
 // reaches DM_VMA_RELIEVE_PCT % of max_map_count (default 75; 0 = never), has the dirty tracker give the VMAs back
 // (nvn_dirty_relieve: every protected run unprotected in one mprotect, so neighbours merge). The SVCs call dm_vma_relieve on ENOMEM.
 #include "dm.h"
+#include "pc.h"   // [pc] report
 #if defined(__linux__) || defined(__ANDROID__)
 #include <errno.h>
 #include <fcntl.h>
@@ -123,9 +124,10 @@ static void *vma_watch(void *arg) {
 }
 void dm_vma_watch_start(void) {
     static int started; if (started) return; started = 1;
-    const char *e = getenv("DM_VMA_WATCH"); if (e && *e == '0') { LOG("[vma] watch off (DM_VMA_WATCH=0)"); return; }
+    const char *e = getenv("DM_VMA_WATCH"); if (e && *e == '0') { LOG("[vma] watch off (DM_VMA_WATCH=0)"); pc_note("vma-guard", 0, "%s", "DM_VMA_WATCH=0"); return; }
     pthread_t t; pthread_attr_t a; pthread_attr_init(&a); pthread_attr_setdetachstate(&a, PTHREAD_CREATE_DETACHED); pthread_attr_setstacksize(&a, 128 << 10);
     if (pthread_create(&t, &a, vma_watch, NULL)) LOG("【红】[vma] watch thread not started");
+    else { pc_note("vma-guard", 1, "dm-vma watch, relief by the dirty tracker%s; HLE-09", nvn_dirty_relieve ? "" : " (none linked)"); }
     pthread_attr_destroy(&a);
 }
 #else

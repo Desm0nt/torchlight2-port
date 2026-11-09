@@ -224,6 +224,7 @@ static void *nvn_lookup(const char *name) {
     // [DOOM] LSE phones get the same thunk addresses as before; ARMv8.0 cores (no HWCAP_ATOMICS) the stadd-free set
     void *const *tab = dm_cpu_lse() ? nvn_thunk : nvn_thunk_v80;
     { static int said; if (!said++) LOG("[nvn] thunks: %s", tab == nvn_thunk ? "LSE stadd (ARMv8.1+)" : "ARMv8.0 (no LSE: plain counter)"); }
+    { void pc_note(const char *, int, const char *, ...); pc_note("lse-select", tab != nvn_thunk, "%s", tab == nvn_thunk ? "CPU has LSE: the LSE code runs unchanged" : dm_cpu_hw_lse() ? "ARMv8.0 thunks / entry / stubs, forced by DM_CPU_NOLSE" : "no LSE: ARMv8.0 thunks / entry / stubs; APP-04"); }   // [pc]
     for (unsigned i = 0; i < NVN_NFUNC; i++)
         if (!strcmp(nvn_names[i], name)) return tab[i];
 #if defined(DM_GAME_ETERNAL) || defined(DM_GAME_XC2) || defined(DM_GAME_D3)
