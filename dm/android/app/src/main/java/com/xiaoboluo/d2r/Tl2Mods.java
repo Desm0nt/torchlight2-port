@@ -20,7 +20,7 @@ import java.util.Map;
 import java.util.Set;
 
 // [TL2] Mod manager (docs/tl2/TL2_PORT.md "Моды PC"): PC .MOD files in Download/Torchlight2Mobile/mods/, picked and ordered in the ⚙
-// dialog (DmActivity.showTl2Mods; pref "tl2_mods" in doom_graphics: one line per known file, "<name>\t<1|0>", in load order). At the
+// dialog (Tl2Gear.showMods; pref "tl2_mods" in doom_graphics: one line per known file, "<name>\t<1|0>", in load order). At the
 // next launch, before the library starts the game, prepare() turns every enabled .MOD into files/tl2mods/overlay/PAKS/ZMOD_<NN>_<NAME>.PAK
 // (+ .MAN; Tl2ModConv, the device port of tools/tl2_mod.py): NN = position among the enabled mods, so the game, which lists ROM:/PAKS in
 // RomFS order (hle_fs.c DM_TL2_ROM_ORDER), loads them after DATA5 in the list's order. A pack is converted again only when its .MOD

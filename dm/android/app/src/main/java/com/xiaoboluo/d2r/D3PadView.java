@@ -183,7 +183,7 @@ public class D3PadView extends View implements FrontMenu.Pad {
     private List<Ctl> all() { List<Ctl> a = new ArrayList<>(btns); a.add(left); if (right != null) a.add(right); return a; }
     private String posKey(String group) { return "d3_pos_" + layout + "_" + group; }
 
-    // Gear dialog options (DmActivity.showD3Settings), all "doom_controls" except the picture shape.
+    // Gear dialog options (Tl2Gear.java, the shared gear), all "doom_controls" except the picture shape.
     @Override public void reloadSettings() {
         Context c = getContext();
         SharedPreferences p = c.getSharedPreferences("doom_controls", Context.MODE_PRIVATE);
