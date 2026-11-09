@@ -3206,6 +3206,12 @@ std::shared_ptr<const XbgPoolIdxProgram> analyze(const std::vector<xbg_shader_bi
 }
 } // namespace bindless
 #endif
+// [pvr] PVR-05 (DOOM 2016 B&F 2.47, docs/port-kb gpu-powervr.md): PowerVR's compiler runs inside vkCreateShaderModule too (2-56 ms a module)
+// and is not thread-safe, so with DM_GFX_PIPE_SERIAL (1 on PowerVR, 0 elsewhere = no lock taken) shader modules are created under the same
+// lock as the pipelines (the warm-up threads build pipelines while the submit thread loads shaders). This port has no dm-record thread, so
+// modules + pipelines under one lock is the whole of DOOM's DM_GFX_COMPILE_LOCK it needs. gpguard is defined further down.
+namespace gpguard{extern bool serial;extern std::mutex create_mu;
+struct ModuleLock{std::unique_lock<std::mutex> l;ModuleLock(){if(serial)l=std::unique_lock<std::mutex>(create_mu);}};}
 Shader *load_shader(const void *control,const void *code=nullptr){
 #if defined(DM_GAME_XC2) || defined(DM_GAME_D3)
     // [XC2] nxnative's key (control + code area): Monolith reuses control sections across different code (tools/xc2_shader_jobs.py)
@@ -3259,7 +3265,7 @@ Shader *load_shader(const void *control,const void *code=nullptr){
     if(h.stage==0){p->input_classes.resize(p->inputs.size());need(xbg_vertex_input_classes(words.data(),words.size(),p->inputs.data(),p->inputs.size(),p->input_classes.data())==0,"Unsupported vertex input scalar interface");
         if(vtx_retype_mode())p->words=words;}
     load_t3=timing_clock();
-    if(p->unusable.empty()){VkShaderModuleCreateInfo ci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};ci.codeSize=words.size()*4;ci.pCode=words.data();VK(vkCreateShaderModule(cfg.device,&ci,nullptr,&p->module));warm::register_module(p->module,key);}Shader *out=p.get();shaders.emplace(key,std::move(p));++stats.shader_loads;++hud::shaders;const uint64_t load_t4=timing_clock();hud::shader_ns+=load_t4-load_t0;
+    if(p->unusable.empty()){VkShaderModuleCreateInfo ci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};ci.codeSize=words.size()*4;ci.pCode=words.data();{gpguard::ModuleLock serial;VK(vkCreateShaderModule(cfg.device,&ci,nullptr,&p->module));}warm::register_module(p->module,key);}Shader *out=p.get();shaders.emplace(key,std::move(p));++stats.shader_loads;++hud::shaders;const uint64_t load_t4=timing_clock();hud::shader_ns+=load_t4-load_t0;
     xbg_logf("NVN shader %s stage=%u loaded words=%zu ms read=%.2f rewrite=%.2f analyse=%.2f module=%.2f reused=%d",key.c_str(),h.stage,words.size(),(load_t1-load_t0)/1e6,(load_t2-load_t1)/1e6,(load_t3-load_t2)/1e6,(load_t4-load_t3)/1e6,int(have_reused));return out;
 }
 // nvnProgramSetShaders assigns a new serial, and NVN shader control/code memory
@@ -3428,7 +3434,7 @@ VkShaderModule load_module(const std::string &key){
     gscull_rewrite(w,h.stage,key.c_str(),"warm");lone_rewrite(w,h.stage,key.c_str(),"warm");early_tests_rewrite(w,h.stage,key.c_str());invariant_rewrite(w,h.stage,key.c_str());gather_ext_rewrite(w,key.c_str());quad_rewrite(w,h.stage,key.c_str(),"warm");warp_rewrite(w,h.stage,key.c_str(),"warm");tidy_rewrite(w);
     if(keep_rewritten){std::lock_guard<std::mutex> l(mu);rewritten.emplace(key,w);}
     if(!module_gap(w,h.stage).empty())return VK_NULL_HANDLE;   // [nonadreno] the device lacks a capability: the warm pipeline is not built
-    VkShaderModuleCreateInfo ci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};ci.codeSize=w.size()*4;ci.pCode=w.data();VkShaderModule m;if(vkCreateShaderModule(cfg.device,&ci,nullptr,&m)!=VK_SUCCESS)return VK_NULL_HANDLE;
+    VkShaderModuleCreateInfo ci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};ci.codeSize=w.size()*4;ci.pCode=w.data();VkShaderModule m;VkResult mr;{gpguard::ModuleLock serial;mr=vkCreateShaderModule(cfg.device,&ci,nullptr,&m);}if(mr!=VK_SUCCESS)return VK_NULL_HANDLE;
     std::lock_guard<std::mutex> l(mu);auto ins=modules.emplace(key,m);if(!ins.second){vkDestroyShaderModule(cfg.device,m,nullptr);return ins.first->second;}return m;
 }
 struct Reader{const uint32_t *w;size_t n,i=0;bool bad=false;uint32_t u(){if(i>=n){bad=true;return 0;}return w[i++];}uint64_t q(){uint64_t lo=u();return lo|(uint64_t(u())<<32);}float f(){uint32_t b=u();float x;memcpy(&x,&b,4);return x;}};
@@ -5059,7 +5065,7 @@ bool prepare(){
         if((r=vkAllocateMemory(cfg.device,&ma,nullptr,&ps.memory))!=VK_SUCCESS || (r=vkBindBufferMemory(cfg.device,ps.buffer,ps.memory,0))!=VK_SUCCESS || (r=vkMapMemory(cfg.device,ps.memory,0,VK_WHOLE_SIZE,0,&ps.mapped))!=VK_SUCCESS)return fail("buffer memory",r);
     }
     VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};mi.codeSize=sizeof(xbg_pass_values_cs);mi.pCode=xbg_pass_values_cs;VkShaderModule module{};
-    if((r=vkCreateShaderModule(cfg.device,&mi,nullptr,&module))!=VK_SUCCESS)return fail("shader module",r);
+    {gpguard::ModuleLock serial;r=vkCreateShaderModule(cfg.device,&mi,nullptr,&module);}if(r!=VK_SUCCESS)return fail("shader module",r);
     VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};ci.stage={VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};ci.stage.stage=VK_SHADER_STAGE_COMPUTE_BIT;ci.stage.module=module;ci.stage.pName="main";ci.layout=layout;
     {gpguard::Lock serial;r=vkCreateComputePipelines(cfg.device,pipeline_cache,1,&ci,nullptr,&pipeline);}vkDestroyShaderModule(cfg.device,module,nullptr);
     if(r!=VK_SUCCESS){pipeline={};return fail("compute pipeline",r);}
@@ -5471,8 +5477,8 @@ VkShaderModule vtx_retype_module(Shader &s,uint32_t code){
         char b[48];snprintf(b,sizeof b,"%sloc%u %s->%s",desc.empty()?"":" ",l,had<3?names[had]:"?",names[want.back()]);desc+=b;}
     std::vector<uint32_t> out;std::string why;VkShaderModule m=s.module;
     if(xbg_vertex_retype(s.words,loc.data(),loc.size(),want.data(),out,&why)){
-        VkShaderModuleCreateInfo ci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};ci.codeSize=out.size()*4;ci.pCode=out.data();VkShaderModule v=VK_NULL_HANDLE;
-        if(vkCreateShaderModule(cfg.device,&ci,nullptr,&v)==VK_SUCCESS){m=v;char tag[16];snprintf(tag,sizeof tag,"#vi%08x",code);warm::register_module(m,s.key+tag);
+        VkShaderModuleCreateInfo ci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};ci.codeSize=out.size()*4;ci.pCode=out.data();VkShaderModule v=VK_NULL_HANDLE;VkResult vr;{gpguard::ModuleLock serial;vr=vkCreateShaderModule(cfg.device,&ci,nullptr,&v);}
+        if(vr==VK_SUCCESS){m=v;char tag[16];snprintf(tag,sizeof tag,"#vi%08x",code);warm::register_module(m,s.key+tag);
             if(++vtx_retype_variants<=32)xbg_logf("NVN vertex input retype %s code=%#x: %s",s.key.c_str(),code,desc.c_str());}
         else why="vkCreateShaderModule failed";}
     if(m==s.module){++vtx_retype_refused;xbg_logf("NVN vertex input retype %s code=%#x (%s) refused: %s; the base module is kept",s.key.c_str(),code,desc.c_str(),why.c_str());}
@@ -5775,7 +5781,7 @@ bool prepare(){
     VkDescriptorBufferInfo bi[2]{{in_buf,0,VK_WHOLE_SIZE},{out_buf,0,VK_WHOLE_SIZE}};VkWriteDescriptorSet w[2]{};
     for(int k=0;k<2;k++){w[k].sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;w[k].dstSet=set;w[k].dstBinding=uint32_t(k);w[k].descriptorCount=1;w[k].descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;w[k].pBufferInfo=&bi[k];}
     vkUpdateDescriptorSets(cfg.device,2,w,0,nullptr);
-    VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};mi.codeSize=sizeof(xbg_bc_decode_cs);mi.pCode=xbg_bc_decode_cs;VK(vkCreateShaderModule(cfg.device,&mi,nullptr,&module));
+    VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};mi.codeSize=sizeof(xbg_bc_decode_cs);mi.pCode=xbg_bc_decode_cs;{gpguard::ModuleLock serial;VK(vkCreateShaderModule(cfg.device,&mi,nullptr,&module));}
     ok=true;xbg_logf("NVN BC decode: GPU decoder ready (scratch in=%.1fMB out=%.1fMB, SPIR-V %zu bytes)",i/1048576.0,o/1048576.0,sizeof(xbg_bc_decode_cs));return true;
 }
 // [nonadreno] DM_GFX_BC_SELFTEST (DOOM 2016 06.11, BUGS_AND_FIXES §2.24, docs/port-kb TEX-02): every new decode pipeline first decodes the
@@ -5898,7 +5904,7 @@ bool prepare(){
     VK(vkCreateDescriptorPool(cfg.device,&pi,nullptr,&pool));
     VkDescriptorSetLayout layouts[2*SETS];for(auto &l:layouts)l=set_layout;VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};ai.descriptorPool=pool;ai.descriptorSetCount=2*SETS;ai.pSetLayouts=layouts;
     VK(vkAllocateDescriptorSets(cfg.device,&ai,&sets[0][0]));
-    VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};mi.codeSize=sizeof(xbg_bright_lut_cs);mi.pCode=xbg_bright_lut_cs;VkShaderModule module{};VK(vkCreateShaderModule(cfg.device,&mi,nullptr,&module));
+    VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};mi.codeSize=sizeof(xbg_bright_lut_cs);mi.pCode=xbg_bright_lut_cs;VkShaderModule module{};{gpguard::ModuleLock serial;VK(vkCreateShaderModule(cfg.device,&mi,nullptr,&module));}
     VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};ci.stage={VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};ci.stage.stage=VK_SHADER_STAGE_COMPUTE_BIT;ci.stage.module=module;ci.stage.pName="main";ci.layout=layout;
     VkResult r;{gpguard::Lock serial;r=vkCreateComputePipelines(cfg.device,pipeline_cache,1,&ci,nullptr,&pipeline);}vkDestroyShaderModule(cfg.device,module,nullptr);
     if(r!=VK_SUCCESS){pipeline={};xbg_logf("NVN bright: off (compute pipeline result=%d)",int(r));return false;}
@@ -5980,8 +5986,10 @@ struct MaskedClear {
     VkShaderModule vs{},fs{};VkPipelineLayout layout{};VkPipeline pipeline{};
     ~MaskedClear(){if(pipeline)vkDestroyPipeline(cfg.device,pipeline,nullptr);if(layout)vkDestroyPipelineLayout(cfg.device,layout,nullptr);if(fs)vkDestroyShaderModule(cfg.device,fs,nullptr);if(vs)vkDestroyShaderModule(cfg.device,vs,nullptr);}
     void prepare(const Pass &p,int attachment,int scalar,uint32_t cm,uint32_t sm,uint32_t reference){
+        gpguard::ModuleLock serial;   // [pvr] PVR-05: both modules (released before the pipeline below takes gpguard::Lock)
         VkShaderModuleCreateInfo si{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};si.codeSize=sizeof(xbg_clear_vs);si.pCode=xbg_clear_vs;VK(vkCreateShaderModule(cfg.device,&si,nullptr,&vs));
         if(cm){const uint32_t *words=scalar==1?xbg_clear_fs_sint:scalar==2?xbg_clear_fs_uint:xbg_clear_fs_float;size_t bytes=scalar==1?sizeof(xbg_clear_fs_sint):scalar==2?sizeof(xbg_clear_fs_uint):sizeof(xbg_clear_fs_float);std::vector<uint32_t> patched(words,words+bytes/4);patched[xbg_clear_fs_location_word]=uint32_t(attachment);si.codeSize=bytes;si.pCode=patched.data();VK(vkCreateShaderModule(cfg.device,&si,nullptr,&fs));}
+        if(serial.l.owns_lock())serial.l.unlock();   // the pipeline below takes gpguard::Lock (the same mutex, not recursive)
         VkPushConstantRange push{VK_SHADER_STAGE_FRAGMENT_BIT,0,16};VkPipelineLayoutCreateInfo li{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};li.pushConstantRangeCount=cm?1:0;li.pPushConstantRanges=cm?&push:nullptr;VK(vkCreatePipelineLayout(cfg.device,&li,nullptr,&layout));
         VkPipelineShaderStageCreateInfo stages[2]{};for(int i=0;i<(cm?2:1);i++){stages[i].sType=VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;stages[i].stage=i?VK_SHADER_STAGE_FRAGMENT_BIT:VK_SHADER_STAGE_VERTEX_BIT;stages[i].module=i?fs:vs;stages[i].pName="main";}
         VkPipelineVertexInputStateCreateInfo vi{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};ia.topology=VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
