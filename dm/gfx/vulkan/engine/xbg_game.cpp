@@ -5814,8 +5814,7 @@ bool selftest(VkPipeline pipe,uint32_t fmt,uint32_t opt){
     vkCmdPipelineBarrier(cb,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_HOST_BIT,0,1,&hb,0,nullptr,0,nullptr);vkEndCommandBuffer(cb);
     vkResetFences(cfg.device,1,&kat_fence);VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};si.commandBufferCount=1;si.pCommandBuffers=&cb;
     VkResult r=vkQueueSubmit(cfg.queue,1,&si,kat_fence);
-    if(r==VK_SUCCESS)r=vkWaitForFences(cfg.device,1,&kat_fence,VK_TRUE,5000000000ull);
-    if(r==VK_ERROR_INITIALIZATION_FAILED)r=vkWaitForFences(cfg.device,1,&kat_fence,VK_TRUE,5000000000ull);   // [nonadreno] Mali: INIT_FAILED after the signal, retried once (as fence waits elsewhere)
+    if(r==VK_SUCCESS)r=vkWaitForFences(cfg.device,1,&kat_fence,VK_TRUE,5000000000ull);   // dm_wait_for_fences: retries Mali's INIT_FAILED
     bool good=true;unsigned bad=0;uint32_t modes=0;char first[200]="";
     if(r!=VK_SUCCESS){xbg_logf("NVN BC decode: self-test fmt=%#x opt=%u not run (VkResult %d)",fmt,opt,int(r));}
     else{rb.invalidate();const uint8_t *o=static_cast<const uint8_t*>(rb.mapped);const bool snorm=fmt==0x4a || fmt==0x4c;
