@@ -377,13 +377,15 @@ paused (...)` / `allowed again`.
   `DM_GFX_BC_BARRIER=full`. Лог: `NVN BC decode: self-test fmt=… bad=… -> gpu|cpu`. На Adreno (нативный BC) путь не исполняется.
 - `6e35989` SYNC-10: непривязанный VB → нулевой буфер 64 КБ + лог вместо FATAL `Unbound vertex buffer`.
 - `3a0cafd` APP-02 stall watch (`stall_android.c` из D16/ETR; `DM_STALL_WATCH_MS=2000`): отчёт `【红】[stall]` по потокам в boot.log.
+- `ffd385a` PVR-05 (для порта без `dm-record`): все `vkCreateShaderModule` под замком `DM_GFX_PIPE_SERIAL` (`gpguard::ModuleLock`;
+  берётся только при serial = PowerVR): компилятор PowerVR работает и в создании модуля, а прогрев строит пайплайны параллельно.
 - `a047759` HLE-25 безопасный выход из меню: `nativeQuit` → `dm_hold_quit` ждёт фиксации и тишины сейва (`DM_QUIT_SAVE_QUIET_MS=750`,
   максимум `DM_QUIT_SAVE_WAIT_MS=6000`); `hle_hold.c` = файл ETR (frontend-common + `g_quit`).
 
 **Уже было / неприменимо:** TEX-07 `CUBEMAP_ARRAY` — гейт «XC2 или D3» в `nvn_tex.c`, сборка tl2 определяет `DM_GAME_D3` (запись MATRIX
 была неверной); HLE-09 vma-guard, APP-04 LSE, SYNC-12, MALI-06/07/08 — как D3; TEX-03/04 ASTC-оверлей и санитайзер — оверлея у TL2 нет
-(текстуры в PAK/XTX, setup ASTC не делает) — n/a; MALI-04 clip-fix — у TL2 нет `CLIP_FIX` — n/a; PVR-01 fence guard / PVR-05
-`COMPILE_LOCK` — нет потока `dm-record`, модули и пайплайны под `PIPE_SERIAL` (1 на PowerVR) — n/a; MALI-03 тайловый набор и MALI-10/11
+(текстуры в PAK/XTX, setup ASTC не делает) — n/a; MALI-04 clip-fix — у TL2 нет `CLIP_FIX` — n/a; PVR-01 fence guard / полный `COMPILE_LOCK` — нет потока
+`dm-record` — n/a (но модули шейдеров были вне замка `PIPE_SERIAL` — исправлено `ffd385a`, см. выше); MALI-03 тайловый набор и MALI-10/11
 zero-copy uncached на Mali — перф, не совместимость (на Mali zero-copy выключен, путь копий корректен) — не переносилось.
 
 **Осталось:** APP-01 PadSurface — пад TL2 (D3PadView + Tl2Touch) рисуется на окне; нужен `PadSurface.Painter` + один замок на всё
