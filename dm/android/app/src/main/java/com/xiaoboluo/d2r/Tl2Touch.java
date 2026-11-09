@@ -24,12 +24,14 @@ import java.util.Map;
 // There is no menu mode: per-item menu touch waits for CEGUI mouse events (another branch); menus are driven with the buttons.
 //
 // Both layouts:
-//   * move stick (left stick), D2R's floating base: a touch in the lower left (x < 40% of the width, y > 45% of the height) puts the
-//     base under the finger; axes from the finger relative to the touch point, full tilt at 60 dp, dead zone 6 dp; idle only a faint ring
-//     at its rest spot. Diagonal pre-correction (D2R g_iso_fix): the vertical part times "tl2_iso" %, rescaled, so the screen angle of the
+//   * move stick (left stick), D2R's floating base: a touch in the move zone (left 45% of the width below the top quarter, minus the
+//     buttons) puts the base under the finger; axes from the finger relative to the touch point, full tilt at 60 dp, dead zone 6 dp;
+//     nothing is drawn while no finger holds it (the stick appears under the finger and goes away on release). Diagonal pre-correction (D2R g_iso_fix): the vertical part times "tl2_iso" %, rescaled, so the screen angle of the
 //     walk matches the finger's;
-//   * aim stick (right stick), the same floating base in the lower right part that no button covers (x > 50%, y > 35%), same travel and
-//     the same correction;
+//   * no aim stick: TL2 on Switch uses the right stick only for the camera zoom (its Y axis), so the right side has a thin vertical zoom
+//     slider instead (right edge above the fan; in tl2_side left of the cell columns): a finger on it drives the right stick's Y from
+//     the drag relative to where it went down (up = stick up, full at 50 dp, dead 4 dp), held while the finger stays, back to 0 on
+//     release - the game zooms continuously while the stick is held, like a held thumbstick;
 //   * buttons win over both stick zones; a key held shorter than 35 ms is made up as a 100 ms pulse (the game samples once a frame).
 // "tl2" (D2R fan): A (primary, large) with B X Y R around it and ZR above R (D2R's geometry), II = second skill set: the modifier
 //   ("tl2_mod": ZL / ZR / L / R) goes down 170 ms before a skill key and is held only while a skill is in use (DM_TC_ZL_LEAD_S);
@@ -40,7 +42,8 @@ import java.util.Map;
 // Optional, off by default (gear dialog): "tl2_tap" a quick tap on the world (outside the stick zones) = A (or turn toward the point,
 //   then A); "tl2_hold_walk" touch and hold the world = walk toward the finger; "tl2_aim" dragging a fan skill aims with the right / left
 //   stick (the aim stick does this better).
-// Edit mode: a control drags its group; offsets "tl2_off_<layout>_<group>" = "fx,fy" of the view.
+// Edit mode: a control drags its group; offsets "tl2_off_<layout>_<group>" = "fx,fy" of the view. The two stick zones are shown as
+//   outline there and drags like a group ("zmove") from any spot inside it that is not a button; the zoom slider drags as "zoom".
 final class Tl2Touch {
     static final int K_A = KeyEvent.KEYCODE_ENTER, K_B = KeyEvent.KEYCODE_ESCAPE, K_X = KeyEvent.KEYCODE_R, K_Y = KeyEvent.KEYCODE_F,
         K_L = KeyEvent.KEYCODE_Q, K_R = KeyEvent.KEYCODE_E, K_ZL = KeyEvent.KEYCODE_SHIFT_LEFT, K_ZR = KeyEvent.KEYCODE_CTRL_LEFT,
@@ -95,11 +98,11 @@ final class Tl2Touch {
             this.label = label; this.key = key; this.kind = kind; this.group = group; this.anchor = anchor; this.bx = bx; this.by = by; this.br = br;
         }
     }
-    private static final int T_NONE = -1, T_JOY = -2, T_AIM = -3, T_WORLD = -4, T_MENU = -5;   // T_MENU: a console menu is up (DmActivity.nativeTl2MenuOpen), tap or not yet decided
+    private static final int T_NONE = -1, T_JOY = -2, T_ZOOM = -3, T_WORLD = -4, T_MENU = -5;   // T_MENU: a console menu is up (DmActivity.nativeTl2MenuOpen), tap or not yet decided
     private static final class Finger { int target = T_NONE, zone; float x, y, x0, y0; long t0, keyT; boolean keyDown, cancelled, moved, walking; long seq; }
     private static final class Pulse { final int key; final long start, end; final float ax, ay; final boolean mod;
         Pulse(int key, long start, long end, float ax, float ay, boolean mod) { this.key = key; this.start = start; this.end = end; this.ax = ax; this.ay = ay; this.mod = mod; } }
-    private static final class Stick { int ptr = -1; float tx, ty, bx, by, rx, ry; }
+    private static final class Stick { int ptr = -1; float tx, ty, bx, by; final RectF zone = new RectF(); final String group, name; Stick(String g, String n) { group = g; name = n; } }
 
     private final View view; private final Runnable openSettings;
     private final float dp;
@@ -114,7 +117,10 @@ final class Tl2Touch {
     private String editHint = "", resetLabel = "Reset", doneLabel = "Done";
     private boolean side, setII, editMode, controllerMode, pointer;
     private int lw, lh; private long seqN;
-    private final Stick move = new Stick(), aim = new Stick();
+    private final Stick move = new Stick("zmove", "MOVE");
+    static final float ZOOM_FULL_DP = 50, ZOOM_DEAD_DP = 4;
+    private final RectF zoom = new RectF(); private int zoomPtr = -1; private float zoomY0;   // camera zoom slider (right stick Y)
+    private static final String ZOOM_GROUP = "zoom";
     private float joyMinX, joyMaxY;
     private final HashSet<Integer> sent = new HashSet<>();
     private float sLx, sLy, sRx, sRy; private boolean axesSent;
@@ -184,11 +190,12 @@ final class Tl2Touch {
         editHint = ui.getString(R.string.d3_pad_edit_hint); resetLabel = ui.getString(R.string.d3_pad_reset); doneLabel = ui.getString(R.string.d3_pad_done);
         build();
         off.clear();
-        for (Btn b : btns) {
-            if (off.containsKey(b.group)) continue;
-            String v = p.getString(offKey(b.group), null); if (v == null) continue;
+        List<String> groups = new ArrayList<>(); for (Btn b : btns) groups.add(b.group); groups.add(move.group); groups.add(ZOOM_GROUP);
+        for (String g : groups) {
+            if (off.containsKey(g)) continue;
+            String v = p.getString(offKey(g), null); if (v == null) continue;
             String[] f = v.split(",");
-            try { if (f.length == 2) off.put(b.group, new float[] {Float.parseFloat(f[0]), Float.parseFloat(f[1])}); } catch (NumberFormatException e) { /* ignore */ }
+            try { if (f.length == 2) off.put(g, new float[] {Float.parseFloat(f[0]), Float.parseFloat(f[1])}); } catch (NumberFormatException e) { /* ignore */ }
         }
         view.invalidate();
     }
@@ -214,8 +221,16 @@ final class Tl2Touch {
             b.x = x; b.y = y; b.r = b.br * k;
         }
         joyR = 60 * k; joyMinX = joyR + 8 * k; joyMaxY = h - joyR - 8 * k;
-        move.rx = Math.max(90 * k, 60 * k) + 30 * k + (side ? 40 * k : 0); move.ry = h - 115 * k;   // D2R's rest spot
-        aim.rx = w - (side ? 210 : 250) * k; aim.ry = h - 100 * k;
+        zone(move, 0, 0.25f, 0.45f, 1, w, h);   // floating sticks: where a finger that hits no button grabs them
+        {   // zoom slider: tl2 = right edge between R3 / L3 and the fan's top (II at about h - 240 k); tl2_side = left of the cell columns
+            float cx = side ? w - 140 * k : w - 18 * k, top = side ? 40 * k : 70 * k, bot = side ? 40 * k + 56 * 5 * k : Math.max(top + 90 * k, h - 260 * k);
+            float[] o = off.get(ZOOM_GROUP); float ox = o == null ? 0 : o[0] * w, oy = o == null ? 0 : o[1] * h;
+            zoom.set(cx - 9 * k + ox, top + oy, cx + 9 * k + ox, bot + oy);
+        }
+    }
+    private void zone(Stick s, float l, float t, float r, float b, int w, int h) {
+        float[] o = off.get(s.group); float ox = o == null ? 0 : o[0] * w, oy = o == null ? 0 : o[1] * h;
+        s.zone.set(l * w + ox, t * h + oy, r * w + ox, b * h + oy);
     }
     private boolean shown(Btn b) { return editMode || !controllerMode || b.kind == KIND_GEAR; }
     private Btn hit(float x, float y) {
@@ -230,8 +245,13 @@ final class Tl2Touch {
     }
     private Btn btnOf(Finger f) { return f.target >= 0 && f.target < btns.size() ? btns.get(f.target) : null; }
     private boolean inMinus(float x, float y) { for (Btn b : btns) if (b.key == K_MINUS) return Math.abs(x - b.x) <= b.r && Math.abs(y - b.y) <= b.r; return false; }
-    private boolean moveZone(float x, float y) { return x < view.getWidth() * 0.40f && y > view.getHeight() * 0.45f; }
-    private boolean aimZone(float x, float y) { return x > view.getWidth() * 0.50f && y > view.getHeight() * 0.35f; }
+    private boolean moveZone(float x, float y) { return move.zone.contains(x, y); }
+    private boolean zoomHit(float x, float y) { return !controllerMode && x >= zoom.left - 14 * k && x <= zoom.right + 14 * k && y >= zoom.top - 10 * k && y <= zoom.bottom + 10 * k; }
+    private float zoomAxis(Finger f) {   // drag up = right stick up (negative Y, Android axis convention as nativePadAxes gets it)
+        float d = (f.y - zoomY0) / dp, a = Math.abs(d);
+        if (a <= ZOOM_DEAD_DP) return 0;
+        return Math.signum(d) * Math.min(1f, (a - ZOOM_DEAD_DP) / (ZOOM_FULL_DP - ZOOM_DEAD_DP));
+    }
 
     void setControllerMode(boolean on) { controllerMode = on; if (on) releaseAll(); view.invalidate(); }
 
@@ -292,8 +312,8 @@ final class Tl2Touch {
             float ax = Math.max(-1, Math.min(1, (dragAim.x - dragAim.x0) / (AIM_FULL_DP * dp))), ay = Math.max(-1, Math.min(1, (dragAim.y - dragAim.y0) / (AIM_FULL_DP * dp)));
             if (aimMode == AIM_LEFT) { lx = ax; ly = ay; lSet = true; } else { rx = ax; ry = ay; rSet = true; }
         }
-        Finger fa = aim.ptr >= 0 ? fingers.get(aim.ptr) : null;   // the aim stick wins over a skill drag on the right stick
-        if (fa != null) { float[] v = stickAxes(aim, fa); rx = v[0]; ry = v[1]; }
+        Finger fz = zoomPtr >= 0 ? fingers.get(zoomPtr) : null;   // the zoom slider wins over a skill drag on the right stick
+        if (fz != null) { rx = 0; ry = zoomAxis(fz); }
         Finger fm = move.ptr >= 0 ? fingers.get(move.ptr) : null;   // left stick: the move stick, then walking toward a held world finger, then a nudge
         if (fm != null) { float[] v = stickAxes(move, fm); lx = v[0]; ly = v[1]; lSet = true; }
         for (Finger f : fingers.values()) {
@@ -354,13 +374,13 @@ final class Tl2Touch {
         if (b != null && b.kind == KIND_PANEL) { DmActivity.nativeTl2OpenPanel(b.key); return; }   // [TL2] hle_tl2_ui.c: the game's own + / tab / segment / Accept
         if (b != null && b.kind == KIND_TAB) { DmActivity.nativeTl2UiTab(b.key); return; }        // [TL2] the radial menu's own L / R tab code
         if (b != null) f.target = btns.indexOf(b);
+        else if (zoomPtr < 0 && zoomHit(x, y)) { f.target = T_ZOOM; zoomPtr = id; zoomY0 = y; }
         // [TL2] pointer (hle_tl2_ui.c, gear "tap on menu items", DM_TL2_POINTER): while a console menu is up a finger off the overlay buttons
         // waits: a short still tap goes to the menu item under it; moving it first makes it the stick / world finger it would have been
-        else if (DmActivity.nativeTl2MenuOpen()) { f.target = T_MENU; f.zone = move.ptr < 0 && moveZone(x, y) ? T_JOY : aim.ptr < 0 && aimZone(x, y) ? T_AIM
-                                                  : y > 60 * k && !moveZone(x, y) && !aimZone(x, y) ? T_WORLD : T_NONE; }
+        else if (DmActivity.nativeTl2MenuOpen()) { f.target = T_MENU; f.zone = move.ptr < 0 && moveZone(x, y) ? T_JOY
+                                                  : y > 60 * k && !moveZone(x, y) ? T_WORLD : T_NONE; }
         else if (move.ptr < 0 && moveZone(x, y)) { f.target = T_JOY; grab(move, id, x, y); }
-        else if (aim.ptr < 0 && aimZone(x, y)) { f.target = T_AIM; grab(aim, id, x, y); }
-        else if (y > 60 * k && !moveZone(x, y) && !aimZone(x, y)) f.target = T_WORLD;
+        else if (y > 60 * k && !moveZone(x, y)) f.target = T_WORLD;
         fingers.put(id, f);
     }
     private void move(int id, float x, float y) {
@@ -369,7 +389,6 @@ final class Tl2Touch {
         if (dist(f) > MOVE_DP * dp) f.moved = true;
         if (f.target == T_MENU && f.moved) {   // not a tap: the finger becomes what it would have been without the menu, from where it went down
             if (f.zone == T_JOY && move.ptr < 0) { f.target = T_JOY; grab(move, id, f.x0, f.y0); }
-            else if (f.zone == T_AIM && aim.ptr < 0) { f.target = T_AIM; grab(aim, id, f.x0, f.y0); }
             else f.target = f.zone == T_WORLD ? T_WORLD : T_NONE;
         }
         Btn b = btnOf(f);
@@ -381,7 +400,7 @@ final class Tl2Touch {
     private void end(int id, boolean cancel) {
         Finger f = fingers.remove(id); if (f == null) return;
         if (id == move.ptr) move.ptr = -1;
-        if (id == aim.ptr) aim.ptr = -1;
+        if (id == zoomPtr) zoomPtr = -1;
         if (cancel) return;
         long t = now(), held = t - f.t0;
         Btn b = btnOf(f);
@@ -403,7 +422,7 @@ final class Tl2Touch {
         }
     }
     void releaseAll() {
-        fingers.clear(); pulses.clear(); move.ptr = aim.ptr = -1; faceUntil = 0;
+        fingers.clear(); pulses.clear(); move.ptr = zoomPtr = -1; faceUntil = 0;
         view.removeCallbacks(tick);
         for (Integer kc : sent) key(kc, false);
         sent.clear();
@@ -421,6 +440,7 @@ final class Tl2Touch {
     void resetLayout() {
         SharedPreferences.Editor ed = view.getContext().getSharedPreferences("doom_controls", Context.MODE_PRIVATE).edit();
         for (Btn b : btns) ed.remove(offKey(b.group));
+        ed.remove(offKey(move.group)); ed.remove(offKey(ZOOM_GROUP)); ed.remove(offKey("zaim"));
         ed.apply(); off.clear(); lw = -1; view.invalidate();
     }
     private void editTouch(MotionEvent e, int a, int id, float x, float y) {
@@ -428,7 +448,10 @@ final class Tl2Touch {
         case MotionEvent.ACTION_DOWN: case MotionEvent.ACTION_POINTER_DOWN:
             if (resetRect.contains(x, y)) { resetLayout(); break; }
             if (doneRect.contains(x, y)) { endEdit(); break; }
-            if (editPtr < 0) { Btn b = hit(x, y); if (b != null) { editPtr = id; editGroup = b.group; editX0 = x; editY0 = y; float[] o = off.get(b.group); editO0 = o == null ? new float[] {0, 0} : o.clone(); } }
+            if (editPtr < 0) {   // a button drags its group; an empty spot inside a stick zone drags that zone
+                Btn b = hit(x, y); String g = b != null ? b.group : zoomHit(x, y) ? ZOOM_GROUP : moveZone(x, y) ? move.group : null;
+                if (g != null) { editPtr = id; editGroup = g; editX0 = x; editY0 = y; float[] o = off.get(g); editO0 = o == null ? new float[] {0, 0} : o.clone(); }
+            }
             break;
         case MotionEvent.ACTION_MOVE:
             for (int n = 0; n < e.getPointerCount(); n++) if (e.getPointerId(n) == editPtr && view.getWidth() > 0 && view.getHeight() > 0) {
@@ -455,7 +478,7 @@ final class Tl2Touch {
         if (icons && !editMode) view.postInvalidateDelayed(500);   // keep polling the icon serial while nothing else redraws
         if (editMode) c.drawColor(0x50000000);
         if (!controllerMode) {
-            drawStick(c, move); drawStick(c, aim);
+            drawStick(c, move); drawZoom(c);
             for (Finger f : fingers.values()) if (f.target == T_WORLD && f.walking) { line.setColor(0xffffffff); line.setAlpha(Math.round(0x90 * op)); c.drawCircle(f.x, f.y, 22 * dp, line); }
         }
         for (Btn b : btns) if (shown(b)) drawBtn(c, b);
@@ -468,8 +491,22 @@ final class Tl2Touch {
             fill.setColor(0xffffffff); fill.setAlpha(Math.round(0x28 * op)); c.drawCircle(s.bx, s.by, joyR, fill);
             line.setColor(0xffffffff); line.setAlpha(Math.round(0x90 * op)); c.drawCircle(s.bx, s.by, joyR, line);
             fill.setAlpha(Math.round(0x80 * op)); c.drawCircle(s.bx + v[0] * joyR, s.by + v[1] / Math.max(1f, iso) * joyR, joyR * 0.42f, fill);
-        } else {   // rest spot: a faint ring (D2R draws the idle stick there)
-            line.setColor(editMode ? 0xffffd040 : 0xffffffff); line.setAlpha(Math.round((editMode ? 0xc0 : 0x38) * op)); c.drawCircle(s.rx, s.ry, joyR, line);
+        } else if (editMode) {   // idle: nothing in play; the editor shows the zone a finger grabs the stick in
+            line.setColor(0xffffd040); line.setAlpha(0xc0); c.drawRoundRect(s.zone, 12 * dp, 12 * dp, line);
+            text.setTextSize(13 * dp); text.setColor(0xffffd040); text.setAlpha(0xc0);
+            c.drawText(s.name, s.zone.centerX(), s.zone.centerY(), text);
+        }
+    }
+    private void drawZoom(Canvas c) {   // thin track with + / - ends; while held a knob at the finger and the bar filled toward the drag
+        Finger f = zoomPtr >= 0 ? fingers.get(zoomPtr) : null;
+        float kk = editMode ? Math.max(op, 0.5f) : op, rr = zoom.width() / 2;
+        fill.setColor(0xffffffff); fill.setAlpha(Math.round((f != null ? 0x50 : 0x22) * kk)); c.drawRoundRect(zoom, rr, rr, fill);
+        line.setColor(editMode ? 0xffffd040 : 0xffffffff); line.setAlpha(editMode ? 0xe0 : Math.round(0x80 * kk)); c.drawRoundRect(zoom, rr, rr, line);
+        float ts = Math.max(10 * dp, 1.1f * rr * 2); text.setTextSize(ts); text.setColor(0xffffffff); text.setAlpha(Math.round(0xd0 * kk));
+        c.drawText("+", zoom.centerX(), zoom.top + rr + ts * 0.35f, text); c.drawText("−", zoom.centerX(), zoom.bottom - rr + ts * 0.35f, text);
+        if (f != null) {
+            float ky = Math.max(zoom.top + rr, Math.min(zoom.bottom - rr, f.y));
+            fill.setAlpha(Math.round(0xa0 * op)); c.drawCircle(zoom.centerX(), ky, rr * 1.6f, fill);
         }
     }
     private boolean held(Btn b) {
