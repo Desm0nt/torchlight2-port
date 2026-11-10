@@ -73,7 +73,8 @@ phone's `Download` folder and install the APK from the
   wider view of the world; the HUD sits at the screen edges, while inventory, character, skills, quests and the other
   menus stay centred in a 16:9 area where they were designed to be. Loading screens are shown 16:9 with bars (or
   stretched, an option).
-- **Docked or handheld** mode, switchable live: the Switch's docked 1080p picture or the lighter handheld 720p one.
+- **Docked or handheld** mode, switchable live: the Switch's docked 1080p picture or the lighter handheld 720p one
+  (handheld mode has not been tested yet: so far the game has only been played docked).
 - FSR 1 RCAS sharpening, 30 / 60 fps limit, picture shape (widescreen / 16:9 with bars / stretched), FPS counter.
 
 **PC mods**
@@ -83,6 +84,8 @@ phone's `Download` folder and install the APK from the
   enable, load order with arrows). The app converts the enabled mods once (textures to the Switch format) before the
   game starts, and modded games use their own save folder, so your normal saves are never touched. Mod content (data,
   models, textures, sounds) is used; PC interface layouts are not, because the Switch version has its own console UI.
+  **Experimental: not tested with real mods yet.** Mods that change the PC interface (windows, HUD layouts, PC UI
+  elements) won't work, and neither will DLL plugins; data mods (items, skills, monsters, balance) have a chance.
 
 **Front end shared with the DOOM / Diablo III ports**
 
@@ -289,9 +292,11 @@ MIT — see [LICENSE](LICENSE). The d2r-mobile copyright notice is kept; third-p
   свайпом. Геймпады (Bluetooth / USB) и вибрация тоже работают.
 - **Гибридный широкий экран (Hor+):** картинка по форме экрана телефона (например, 2400×1080 на 20:9) с более широким
   обзором, HUD по краям экрана, меню — по центру в области 16:9. Режимы «в доке» (1080p) и «портативный» (720p)
-  переключаются на ходу.
+  переключаются на ходу (портативный пока не проверялся: играли только «в доке»).
 - **Моды с PC:** файлы `.MOD` (GUTS) кладутся в `Download/Torchlight2Mobile/mods/` на телефоне; менеджер модов в
-  настройках (⚙): включение, порядок загрузки; моды конвертируются при запуске, сохранения с модами — в отдельной папке.
+  настройках (⚙): включение, порядок загрузки; моды конвертируются при запуске, сохранения с модами — в отдельной папке. **Экспериментально, с настоящими модами ещё не проверялось.** Моды,
+  меняющие PC-интерфейс (окна, раскладки HUD, элементы PC UI), работать не будут: у версии для Switch свой консольный
+  интерфейс; моды с DLL-плагинами тоже. Шанс есть у модов данных (предметы, навыки, монстры, баланс).
 - Единое меню паузы, экспорт / импорт сохранений, все языки игры (включая русский) без DLC, резкость RCAS, лимит
   30 / 60 fps, выбор драйвера Vulkan, счётчик FPS.
 - Проверено на одном устройстве: Snapdragon 8 Gen 3 / Adreno 750 (Xiaomi 14 Ultra) с драйвером Turnip из APK —
