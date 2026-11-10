@@ -21,6 +21,21 @@ phone's `Download` folder and install the APK from the
 > `boot.prev.log` and `logcat.txt` / `logcat.prev.txt` (written live, so they survive even when the system kills the
 > game) — and name your phone model and Android version. Without logs a report usually can't be acted on.
 
+## Screenshots
+
+Captured on the phone (Xiaomi 14 Ultra, Adreno 750, Mesa Turnip 27) with the widescreen option on: the game renders at
+the screen's 20:9 shape (wider view, nothing stretched), the HUD sits at the screen edges, while inventory and other
+panels stay centred. The counter in the top-left corner is the port's own FPS / frame time / GPU time overlay (it can be
+turned off). Game text in Russian; on-screen controls in the default touch layout (floating move stick, skill fan with
+the game's own skill icons, zoom slider on the right).
+
+| | |
+|---|---|
+| ![Title screen](docs/images/title.jpg) | ![Main menu](docs/images/main_menu.jpg) |
+| ![Arrival in the Temple Steppes](docs/images/temple_steppes.jpg) | ![Fight in the Temple Steppes](docs/images/combat.jpg) |
+| ![Inventory and equipment, by touch](docs/images/inventory.jpg) | ![Character stats](docs/images/character_stats.jpg) |
+| ![Pause menu (gear button)](docs/images/pause_menu.jpg) | ![Mod manager (pause menu → Mods…)](docs/images/mods.jpg) |
+
 ## What it is, and what it is not
 
 **It is:**
