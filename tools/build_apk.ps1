@@ -1,4 +1,4 @@
-# Build libdm.so (DM_GAME=d3) and the adrenotools hook libraries, package the Android app around them and sign it.
+# Build libdm.so (DM_GAME=tl2) and the adrenotools hook libraries, package the Android app around them and sign it.
 # Usage (from anywhere): powershell -File tools/build_apk.ps1 [-Install <adb serial>] [-Validation] [-Android10]
 # -Android10 (from the DOOM 2016 port, b573fda): the Android 10 build (minSdk 29) from work/build-android29, a native tree configured with
 #   -DANDROID_PLATFORM=android-29 (configured here from work/build-android's cache when missing); the same sources (Android 11+ calls are
@@ -14,8 +14,8 @@
 #   DM_KEYSTORE_PASS keystore and key password (default: android); DM_KEY_ALIAS (default: androiddebugkey)
 #   DM_BUILD_TOOLS   build-tools version to sign with (default: the newest installed)
 # Keystores never go into this repository (.gitignore excludes *.keystore / *.jks).
-# Output: work/D3-port-debug.apk (-Android10: work/TL2-port-debug-android10.apk), application id org.diablo3.port ("Diablo III Mobile"; data
-# folder Download/Diablo3Mobile on the phone). Both variants have the same id and signature: one replaces the other on a phone.
+# Output: work/TL2-port-debug.apk (-Android10: work/TL2-port-debug-android10.apk), application id org.torchlight2.port ("Torchlight II Mobile";
+# data folder Download/Torchlight2Mobile on the phone). Both variants have the same id and signature: one replaces the other on a phone.
 param([string]$Install = '', [switch]$Validation, [switch]$Android10)
 # Continue: Windows PowerShell turns any stderr line of a native tool (cmake GLOB notes, javac deprecation notes) into a stop;
 # every step checks $LASTEXITCODE instead
@@ -49,7 +49,7 @@ if ($Android10 -and -not (Test-Path $bdir/CMakeCache.txt) -and (Test-Path work/b
     & cmake @cfg *> work/logs/native-configure29.log
     if ($LASTEXITCODE) { throw "Configuring $bdir failed (work/logs/native-configure29.log)" }
 }
-if (-not (Test-Path $bdir/CMakeCache.txt)) { throw "Configure the native build first: cmake -S dm/android -B $bdir ... -DDM_GAME=d3$(if ($Android10) { ' -DANDROID_PLATFORM=android-29' }) (README.md, Building)" }
+if (-not (Test-Path $bdir/CMakeCache.txt)) { throw "Configure the native build first: cmake -S dm/android -B $bdir ... -DDM_GAME=tl2$(if ($Android10) { ' -DANDROID_PLATFORM=android-29' }) (README.md, Building)" }
 if (-not (Select-String -Path $bdir/CMakeCache.txt -Pattern '^DM_GAME:STRING=tl2$' -Quiet)) { throw "$bdir is not configured with -DDM_GAME=tl2" }
 New-Item -ItemType Directory -Force work/logs, $jdir/arm64-v8a | Out-Null
 

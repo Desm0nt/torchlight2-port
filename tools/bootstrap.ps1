@@ -1,11 +1,11 @@
-# Diablo III Mobile: Python for setup.bat (Windows PowerShell 5.1+). Finds Python 3.10+ or offers a private copy, and installs
+# Torchlight II Mobile: Python for setup.bat (Windows PowerShell 5.1+). Finds Python 3.10+ or offers a private copy, and installs
 # the packages setup needs; everything goes into tools\.runtime (nothing system-wide, no admin rights):
 #   tools\.runtime\venv     a virtual environment on top of an installed Python 3.10+ (py launcher, PATH or $env:PYTHON)
 #   tools\.runtime\python   a private Python when none is installed: python.org's official NuGet package ("python" on
 #                           nuget.org, a complete Python without installer or registry entries)
 # Packages from PyPI: cryptography, zstandard, lz4, capstone<6 (the patcher is checked with capstone 5), unicorn<3 (the patch
 # equivalence check dm/verify/equiv.py).
-# Every download is asked first (D3_SETUP_YES=1 answers yes). A second run reuses what is there and needs no network.
+# Every download is asked first (TL2_SETUP_YES=1 answers yes). A second run reuses what is there and needs no network.
 #   -Mode install   (default) make sure a ready Python exists; exit code 0 when tools\.runtime has one
 #   -Mode check     only report, change nothing
 param([ValidateSet('install', 'check')][string]$Mode = 'install')
@@ -22,12 +22,12 @@ $NuGetUrl = "https://api.nuget.org/v3-flatcontainer/python/$PyVersion/python.$Py
 $Packages = @('cryptography', 'zstandard', 'lz4', 'capstone<6', 'unicorn<3')
 $NeedVersion = 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)'
 $NeedAll = 'import sys; assert sys.version_info >= (3, 10); import cryptography, zstandard, lz4, capstone, unicorn'
-$Yes = $env:D3_SETUP_YES -eq '1'
+$Yes = $env:TL2_SETUP_YES -eq '1'
 
 function Say($text) { Write-Host "== $text" }
 
 function Ask($question) {
-    if ($Yes) { Write-Host "$question [Y/n] y (D3_SETUP_YES=1)"; return $true }
+    if ($Yes) { Write-Host "$question [Y/n] y (TL2_SETUP_YES=1)"; return $true }
     $a = Read-Host "$question [Y/n]"
     return ($null -ne $a) -and ($a.Trim() -match '^(|y|yes)$')
 }

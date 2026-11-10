@@ -1,16 +1,16 @@
 #!/bin/bash
-# Diablo III Mobile setup for Linux / macOS: prepares the game folder for the phone from your own Diablo III (Switch) dumps.
-#   ./setup.sh                  finds the base game, the update v1441792, language-pack DLC and prod.keys in put-game-files-here/ (or the
+# Torchlight II Mobile setup for Linux / macOS: prepares the game folder for the phone from your own Torchlight II (Switch) dumps.
+#   ./setup.sh                  finds the base game, the update v327680 and prod.keys in put-game-files-here/ (or the
 #                               current folder), under any names, and prepares everything
 #   ./setup.sh FILES...         the same with explicit files (NSP / NSZ / XCI / XCZ + prod.keys), in any order
 #   ./setup.sh check            what is installed / found / prepared, and the next step (changes nothing)
 #   ./setup.sh push [serial]    copy the prepared folder to the phone over adb
 #   more options: ./setup.sh --help
 # Python packages go into a private virtual environment (tools/.runtime/venv), the .NET 10 SDK into tools/.runtime/dotnet
-# when it is missing (asked first; D3_SETUP_YES=1 answers yes). Nothing is installed system-wide.
-# All the work is done by tools/setup_d3.py (it also runs directly: python3 tools/setup_d3.py ...); guide: docs/INSTALL.md.
+# when it is missing (asked first; TL2_SETUP_YES=1 answers yes). Nothing is installed system-wide.
+# All the work is done by tools/setup_tl2.py (it also runs directly: python3 tools/setup_tl2.py ...); guide: docs/INSTALL.md.
 # Started from a file manager (double-click), setup opens a terminal window and keeps it open at the end ("Press Enter");
-# D3_SETUP_PAUSE=0 turns that off, D3_SETUP_PAUSE=1 forces the pause. D3_SETUP_YES=1 and CI never pause.
+# TL2_SETUP_PAUSE=0 turns that off, TL2_SETUP_PAUSE=1 forces the pause. TL2_SETUP_YES=1 and CI never pause.
 #
 # The next two lines run under sh / dash / zsh too and end with '#' so that Windows line endings (CRLF) do not break them:
 # they restart the script with bash, and remove CRLF from this file (a ZIP copied through a Windows editor or tool).
@@ -49,10 +49,10 @@ from_shell() {   # typed into a shell (or sudo / tmux / ...), not started by a f
 }
 
 PAUSE=0
-case "${D3_SETUP_PAUSE:-}" in
+case "${TL2_SETUP_PAUSE:-}" in
   1) PAUSE=1;;
   0) ;;
-  *) if [ "${D3_SETUP_YES:-}" != 1 ] && [ -z "${CI:-}" ] && [ -t 0 ] && [ -t 1 ] && ! from_shell; then PAUSE=1; fi;;
+  *) if [ "${TL2_SETUP_YES:-}" != 1 ] && [ -z "${CI:-}" ] && [ -t 0 ] && [ -t 1 ] && ! from_shell; then PAUSE=1; fi;;
 esac
 
 finish() {   # exit with code $1; a window opened by a double-click stays until Enter
@@ -65,8 +65,8 @@ finish() {   # exit with code $1; a window opened by a double-click stays until 
 }
 
 open_terminal() {   # no terminal at all (a file manager's "Run" / "Execute"): show setup in a terminal window instead
-  local t rc mark="${TMPDIR:-/tmp}/d3-setup-started.$$"   # the copy in the terminal creates it: started, whatever its exit code
-  local cmd=(env D3_SETUP_IN_TERMINAL="$mark" D3_SETUP_PAUSE=1 bash "$HERE/setup.sh" "$@")
+  local t rc mark="${TMPDIR:-/tmp}/tl2-setup-started.$$"   # the copy in the terminal creates it: started, whatever its exit code
+  local cmd=(env TL2_SETUP_IN_TERMINAL="$mark" TL2_SETUP_PAUSE=1 bash "$HERE/setup.sh" "$@")
   rm -f "$mark"
   for t in ${TERMINAL:-} x-terminal-emulator konsole gnome-terminal xfce4-terminal mate-terminal terminator ptyxis kgx \
            alacritty kitty foot wezterm xterm; do
@@ -82,25 +82,25 @@ open_terminal() {   # no terminal at all (a file manager's "Run" / "Execute"): s
     if [ "$rc" = 0 ] || [ -e "$mark" ]; then rm -f "$mark"; exit 0; fi
   done
 }
-case "${D3_SETUP_IN_TERMINAL:-}" in /*) : > "$D3_SETUP_IN_TERMINAL" 2> /dev/null;; esac
+case "${TL2_SETUP_IN_TERMINAL:-}" in /*) : > "$TL2_SETUP_IN_TERMINAL" 2> /dev/null;; esac
 
-if [ ! -t 0 ] && [ ! -t 1 ] && [ -z "${D3_SETUP_IN_TERMINAL:-}" ] && [ "${D3_SETUP_PAUSE:-}" != 0 ] \
-   && [ "${D3_SETUP_YES:-}" != 1 ] && [ -z "${CI:-}" ] && { [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; } \
+if [ ! -t 0 ] && [ ! -t 1 ] && [ -z "${TL2_SETUP_IN_TERMINAL:-}" ] && [ "${TL2_SETUP_PAUSE:-}" != 0 ] \
+   && [ "${TL2_SETUP_YES:-}" != 1 ] && [ -z "${CI:-}" ] && { [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; } \
    && ! from_shell; then
   open_terminal "$@"   # returns only when no terminal emulator could be started: continue without one
 fi
 
-run_setup() {   # $1 = Python; the rest goes to tools/setup_d3.py
+run_setup() {   # $1 = Python; the rest goes to tools/setup_tl2.py
   local py=$1; shift
-  if [ "$PAUSE" = 1 ]; then "$py" "$HERE/tools/setup_d3.py" "$@"; finish $?; fi
-  exec "$py" "$HERE/tools/setup_d3.py" "$@"
+  if [ "$PAUSE" = 1 ]; then "$py" "$HERE/tools/setup_tl2.py" "$@"; finish $?; fi
+  exec "$py" "$HERE/tools/setup_tl2.py" "$@"
 }
 
 # ---------------------------------------------------------------- Python
 ask() {
-  if [ "${D3_SETUP_YES:-}" = 1 ]; then echo "$1 [Y/n] y (D3_SETUP_YES=1)"; return 0; fi
+  if [ "${TL2_SETUP_YES:-}" = 1 ]; then echo "$1 [Y/n] y (TL2_SETUP_YES=1)"; return 0; fi
   local a
-  if ! { read -r -p "$1 [Y/n] " a < /dev/tty; } 2> /dev/null; then echo "$1 [Y/n] -> no (no terminal; D3_SETUP_YES=1 accepts)"; return 1; fi
+  if ! { read -r -p "$1 [Y/n] " a < /dev/tty; } 2> /dev/null; then echo "$1 [Y/n] -> no (no terminal; TL2_SETUP_YES=1 accepts)"; return 1; fi
   case "$a" in ''|y|Y|yes|Yes|YES) return 0;; *) return 1;; esac
 }
 

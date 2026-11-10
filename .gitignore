@@ -25,7 +25,7 @@ dm/android/.cxx/
 /private/
 /artifacts/
 dm/android/local.env
-# Diablo III Mobile: everything local stays out of Git -- build trees, logs, the player's game files and anything derived from
+# Torchlight II Mobile (and the Diablo III port it grew from): everything local stays out of Git -- build trees, logs, the player's game files and anything derived from
 # them (ExeFS, patched modules, RomFS, CPK archives, extracted shaders and shader jobs, UI tables), console keys, saves, drivers
 # and validation layers.
 /work/
@@ -43,6 +43,15 @@ local.properties
 *.nso
 *.npdm
 *.cpk
+*.PAK
+*.pak
+*.MAN
+*.MOD
+*.mod
+*.NVN
+*.nvn
+*.xtx
+*.XTX
 *.shd
 *.rec
 *.patched.bin
