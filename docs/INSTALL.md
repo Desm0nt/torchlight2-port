@@ -1,13 +1,12 @@
-# Installing Diablo III Mobile — step by step
+# Installing Torchlight II Mobile — step by step
 
 Русская версия: [INSTALL.ru.md](INSTALL.ru.md).
 
-Diablo III Mobile runs **your own copy** of Diablo III: Eternal Collection for Nintendo Switch on an Android phone. This
-project contains no game files and never shares game files or console keys: you dump them from a Switch you own. A setup
-program on your PC turns your dump into a game folder (~16 GB, +5–6 GB per language pack), you copy that folder to the
-phone and install the app.
+Torchlight II Mobile runs **your own copy** of Torchlight II for Nintendo Switch on an Android phone. This project
+contains no game files and never shares game files or console keys: you dump them from a Switch you own. A setup program
+on your PC turns your dump into a game folder (~2 GB), you copy that folder to the phone and install the app.
 
-The whole thing takes about an hour, most of it waiting.
+The whole thing takes about 15 minutes, most of it copying.
 
 ## What you need
 
@@ -15,10 +14,12 @@ The whole thing takes about an hour, most of it waiting.
 
 | What | Details |
 |---|---|
-| Diablo III base game | title id `01001B300B9BE000`, from your cartridge or eShop copy |
-| Diablo III update **v1441792** | title id `01001B300B9BE800` (game patch 2.7.7). Only this exact update works (the port is made for its code). Dump tools usually put it in the file name, e.g. `...[01001B300B9BE800][v1441792].nsp` |
+| Torchlight II base game | title id `010090400D366000`, from your cartridge or eShop copy |
+| Torchlight II update **v327680** | title id `010090400D366800` (release 5, the latest). Only this exact update works (the port is made for its code). Dump tools usually put it in the file name, e.g. `...[010090400D366800][v327680].nsp` |
 | `prod.keys` | the keys of **your own** console |
-| *optional:* a language pack | only for a language other than English: e.g. the Russian Language Pack `01001B300B9BF00A`, the UK English pack `01001B300B9BF001` |
+
+No language pack is needed: every language of the game (English, German, French, Spanish, Italian, Polish, Portuguese
+(Brazil), Russian, Japanese, Chinese) is in the base game. The Yapper pet DLC is not used yet.
 
 The game and the update can be **NSP, NSZ, XCI or XCZ**, in any combination. Split dumps from a FAT32 SD card work too
 (a folder with parts `00`, `01`, … or `name.xc0`, `name.xc1`, …). File names do not matter: setup recognises the files
@@ -26,7 +27,7 @@ by their content.
 
 **A PC** with Windows 10/11 (64-bit), Linux or macOS:
 
-- about **20 GB of free disk space** while preparing (+5–6 GB per language pack; up to ~35 GB with NSZ / XCZ input);
+- about **4 GB of free disk space** while preparing (up to ~6 GB with NSZ / XCZ input);
 - internet on the first run: setup downloads a few helper tools (Python packages ~40 MB, Microsoft .NET ~300 MB, and
   Python itself ~15 MB on Windows if you have none). It asks before each download and puts them only inside its own
   folder. Later runs work offline.
@@ -37,15 +38,15 @@ by their content.
 - **Snapdragon with an Adreno GPU recommended** (tested on Snapdragon 8 Gen 3; Mali / PowerVR / Xclipse phones use their
   own driver with engine fallbacks and are untested);
 - 8 GB of RAM or more;
-- about **17 GB free** in internal storage (+5–6 GB per language pack);
+- about **3 GB free** in internal storage;
 - a USB cable (or another way to copy the folder to the phone).
 
 ## Step 1. Get the game files and keys from your Switch
 
 **Dumping them yourself.** This needs a Switch that can run homebrew (how to get there is not covered here).
-1. Install the game, the latest update (v1441792) and, if you want, the language pack on the Switch.
+1. Install the game and the latest update (v327680) on the Switch.
 2. Dump them with [nxdumptool](https://github.com/DarkMatterCore/nxdumptool): installed or eShop copy → *NSP*;
-   cartridge → *XCI* (the installed update and DLC are dumped separately as NSP). For NSP dumps turn on
+   cartridge → *XCI* (the installed update is dumped separately as NSP). For NSP dumps turn on
    **"remove console specific data"** — otherwise the update cannot be read on a PC.
 3. Dump the console keys with [Lockpick_RCM](https://github.com/shchmue/Lockpick_RCM). You get `prod.keys` on the SD card
    in `switch/`.
@@ -53,10 +54,10 @@ by their content.
 
 Do not download game files or keys from the internet, and do not share yours.
 
-## Step 2. Get Diablo III Mobile setup
+## Step 2. Get Torchlight II Mobile setup
 
 Download this repository as a ZIP (green **Code** button → **Download ZIP**) or clone it, and extract it to a disk with
-enough free space, into a short path such as `D:\D3-setup`. You get a folder with `setup.bat`, `setup.sh` and a folder
+enough free space, into a short path such as `D:\TL2-setup`. You get a folder with `setup.bat`, `setup.sh` and a folder
 `put-game-files-here`.
 
 ## Step 3. Put your files into `put-game-files-here`
@@ -66,9 +67,8 @@ enough free space, into a short path such as `D:\D3-setup`. You get a folder wit
 ├── setup.bat
 ├── setup.sh
 └── put-game-files-here/
-    ├── Diablo III ... [01001B300B9BE000] ... .nsp              (or .nsz / .xci / .xcz — the base game)
-    ├── Diablo III ... [01001B300B9BE800][v1441792] ... .nsp    (the update)
-    ├── Diablo III ... [DLC Russian Language Pack] [01001B300B9BF00A] ... .nsp   (optional)
+    ├── Torchlight II ... [010090400D366000] ... .nsp              (or .nsz / .xci / .xcz — the base game)
+    ├── Torchlight II ... [010090400D366800][v327680] ... .nsp     (the update)
     └── prod.keys
 ```
 
@@ -82,18 +82,17 @@ You may also put the folder from your dump tool inside it as it is (setup looks 
 2. Answer the questions with **Y** and Enter (Enter alone also means yes): *Download a private Python?* (only when your PC
    has no Python 3.10+), *Install the Python packages?*, *Download and install the .NET 10 SDK?* Everything goes into
    `tools\.runtime` inside the setup folder. Nothing is installed system-wide, no admin rights are needed.
-3. **Wait.** Setup shows eight numbered stages with progress:
+3. **Wait.** Setup shows seven numbered stages with progress:
 
    | Stage | Usually takes |
    |---|---|
    | 1. Finding and checking your game files | seconds |
    | 2. Checking the tools and the free space | seconds (first time: the .NET download) |
-   | 3. Extracting the game program | under a minute |
+   | 3. Extracting the game program | seconds |
    | 4. Patching the program for Android | under a minute |
    | 5. Checking the patch | 1–5 min |
-   | 6. Extracting the game data (~16 GB) | 15–45 min |
-   | 7. Translating the shaders | 2–10 min |
-   | 8. Language packs (optional) | a few minutes each |
+   | 6. Extracting the game data (~1.9 GB) | 1–5 min |
+   | 7. Translating the shaders | 1–3 min |
 
    It checks the free space before it starts and stops early with a clear message when something is wrong. If you
    close the window or the PC turns off, just run setup again: finished stages are skipped.
@@ -108,7 +107,7 @@ Instead of using `put-game-files-here` you can also drag the files onto `setup.b
 2. Open a terminal in the setup folder and run `bash setup.sh`. Answer the questions with **Y** and wait (same stages
    as on Windows). Python packages go into `tools/.runtime/venv`, .NET into `tools/.runtime/dotnet`.
 
-You can also give the files directly, in any order: `bash setup.sh ~/dumps/d3-base.nsp ~/dumps/d3-update.nsp ~/prod.keys`.
+You can also give the files directly, in any order: `bash setup.sh ~/dumps/tl2-base.nsp ~/dumps/tl2-update.nsp ~/prod.keys`.
 
 ### Not sure what is missing?
 
@@ -117,16 +116,16 @@ game files it finds, what is already prepared and the next step, and changes not
 
 ## Step 5. Copy the game folder to the phone
 
-The finished folder is **`work/Diablo3Mobile`** inside the setup folder.
+The finished folder is **`work/Torchlight2Mobile`** inside the setup folder.
 
 - **USB file transfer:** connect the phone, choose **File transfer**, open the phone's **internal storage** →
-  **Download** and copy the whole **`Diablo3Mobile`** folder there. It must end up exactly like this:
+  **Download** and copy the whole **`Torchlight2Mobile`** folder there. It must end up exactly like this:
 
   ```
-  Internal storage/Download/Diablo3Mobile/romfs/...
-  Internal storage/Download/Diablo3Mobile/dm/out/...
-  Internal storage/Download/Diablo3Mobile/dm/shaders/...
-  Internal storage/Download/Diablo3Mobile/aoc/10/...      (only with a language pack)
+  Internal storage/Download/Torchlight2Mobile/romfs/...
+  Internal storage/Download/Torchlight2Mobile/dm/out/...
+  Internal storage/Download/Torchlight2Mobile/dm/shaders/...
+  Internal storage/Download/Torchlight2Mobile/mods/          (your PC mods go here, see below)
   ```
 
 - **adb (USB debugging):** `setup.bat push` / `bash setup.sh push` copies only what is missing and resumes after an
@@ -134,30 +133,48 @@ The finished folder is **`work/Diablo3Mobile`** inside the setup folder.
 
 ## Step 6. Install the app
 
-Install the APK from this repository's Releases page, or build it yourself (`build.bat`, see *Building* in the
-[README](../README.md)). Android asks you to allow installing apps from your browser or file manager the first time.
+Install the APK from the [latest release](https://github.com/Desm0nt/torchlight2-port/releases/latest), or build it
+yourself (`build.bat`, see *Building* in the [README](../README.md)). Android asks you to allow installing apps from
+your browser or file manager the first time.
 
-- Android 12 or newer: `Diablo3-Mobile-v<version>-arm64.apk` from the [latest release](https://github.com/Desm0nt/diablo3-port/releases/latest) (`D3-port-debug.apk` when you build it yourself).
-- Android 10 or 11: `Diablo3-Mobile-v<version>-arm64-android10.apk` (the same game built for older Android; it asks for the storage
-  permission instead of *All files access*; not yet tested on a real Android 10 device).
+- Android 12 or newer: `Torchlight2-Mobile-v<version>-arm64.apk` (`TL2-port-debug.apk` when you build it yourself).
+- Android 10 or 11: `Torchlight2-Mobile-v<version>-arm64-android10.apk` (the same game built for older Android; it asks
+  for the storage permission instead of *All files access*; not yet tested on a real Android 10 device).
 
 ## Step 7. First launch
 
-1. Start **Diablo III Mobile**.
-2. It asks for **All files access** (it needs it to read `Download/Diablo3Mobile`). Turn it on and go back.
-3. The first start and the first loads take longer than later ones. The gear button opens the port's settings
-   (language, picture shape / widescreen, frame rate limit, driver, controls). For another language, pick it under
-   *Game language* (its language pack must be in `aoc/<index>`) and restart.
+1. Start **Torchlight II Mobile**.
+2. It asks for **All files access** (it needs it to read `Download/Torchlight2Mobile`). Turn it on and go back.
+3. The first start and the first loads take longer than later ones. The gear button opens the pause menu and the port's
+   settings (language, picture shape / widescreen, docked / handheld, frame rate limit, driver, controls, mods).
+
+**Playing by touch:** the move stick appears under your left thumb anywhere in the lower left; skills are in the fan on
+the right (II switches to the second skill set); the thin slider on the right edge zooms the camera; tap the minimap
+for the big map. Menus work by tapping their items directly; lists and long texts scroll with a swipe. *Game settings…
+→ Edit the layout…* lets you move, resize and hide every control; the side layout puts every button in its own cell
+along the screen edges.
 
 Saves and settings stay in the app's own storage. Installing a newer APK over the old one keeps them; the pause menu can
 export and import saves.
 
+## PC mods (optional)
+
+1. Copy Torchlight II PC mods (`.MOD` files, as made with GUTS) into `Download/Torchlight2Mobile/mods/` on the phone.
+2. In the game open the gear button → *Game settings…* → **Mods (on: N)…**, tick the mods you want and order them with
+   the arrows (a mod lower in the list wins where two change the same file), then *Save*.
+3. Close the game and start it again. The app converts the ticked mods once (a progress window shows for big mods).
+   While any mod is on, the game uses a separate save folder (a copy of your saves made the first time); your normal
+   saves are not changed, and untick all mods to get back to them.
+
+Mod data, models, textures and sounds are used. Changes to the PC game's interface are not (the Switch version has its
+own console interface), so mods that need new interface screens or DLL plugins will not work fully.
+
 ## Troubleshooting / FAQ
 
-**"your Diablo III update is v… ; only v1441792 is supported"** — dump update v1441792 (game patch 2.7.7).
+**"your Torchlight II update is v… ; only v327680 is supported"** — dump update v327680 (release 5).
 
-**"the Diablo III base game / the update … is not among the files"** — setup lists every file it found with its title id
-and version; check that you copied the right files into `put-game-files-here`.
+**"the Torchlight II base game / the update … is not among the files"** — setup lists every file it found with its title
+id and version; check that you copied the right files into `put-game-files-here`.
 
 **"prod.keys not found" / "your prod.keys has no …" / "does not decrypt with this prod.keys"** — use the keys of the
 console you dumped from, made with an up-to-date Lockpick_RCM. `title.keys` is a different file.
@@ -165,19 +182,23 @@ console you dumped from, made with an up-to-date Lockpick_RCM. `title.keys` is a
 **"personalized ticket" / "no ticket for rights id"** — dump the NSP again with nxdumptool's *remove console specific
 data* option turned on (and keep the ticket).
 
-**Setup stops or shows `!!` at stage 8/8 (DLC)** — language and item packs are optional: a pack that fails is skipped and the game folder is still finished (the game then runs in English). `setup.bat --no-dlc` / `bash setup.sh --no-dlc` ignores all DLC. Every run is logged to `work/setup.log`: attach it to an issue.
+**"not enough free space"** — free some space, or put the work folder on another disk: `setup.bat --work D:\tl2-work`
+(Windows) or `bash setup.sh --work /mnt/big/tl2-work`.
 
-**"not enough free space"** — free some space, or put the work folder on another disk: `setup.bat --work D:\d3-work`
-(Windows) or `bash setup.sh --work /mnt/big/d3-work`.
+**Where is the language setting?** — gear button → *Game settings…* → *Game language*; restart the game afterwards.
+All languages are built in.
 
-**The game stays in English** — the language pack for that language must be in `Download/Diablo3Mobile/aoc/<index>` and
-selected under *Game language* in the gear dialog; restart the game afterwards.
+**The intro video does not play** — videos are skipped in this version; the game simply continues.
+
+**A mod does nothing / the game looks wrong with a mod** — untick it in *Mods* and restart. Mods that replace the PC
+interface or add classes without console assets are not supported. `boot.log` lists `[tl2 mods]` lines with what was
+converted.
 
 **Black screen or the app closes** — open the gear dialog → *Vulkan driver* → try *System*, restart the app. Then open an
-issue on this repository with the phone model, Android version and what happened, and attach
-`Download/Diablo3Mobile/logs/crash.txt`: after a crash the next start writes it there (with the log of the crashed run)
-and says so on screen. The same folder holds `boot.log` and `logcat.txt` of the current run and `boot.prev.log` /
-`logcat.prev.txt` of the one before, written line by line while the game runs (so they are there even when Android kills
-the game): attach the whole `logs` folder.
+issue on this repository with the phone model, Android version and what happened, and attach the whole
+`Download/Torchlight2Mobile/logs/` folder: after a crash the next start writes `crash.txt` there (with the log of the
+crashed run) and says so on screen; `boot.log` and `logcat.txt` of the current run and `boot.prev.log` /
+`logcat.prev.txt` of the one before are written line by line while the game runs (so they are there even when Android
+kills the game). Every setup run is logged to `work/setup.log`: attach it for setup problems.
 
-Technical details of the preparation (what each step does, running the tools by hand): [d3/GAME_FILES.md](d3/GAME_FILES.md).
+Technical details of the preparation (what each step does, running the tools by hand): [tl2/GAME_FILES.md](tl2/GAME_FILES.md).

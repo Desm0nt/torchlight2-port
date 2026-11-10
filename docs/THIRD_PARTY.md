@@ -1,7 +1,7 @@
-# Third-party code in the Diablo III port
+# Third-party code in the Torchlight II port
 
 The tree in `dm/` is a fork of d2r-mobile (MIT, Copyright (c) 2026 jhaizhou, kept in the root `LICENSE`; its Java package is
-`com.xiaoboluo.d2r`), extended first for DOOM Mobile and then for DOOM Eternal, Xenoblade 2 and Diablo III; the third-party
+`com.xiaoboluo.d2r`), extended first for DOOM Mobile and then for DOOM Eternal, Xenoblade 2, Diablo III and Torchlight II; the third-party
 code d2r-mobile brought is listed in [DEPENDENCIES.md](DEPENDENCIES.md) and its contributors in
 [upstream/README-d2r-mobile.md](upstream/README-d2r-mobile.md). Code was also ported from other MIT-licensed projects.
 Each ported file says so in a comment and keeps the original copyright line.
@@ -97,3 +97,16 @@ repository, where they apply.
 - Mesa Turnip: downloaded at build time (see above).
 - The .NET SDK, Python and its packages (cryptography, zstandard, lz4, capstone, unicorn): installed by setup into
   `tools/.runtime` on the player's PC from their official sources.
+
+## Torchlight II additions
+
+Torchlight II Mobile is a fork of Diablo III Mobile (https://github.com/Desm0nt/diablo3-port, same license and authors);
+everything above applies to it unchanged. Torchlight II code is behind `DM_GAME_TL2` (the build is `DM_GAME_DOOM` + `DM_GAME_D3`
++ `DM_GAME_TL2`). What came from elsewhere:
+
+| Our file | Ported from | What |
+|---|---|---|
+| `dm/host/hle_tl2.c` | nxnative (MIT, seedds) `dm/host/hle_offline.c`, `hle_audio.c`, `hle_account.c`; the fs save hooks of our `hle_xc2.c` (from nxnative, above) | fs save-data existence by program id, ldn after Initialize, nifm IP config, socket overloads, AudioIn getters (re-checked against the TL2 imports) |
+| `dm/android/stall_android.c`, `dm/host/hle_hold.c` | DOOM Mobile / DOOM Eternal Mobile (this host family, MIT) | frame stall watch, save-safe quit |
+| `dm/android/app/.../Tl2Touch.java` | d2r-mobile (MIT) touch layout; DOOM Mobile `DoomPadView` editor UX | floating stick, skill fan, layout editor (re-implemented for TL2) |
+| `tools/tl2_mod.py`, `dm/android/app/.../Tl2ModConv.java` | format notes of Awkward-im/Torchlight (`TL2Lib/rgmod.pas`, `rgpak.pas`) | `.MOD` / PAK / MAN layout only; the code is our own |

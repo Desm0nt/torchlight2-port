@@ -8,11 +8,11 @@ packages it into the APK as `assets/drivers/turnip27`. On the first start the ap
 it by default on Adreno GPUs; when it does not load (or on a non-Adreno GPU) the app falls back to the phone's own driver.
 Without the download the APK simply uses the system driver.
 
-**Your own driver.** Copy an adrenotools driver package into `Download/Diablo3Mobile/drivers/` on the phone, as the zip
+**Your own driver.** Copy an adrenotools driver package into `Download/Torchlight2Mobile/drivers/` on the phone, as the zip
 or unpacked:
 
 ```text
-Download/Diablo3Mobile/drivers/
+Download/Torchlight2Mobile/drivers/
   my-turnip.zip              <- the package zip as released (meta.json + the driver .so), unpacked on the next launch
   my-turnip/                 <- or the unpacked folder
     meta.json
@@ -33,5 +33,5 @@ plain Android builds, not `-Linux` / `-Wayland`):
 | `Turnip-v27.0.0-20261029-A8xx.zip` | Adreno 8xx / Snapdragon 8 Elite (experimental) | `b1126d1a320624101757c7728179b80590d19d17d38a2eb5d85eb5dfd50df82a` |
 | `Turnip-v27.0.0-20261029-8G2-OneUI.zip` | Adreno 740 on newer firmware (Samsung One UI) | `e7a9c8c12ccddd39b0316fae747350964096a6622630f1191bbab02208f356b3` |
 
-Diablo III Mobile itself has been tested only on Adreno 750 (Snapdragon 8 Gen 3) with the bundled Turnip v27.
-`TU_DEBUG` (Turnip's debug options) can be set in `Download/Diablo3Mobile/dm/env`.
+Torchlight II Mobile itself has been tested only on Adreno 750 (Snapdragon 8 Gen 3) with the bundled Turnip v27.
+`TU_DEBUG` (Turnip's debug options) can be set in `Download/Torchlight2Mobile/dm/env`.
