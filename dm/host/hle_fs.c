@@ -343,7 +343,7 @@ static Result err_res(const char *op, const char *path) {
 //   the order the Switch gives them -- Horizon's RomFS ReadDirectory returns the child directories, then the files, each in table
 //   order, and this RomFS's tables are sorted by name in every directory (work/romfs-list.tsv: DATA, DATA1 .. DATA5). The phone's
 //   /sdcard listed DATA5 .. DATA (log r10), so the game met its patch packs in reverse; which pack supplies a path present in
-//   several packs (408 paths) is unproven, so the Switch order is emulated. Mod packs (ZMOD_*) sort after DATA5;
+//   several packs (408 paths) is unproven, so the Switch order is emulated. Mod packs (ZMOD_*) are listed before DATA, the last mod first (tl2_ent_cmp: the first listed copy of a path wins);
 // - DM_TL2_MODS_SAVE (default 1 with mods on): the save mount uses <DM_SAVE>-mods, seeded once with a copy of the vanilla save,
 //   like the PC game's separate mod save folder ("Mod Mode Active - Using Mod Save Folder"): characters played with mods never
 //   write into the vanilla save.
@@ -351,9 +351,15 @@ static int tl2_env_on(const char *k, int def) { const char *e = getenv(k); retur
 static int tl2_mods_on(void) { return tl2_env_on("DM_TL2_MODS", 0); }
 static int tl2_rom_sorted(void) { return tl2_env_on("DM_TL2_ROM_ORDER", 1); }
 static char g_tl2_rom_name[32];   // the guest's rom mount name (MountRom), for the sorted listing
+// Mod packs (ZMOD_<NN>_*) go before the game's packs, the last mod of the gear list first: of a path present in several packs the game
+// uses the copy of the pack listed first (device test 2026-11-10: the nude mod's ZMOD_00 after DATA5 changed nothing, the same pack as
+// 0MOD_00 before DATA did), so a mod overrides the game and a mod lower in the list overrides the ones above it, as with GUTS on PC
 static int tl2_ent_cmp(const void *a, const void *b) {   // RomFS order: directories first, then files, each by name
     const DirectoryEntry *x = a, *y = b;
     if ((x->type == ENT_DIR) != (y->type == ENT_DIR)) return x->type == ENT_DIR ? -1 : 1;
+    int mx = !strncmp(x->name, "ZMOD_", 5), my = !strncmp(y->name, "ZMOD_", 5);
+    if (mx != my) return mx ? -1 : 1;
+    if (mx) return strcmp(y->name, x->name);
     return strcmp(x->name, y->name);
 }
 static void tl2_mods_mount(const char *name) {

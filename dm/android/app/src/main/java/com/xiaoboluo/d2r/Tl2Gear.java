@@ -46,7 +46,7 @@ final class Tl2Gear {
         l.add(GearPages.pictureShape(new String[] {g.str(R.string.d3_aspect_bars), g.str(R.string.d3_aspect_stretch), g.str(R.string.d3_aspect_wide)},
             DmActivity.D3_ASPECT_DEFAULT, g.str(R.string.d3_aspect_wide_note), a::applyAspectLayout, (s, v) -> aspectEnv(a, v), mode::relabel));
         l.add(stretchLoading());
-        if (TL2) l.add(mods(a));
+        // TL2 mods: their own row in the pause menu (DmActivity.portRows -> Tl2Gear.showMods), not a gear section
         l.add(GearPages.sharpen());
         l.add(GearPages.fpsLimit(FPS_LIMITS, 60));
         l.add(note(R.string.d3_fps_note));
@@ -175,8 +175,25 @@ final class Tl2Gear {
         g.note(box, g.str(R.string.tl2_mods_restart));
         android.widget.ScrollView scroll = new android.widget.ScrollView(g.a); scroll.addView(box);
         new AlertDialog.Builder(g.a).setTitle(g.str(R.string.tl2_mods_title)).setView(scroll)
-            .setPositiveButton(g.s("gear_save"), (d, w) -> { Tl2Mods.save(p, mods); from.setText(g.str(R.string.tl2_mods_button, Tl2Mods.enabledCount(p))); })
+            .setPositiveButton(g.s("gear_save"), (d, w) -> {
+                String before = enabledList(p); Tl2Mods.save(p, mods); if (from != null) from.setText(g.str(R.string.tl2_mods_button, Tl2Mods.enabledCount(p)));
+                if (!before.equals(enabledList(p))) askRestart(g, Tl2Mods.enabledCount(p) > 0);   // the enabled set or its order changed
+            })
             .setNegativeButton(g.s("gear_cancel"), null).show();
+    }
+
+    // the enabled mods in load order (what the next start converts and loads)
+    static String enabledList(SharedPreferences p) {
+        StringBuilder b = new StringBuilder();
+        for (String l : p.getString(Tl2Mods.PREF, "").split("\n")) if (l.endsWith("\t1")) b.append(l).append('\n');
+        return b.toString();
+    }
+    // mods load only at the start: offer the graceful quit + reopen right away (DmActivity.restartGame)
+    static void askRestart(GearSettings g, boolean anyOn) {
+        new AlertDialog.Builder(g.a).setTitle(g.str(R.string.tl2_mods_restart_q))
+            .setMessage(g.str(anyOn ? R.string.tl2_mods_restart_on : R.string.tl2_mods_restart_off))
+            .setPositiveButton(g.str(R.string.tl2_mods_restart_now), (d, w) -> { if (g.a instanceof DmActivity) ((DmActivity) g.a).restartGame(); })
+            .setNegativeButton(g.str(R.string.tl2_mods_restart_later), null).show();
     }
 
     // ---- the on-screen control layout (D3PadView "d3_layout"; applies when picked: the pad is visible behind the dialog). TL2: the D2R Mobile-style

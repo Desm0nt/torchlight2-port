@@ -95,12 +95,14 @@ the game's own skill icons, zoom slider on the right).
 **PC mods**
 
 - Torchlight II **PC mods** (`.MOD` files made with GUTS) can be used: put them into `Download/Torchlight2Mobile/mods/`
-  on the phone and manage them in the gear dialog (**mod manager**: name, author and version from the mod, tick to
-  enable, load order with arrows). The app converts the enabled mods once (textures to the Switch format) before the
-  game starts, and modded games use their own save folder, so your normal saves are never touched. Mod content (data,
-  models, textures, sounds) is used; PC interface layouts are not, because the Switch version has its own console UI.
-  **Experimental: not tested with real mods yet.** Mods that change the PC interface (windows, HUD layouts, PC UI
-  elements) won't work, and neither will DLL plugins; data mods (items, skills, monsters, balance) have a chance.
+  on the phone and manage them in the **mod manager** (gear → pause menu → *Mods…*: name, author and version from the
+  mod, tick to enable, load order with arrows; a mod lower in the list overrides the ones above it, and mods override
+  the game's own files). After a change the app offers to restart the game. The app converts the enabled mods once
+  (textures to the Switch format) before the game starts, and modded games use their own save folder, so your normal
+  saves are never touched. Mod content (data, models, textures, sounds) is used; PC interface layouts are not, because
+  the Switch version has its own console UI. **Experimental:** tested so far with a texture mod and two new playable
+  classes (Cacklespit, Werewolf). Mods that change the PC interface (windows, HUD layouts, PC UI elements) won't work,
+  and neither will DLL plugins; data mods (items, skills, monsters, balance) have a chance.
 
 **Front end shared with the DOOM / Diablo III ports**
 
@@ -308,8 +310,10 @@ MIT — see [LICENSE](LICENSE). The d2r-mobile copyright notice is kept; third-p
 - **Гибридный широкий экран (Hor+):** картинка по форме экрана телефона (например, 2400×1080 на 20:9) с более широким
   обзором, HUD по краям экрана, меню — по центру в области 16:9. Режимы «в доке» (1080p) и «портативный» (720p)
   переключаются на ходу (портативный пока не проверялся: играли только «в доке»).
-- **Моды с PC:** файлы `.MOD` (GUTS) кладутся в `Download/Torchlight2Mobile/mods/` на телефоне; менеджер модов в
-  настройках (⚙): включение, порядок загрузки; моды конвертируются при запуске, сохранения с модами — в отдельной папке. **Экспериментально, с настоящими модами ещё не проверялось.** Моды,
+- **Моды с PC:** файлы `.MOD` (GUTS) кладутся в `Download/Torchlight2Mobile/mods/` на телефоне; менеджер модов —
+  ⚙ → меню паузы → «Моды…»: включение, порядок загрузки (мод ниже в списке перекрывает моды выше, моды перекрывают
+  файлы игры), после изменения игра предлагает перезапуск; моды конвертируются при запуске, сохранения с модами — в
+  отдельной папке. **Экспериментально:** пока проверено с текстурным модом и двумя новыми классами (Cacklespit, Werewolf). Моды,
   меняющие PC-интерфейс (окна, раскладки HUD, элементы PC UI), работать не будут: у версии для Switch свой консольный
   интерфейс; моды с DLL-плагинами тоже. Шанс есть у модов данных (предметы, навыки, монстры, баланс).
 - Единое меню паузы, экспорт / импорт сохранений, все языки игры (включая русский) без DLC, резкость RCAS, лимит

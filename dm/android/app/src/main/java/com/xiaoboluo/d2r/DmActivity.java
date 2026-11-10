@@ -154,6 +154,9 @@ public class DmActivity extends Activity implements SurfaceHolder.Callback, Disp
     @Override public boolean ready() { return started; }
     @Override public void hold(boolean on) { if (!libraryLoaded) return; try { nativeHold(on); } catch (UnsatisfiedLinkError e) { android.util.Log.e("dm", "nativeHold missing: the game is not paused (" + e.getMessage() + ")"); } }
     @Override public void gameSettings() { new GearSettings(this).show(); }   // [front] the shared gear (Tl2Gear.java)
+    // [TL2] the mod manager as its own pause-menu row (FrontMenu.Host.portRows), right after "Game settings…"
+    @Override public String[] portRows() { return TL2 ? new String[]{ Ui.t(this, "Моды…", "Mods…") } : null; }
+    @Override public void portRow(int i) { if (TL2 && i == 0) runOnUiThread(() -> Tl2Gear.showMods(new GearSettings(this), null)); }
     @Override public FrontMenu.Saves saves() { if (saves == null) saves = SaveTransfer.forGame(this, DATA_DIR); return saves; }
     @Override public void quit() {
         android.util.Log.i("dm", "[java] quit from the pause menu");
@@ -162,6 +165,14 @@ public class DmActivity extends Activity implements SurfaceHolder.Callback, Disp
         try { if (libraryLoaded) nativeQuit(); } catch (UnsatisfiedLinkError e) { /* an older library: just end */ }
         if (DOOM && libraryLoaded) CrashLog.mirrorBootLogs(this);   // [DOOM] boot.log next to crash.txt (System.exit skips onStop)
         finishAndRemoveTask(); System.exit(0);
+    }
+    // the same graceful quit, then the game opens again (RestartActivity in its own process waits for this one to end): settings that
+    // apply at the start, e.g. the TL2 mod list
+    void restartGame() {
+        android.util.Log.i("dm", "[java] restart asked");
+        try { startActivity(new android.content.Intent(this, RestartActivity.class).putExtra(RestartActivity.EXTRA_PID, android.os.Process.myPid())); }
+        catch (RuntimeException e) { android.util.Log.e("dm", "[java] restart: " + e); }
+        quit();
     }
     @Override public void immersive() { immersiveBars(); }
     // a save import asked for in the pause menu: done at the start, before the library loads and the game runs (SaveTransfer.applyPending)

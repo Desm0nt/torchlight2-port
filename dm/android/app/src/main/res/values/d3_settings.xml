@@ -88,6 +88,11 @@
     <string name="d3_drv_no_library">the package has no driver library</string>
     <string name="d3_drv_missing_lib">the package lacks a library</string>
     <string name="tl2_mods_button">Mods (on: %d)…</string>
+    <string name="tl2_mods_restart_q">Restart the game now to apply the mods?</string>
+    <string name="tl2_mods_restart_on">The game will start with the enabled mods (modded games use their own save folder).</string>
+    <string name="tl2_mods_restart_off">The game will start without mods, with your normal saves.</string>
+    <string name="tl2_mods_restart_now">Restart now</string>
+    <string name="tl2_mods_restart_later">Later</string>
     <string name="tl2_mods_title">Mods</string>
     <string name="tl2_mods_folder">Put PC Torchlight II mods (.MOD files) into %s. Ticked mods are loaded from top to bottom: a mod lower in the list wins over the ones above it where they change the same file.</string>
     <string name="tl2_mods_restart">Changes apply at the next start of the game (close it and open it again). While any mod is on, the game uses a separate save folder (a copy of your saves made the first time); your normal saves are not changed.</string>

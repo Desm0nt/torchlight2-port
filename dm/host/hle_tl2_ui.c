@@ -12,6 +12,8 @@
 //     Accept event {type 0 press, code 1} (IsAccept 0x1139f0), so the confirm branch of that menu acts on the item now focused (MainMenu
 //     0x145b60: switch on the item id; it needs the button's enabled byte +0xc3). The outer quarters of a button row get the logical Left /
 //     Right {0, 4} / {0, 5} instead (value rows: MainMenu item types 0x26..0x28 / 0x36, character create).
+//   * spinner rows (item type 3, PUI::Button +0xc2 with arrow children +0xa8 / +0xb8 outside its rect): a tap on an arrow or an outer quarter =
+//     focus + that menu's own Left / Right; the middle focuses (Accept only when already focused). See spinner_arrow_at.
 //   * button menus: one tap = focus + activate. List rows: a tap selects (= hover / details), a tap on the selected row activates.
 // Codes: IsUp 0x113950 = 6, IsDown 0x1139a0 = 7, IsAccept 0x1139f0 = 1, IsBack 0x13acd0 = 0; event {u32 type, u32 code, u32 axis, f32 value}.
 //
@@ -99,6 +101,7 @@ enum {
     T_CONTENT = 0x1c4, T_OFF = 0x1ec, T_VEL = 0x1f0, T_TOP = 0x1f4, T_PAD = 0x1f8, T_ON = 0x200, T_ARROWS = 0x250, T_VIEW = 0x88,
     EV_UP = 6, EV_DOWN = 7,
     B_ENABLED = 0xc3, B_HILITE = 0xc4,
+    B_SPIN = 0xc2, B_ARROW_L = 0xa8, B_ARROW_R = 0xb8, B_VALUE = 0xb0, TX_STR = 0xd0,   // spinner rows (see spinner_arrow_at)
     F_SETSEL = 0x1a02460, F_SETHI = 0x1a05020, F_DISPATCH = 0x143800, VT_UIMGR = 0x230d7f0,
     VT_MAIN = 0x230ddb8, VT_NETWORK = 0x2309e28, VT_CREATE = 0x232b008, VT_OPTIONS = 0x23043d8, VT_INVITE = 0x232a938, VT_PARTY = 0x232b2e8,
     EV_ACCEPT = 1, EV_LEFT = 4, EV_RIGHT = 5, EV_PLUS = 0xe,
@@ -183,6 +186,18 @@ static const struct { uint32_t off, n, w[14]; } k_sites[] = {
     {0x13d77c, 1, {0x3908ac08 /* strb w8,[x0,#0x22b] */}}, {0x13d780, 1, {0xf9413c08 /* ldr x8,[x0,#0x278] */}}, {0x13d7b4, 1, {0xf9414c08 /* ldr x8,[x0,#0x298] */}},
     {0x13d7f8, 1, {0xf9414408 /* ldr x8,[x0,#0x288] */}},
     {0x80818, 1, {0x9402f3d6 /* bl 0x13d770 */}}, {0x808dc, 1, {0x9402f38d /* bl 0x13d710 */}},
+    // spinner rows: PUI::Button 0x1a04ca0 (+0xc2, arrows +0xa8 / +0xb8), value text 0x1a05010 (+0xb0), text string 0x19fc2a4 (+0xd0);
+    // family A builder: type 3 -> 0x1a04ca0; IsLeft 0x1148e0 / IsRight 0x114920 (code 4 / 5)
+    {0x1a04cd0, 1, {0x39030808 /* strb w8,[x0,#0xc2] */}}, {0x1a04dc0, 1, {0xf9005676 /* str x22,[x19,#0xa8] */}}, {0x1a04f08, 1, {0xf9005e74 /* str x20,[x19,#0xb8] */}},
+    {0x1a05010, 1, {0xf9405800 /* ldr x0,[x0,#0xb0] */}}, {0x19fc2a4, 1, {0x384d0e89 /* ldrb w9,[x20,#0xd0]! */}},
+    {0x110454, 5, {0xb94006a8 /* ldr w8,[x21,#4] */, 0x7100111f, 0x540000c0, 0x71000d1f /* cmp w8,#3 */, 0x540000e1}}, {0x11046c, 1, {0x9463d20d /* bl 0x1a04ca0 */}},
+    {0x1148e0, 2, {0x29402428, 0x7100113f /* cmp w9,#4 */}}, {0x114920, 2, {0x29402428, 0x7100153f /* cmp w9,#5 */}},
+    // CreateCharacter gender toggle 0x760890 (global 0x75d49b0, last letter M <-> F, 0x713590) and the PLAYERS unit lookup 0x278520 (registry GOT
+    // 0x23a4958 used by 0x2788e0); Up / Down in CreateCharacter HandleInput (IsUp 0x113950 -> 0x114860, IsDown 0x1139a0)
+    {0x7608a4, 2, {0x900373b4 /* adrp x20,0x75d4000 */, 0xf944da88 /* ldr x8,[x20,#0x9b0] */}}, {0x7608f4, 1, {0xb85fc2a0}},
+    {0x7608fc, 3, {0x7101341f /* cmp w0,#'M' */, 0x528009a8, 0x528008c9}}, {0x760928, 1, {0x97fecb1a /* bl 0x713590 */}},
+    {0x713710, 1, {0x97ed9474 /* bl 0x2788e0 */}}, {0x2788fc, 2, {0x90010978, 0xf944af18 /* GOT 0x23a4958 */}}, {0x278960, 1, {0x97fffef0 /* bl 0x278520 */}},
+    {0x278540, 1, {0x97fa963c /* bl 0x11de30 */}}, {0x75fe20, 1, {0x97e6cecc /* bl IsUp */}}, {0x75fe48, 1, {0x97e6ced6 /* bl IsDown */}},
 };
 
 static uint8_t *g_base; static size_t g_size; static int g_ok = -1, g_mode, g_dump;
@@ -294,6 +309,8 @@ static int list_row_at(const el *e, float x, float y) {
 }
 // ---- dump
 static void dump_stack(FILE *f);
+static uint8_t r8(uint64_t a);
+static void value_text(uint64_t button, char *out, size_t cap);
 static void dump(void) {
     float cw, ch; int n = snapshot(g_dump >= 2, &cw, &ch);
     char p[1200]; snprintf(p, sizeof p, "%s/tl2-ui-dump.tsv", g_dir);
@@ -312,7 +329,16 @@ static void dump(void) {
                     fprintf(f, " arrow+%#x %s %.1f,%.1f,%.1f,%.1f drawn %d", L_ARROWS + 8 * k, k & 1 ? "down" : "up", r[0], r[1], r[2], r[3], d);
             }
         }
-        if (e->kind == K_BUTTON) fprintf(f, "hilite %d enabled %d", e->hilite, e->enabled);
+        if (e->kind == K_BUTTON) {
+            fprintf(f, "hilite %d enabled %d", e->hilite, e->enabled);
+            if (r8(e->a + B_SPIN)) {   // spinner row: its arrows (+0xa8 / +0xb8) and value text
+                char v[64]; value_text(e->a, v, sizeof v); fprintf(f, " spinner value \"%s\"", v);
+                for (int k = 0; k < 2; k++) {
+                    uint64_t a = rq(e->a + (k ? B_ARROW_R : B_ARROW_L)); float r[4] = {0};
+                    if (a && rd(a + E_RECT, r, 16)) fprintf(f, " arrow %s %.1f,%.1f,%.1f,%.1f drawn %d", k ? "R" : "L", r[0], r[1], r[2], r[3], r8(a + E_DRAWN));
+                }
+            }
+        }
         if (e->kind == K_RICH) fprintf(f, "text offset %.1f range %.1f..%.1f content %.1f view %.1f scroll group %d", e->t_off, e->t_lo, e->t_hi, e->t_content, e->t_view, e->t_on);
         fputc('\n', f);
     }
@@ -376,6 +402,42 @@ static int menu_button(uint64_t menu, uint64_t vt, uint64_t button, uint64_t *ar
     if (!arr || n <= 0 || n > 256) return -1;
     for (int i = 0; i < n; i++) if (rq(arr + 8ull * i) == button) { *arr_out = arr; return i; }
     return -1;
+}
+// ---- spinner rows (item type 3: character create class / face / hair / colour / pet / difficulty, options values). The menus' item builders
+// (family A 0x110454, ButtonMenu 0x7394e0) call PUI::Button 0x1a04ca0 for an item of type 3 (entry +4): it sets +0xc2 and adds two image
+// children, +0xa8 "Intro_Arrow_L" and +0xb8 "Intro_Arrow_R", laid out OUTSIDE the button's own rect (so a tap on them hit no button). The value
+// text is +0xb0 (0x1a05010; a PUI text, std::wstring at +0xd0). The value is changed by the menu's own HandleInput on logical Left / Right
+// {0, 4} / {0, 5} for the focused item: CreateCharacter 0x75fde0 (IsLeft 0x1148e0 -> switch 0x2068be4, IsRight 0x114920 -> 0x2068c68 on the
+// focused item's id 0x14..0x34: 0x760560 class, 0x760890, 0x515f90 + 0x75dec0 face / hair / colour, 0x7609c0, 0x713d70 / 0x713ef0 pet, +0x118
+// difficulty). CreateCharacter's HandleInput returns 0 on every path but +0x198 (0x7603e4), so the UI manager logs "not handled" although it acted.
+static void value_text(uint64_t button, char *out, size_t cap) {   // the row's value text, ASCII (others '?'), "" if none
+    out[0] = 0;
+    uint64_t t = rq(button + B_VALUE); uint8_t b0 = 0;
+    if (!t || !rd(t + TX_STR, &b0, 1)) return;
+    uint64_t len = b0 >> 1, p = t + TX_STR + 4;
+    if (b0 & 1) { len = rq(t + TX_STR + 8); p = rq(t + TX_STR + 16); }
+    uint32_t ch[48]; size_t k = len < cap - 1 ? (size_t)len : cap - 1; if (k > 48) k = 48;
+    if (!k || !rd(p, ch, 4 * k)) return;
+    for (size_t i = 0; i < k; i++) out[i] = ch[i] >= 0x20 && ch[i] < 0x7f ? (char)ch[i] : '?';
+    out[k] = 0;
+}
+// Spinner arrow under (ux, uy): -1 left / +1 right / 0 none; *bi = the g_el index of its button. padded: a finger-sized margin around the
+// small arrow images (the nearest arrow centre wins when margins overlap).
+static int spinner_arrow_at(int n, float ux, float uy, int padded, int *bi) {
+    int dir = 0; float bd = 1e30f;
+    for (int i = 0; i < n; i++) {
+        const el *e = &g_el[i];
+        if (e->kind != K_BUTTON || !e->vis || !r8(e->a + B_SPIN)) continue;
+        for (int k = 0; k < 2; k++) {
+            uint64_t a = rq(e->a + (k ? B_ARROW_R : B_ARROW_L)); float r[4];
+            if (!a || !r8(a + E_DRAWN) || !rd(a + E_RECT, r, 16) || !(r[2] > r[0] && r[3] > r[1])) continue;
+            float pad = padded ? fmaxf(28.f, .6f * (r[3] - r[1])) : 0.f;
+            if (!(ux >= r[0] - pad && ux < r[2] + pad && uy >= r[1] - pad && uy < r[3] + pad)) continue;
+            float dx = ux - .5f * (r[0] + r[2]), dy = uy - .5f * (r[1] + r[3]), d = dx * dx + dy * dy;
+            if (d < bd) { bd = d; dir = k ? 1 : -1; *bi = i; }
+        }
+    }
+    return dir;
 }
 static int menu_holds(uint64_t menu, uint64_t p) {
     uint64_t q[0x80]; if (!rd(menu, q, sizeof q)) return 0;
@@ -683,6 +745,73 @@ static int rich_at(int n, float ux, float uy) {
     return best;
 }
 
+// Focus a row of a button menu the way the D-pad does: logical Up / Down {0, 6} / {0, 7} through the UI manager one step at a time, checking
+// after each step that the menu is still on top and its focus came closer (CreateCharacter 0x75fe20: IsUp -> 0x114860(focus - 1), IsDown ->
+// focus + 1; ButtonMenu alike). The focus field is never written here. 1 = the row has the focus.
+static int focus_by_steps(uint64_t menu, uint64_t focus_at, int idx) {
+    int cur = r32(focus_at), first = cur, steps = 0, top;
+    while (cur != idx && steps < 32) {
+        uint32_t ev[4] = {0, cur < idx ? EV_DOWN : EV_UP, 0, 0};
+        ((int (*)(uint64_t, int, const uint32_t *))img(F_DISPATCH))(img(U_MGR), 0, ev);
+        steps++;
+        if (top_menu(&top) != menu) { LOG("[tl2ui]   focus: the menu left the top after %d step(s): stop", steps); return 0; }
+        int now = r32(focus_at);
+        if (now == cur || (cur >= 0 && abs(idx - now) >= abs(idx - cur))) { cur = now; break; }
+        cur = now;
+    }
+    LOG("[tl2ui]   focus %d -> %d by %d %s step(s) of the menu's own navigation (wanted %d)%s", first, cur, steps, first < idx ? "Down" : "Up", idx,
+        cur == idx ? "" : " [the menu did not follow: nothing more]");
+    return cur == idx;
+}
+// CreateCharacter item 0x15 (gender) Left / Right = 0x760890: the current class name (the global 0x75d49b0: its unit +0x58 -> 0x458f10, else
+// the name +0x190 that 0x713590 keeps) with the last letter swapped M <-> F (towupper == 'M' ? 'F' : 'M'), then 0x713590 -> 0x2788e0 creates
+// that PLAYERS unit; a name that does not exist gives NULL and 0x446f50 faults on +0x410 (device crash 11-10, a mod class without a pair:
+// Playable Werewolf). The pad would crash the same way. Checked here with the game's own lookup 0x278520(registry, "PLAYERS", name) (tree
+// lookups only, no side effects). 1 pair exists, 0 not (do not send), -1 unknown (send).
+enum { CC_GLOBAL = 0x75d49b0, CC_NAME = 0x190, GOT_UNITREG = 0x23a4958, F_UNIT_FIND = 0x278520, S_PLAYERS = 0x2027f90, CC_ID_GENDER = 0x15 };
+typedef struct { uint64_t capflag, size; const uint32_t *p; } wstr_long;   // libc++ wstring, long form (bit 0 of the first byte = long)
+static int gender_pair_ok(char *cls, char *want, size_t cap) {
+    cls[0] = want[0] = 0;
+    uint64_t g = rq(img(CC_GLOBAL)), reg = rq(rq(img(GOT_UNITREG))); uint8_t b0 = 0;
+    if (!g || !reg || !rd(g + CC_NAME, &b0, 1)) return -1;
+    uint64_t len = b0 >> 1, p = g + CC_NAME + 4;
+    if (b0 & 1) { len = rq(g + CC_NAME + 8); p = rq(g + CC_NAME + 16); }
+    static uint32_t nm[128], cat[8];
+    if (!len || len >= 128 || !rd(p, nm, 4 * len)) return -1;
+    nm[len] = 0;
+    uint32_t last = nm[len - 1], up = last >= 'a' && last <= 'z' ? last - 32 : last;
+    for (size_t i = 0; i < len && i + 1 < cap; i++) { cls[i] = nm[i] >= 0x20 && nm[i] < 0x7f ? (char)nm[i] : '?'; cls[i + 1] = 0; }
+    nm[len - 1] = up == 'M' ? 'F' : 'M';
+    for (size_t i = 0; i < len && i + 1 < cap; i++) { want[i] = nm[i] >= 0x20 && nm[i] < 0x7f ? (char)nm[i] : '?'; want[i + 1] = 0; }
+    if (!rd(img(S_PLAYERS), cat, 4 * 7)) return -1;
+    cat[7] = 0;
+    wstr_long c = {0x101, 7, cat}, n = {0x101, len, nm};
+    uint64_t u = ((uint64_t (*)(uint64_t, const void *, const void *))img(F_UNIT_FIND))(reg, &c, &n);
+    return u ? 1 : 0;
+}
+// A spinner row tapped: focus it as the D-pad does, then the menu's own Left / Right (dir), or (dir 0) Accept when it already had the focus.
+static void spinner_click(uint64_t menu, uint64_t vt, uint64_t button, uint64_t focus_at, int idx, int cur, int dir, int arrow) {
+    int32_t iid = -1, ity = -1;
+    if (vt == img(VT_MAIN) || vt == img(VT_NETWORK) || vt == img(VT_CREATE)) { uint64_t d = rq(rq(menu + 0x48)); if (d) { iid = r32(d + 0x28ull * idx); ity = r32(d + 0x28ull * idx + 4); } }
+    if (cur != idx && !focus_by_steps(menu, focus_at, idx)) return;
+    if (!dir) {
+        if (cur != idx) { LOG("[tl2ui]   spinner row (item id %#x type %d): focused; its arrows / outer quarters change the value", iid, ity); return; }
+        dispatch(EV_ACCEPT, "Accept (spinner row already focused)");
+        return;
+    }
+    if (vt == img(VT_CREATE) && iid == CC_ID_GENDER) {
+        char cls[64], want[64]; int ok = gender_pair_ok(cls, want, sizeof cls);
+        LOG("[tl2ui]   gender row: class \"%s\" -> \"%s\" %s", cls, want, ok > 0 ? "exists" : ok == 0 ? "does not exist" : "(not checked)");
+        if (ok == 0) { LOG("[tl2ui]   not sent: the game's own toggle 0x760890 would make a missing PLAYERS unit and crash (0x2788e0 -> NULL -> 0x446f50); a class without the other gender (mod class)"); return; }
+    }
+    char before[64], after[64]; value_text(button, before, sizeof before);
+    LOG("[tl2ui]   spinner row (item id %#x type %d) %s %s: the menu's own %s", iid, ity, arrow ? "arrow" : "row quarter", dir < 0 ? "left" : "right", dir < 0 ? "Left" : "Right");
+    dispatch(dir < 0 ? EV_LEFT : EV_RIGHT, dir < 0 ? "Left" : "Right");
+    value_text(button, after, sizeof after);
+    LOG("[tl2ui]   spinner value \"%s\" -> \"%s\"%s", before, after, strcmp(before, after) ? "" :
+        vt == img(VT_CREATE) ? " (same text: the class / look may be shown elsewhere, or the end of the range)" : " (unchanged)");
+}
+
 void dm_tl2_ui_frame_to_canvas(float fx, float fy, float cw, float ch, float *cx, float *cy);   // hle_tl2_icons.c: the one canvas <-> picture mapping
 void dm_tl2_ui_canvas_to_frame(float cx, float cy, float cw, float ch, float *fx, float *fy);
 static void click(float fx, float fy) {
@@ -719,6 +848,12 @@ static void click(float fx, float fy) {
         LOG("[tl2ui] tap %.3f,%.3f = UI %.0f,%.0f on the radial menu %#llx", fx, fy, ux, uy, (unsigned long long)menu);
         if (radial_click(menu, ux, uy, best >= 0 && g_el[best].kind == K_LIST ? best : -1, row)) return;
     }
+    int sdir = 0;   // a spinner row's arrow (outside the button's rect): exact hit beats a button, the padded one only where nothing else is
+    if (best < 0 || g_el[best].kind == K_BUTTON) {
+        int sbi = -1; sdir = spinner_arrow_at(n, ux, uy, 0, &sbi);
+        if (!sdir && best < 0) sdir = spinner_arrow_at(n, ux, uy, 1, &sbi);
+        if (sdir) { best = sbi; row = -1; }
+    }
     if (best < 0) {
         LOG("[tl2ui] tap %.3f,%.3f = UI %.0f,%.0f, menu %s %#llx (vt main+%#llx): no button / list row under it%s", fx, fy, ux, uy, mn,
             (unsigned long long)menu, vto, radial >= 0 ? " (a radial menu: not handled)" : "");
@@ -734,12 +869,13 @@ static void click(float fx, float fy) {
         }
         int32_t cur = -1; rd(focus_at, &cur, 4);
         LOG("[tl2ui] tap %.3f,%.3f = UI %.0f,%.0f -> %s item %d (focus was %d)%s", fx, fy, ux, uy, mn, idx, cur, t->enabled ? "" : ", greyed: Accept refused by the menu");
+        float w = t->r[2] - t->r[0], rel = w > 0 ? (ux - t->r[0]) / w : .5f;
+        if (r8(t->a + B_SPIN)) { spinner_click(menu, vt, t->a, focus_at, idx, cur, sdir ? sdir : rel < .25f ? -1 : rel > .75f ? 1 : 0, sdir != 0); return; }
         if (cur != idx) {   // the menu's own focus move: what its navigation code does (MainMenu 0x145954..0x1459b8, ButtonMenu 0x739690)
             if (cur >= 0) { uint64_t ob = rq(arr + 8ull * cur); if (ob) set_hi(ob, 0); }
             *(volatile int32_t *)(uintptr_t)focus_at = idx;
             set_hi(t->a, 1);
         }
-        float w = t->r[2] - t->r[0], rel = w > 0 ? (ux - t->r[0]) / w : .5f;
         if (rel < .25f) dispatch(EV_LEFT, "left quarter: Left");
         else if (rel > .75f) dispatch(EV_RIGHT, "right quarter: Right");
         else dispatch(EV_ACCEPT, "Accept");

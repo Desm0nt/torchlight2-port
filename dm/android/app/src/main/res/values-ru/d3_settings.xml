@@ -86,6 +86,11 @@
     <string name="d3_drv_no_library">в пакете нет библиотеки драйвера</string>
     <string name="d3_drv_missing_lib">в пакете не хватает библиотеки</string>
     <string name="tl2_mods_button">Моды (включено: %d)…</string>
+    <string name="tl2_mods_restart_q">Перезапустить игру сейчас, чтобы применить моды?</string>
+    <string name="tl2_mods_restart_on">Игра запустится с включёнными модами (с модами — отдельная папка сохранений).</string>
+    <string name="tl2_mods_restart_off">Игра запустится без модов, с вашими обычными сохранениями.</string>
+    <string name="tl2_mods_restart_now">Перезапустить</string>
+    <string name="tl2_mods_restart_later">Позже</string>
     <string name="tl2_mods_title">Моды</string>
     <string name="tl2_mods_folder">Положите PC-моды Torchlight II (файлы .MOD) в %s. Отмеченные моды загружаются сверху вниз: мод ниже в списке перекрывает моды выше, если они меняют один и тот же файл.</string>
     <string name="tl2_mods_restart">Изменения применятся при следующем запуске игры (закройте и откройте её снова). Пока включён хоть один мод, игра пишет в отдельную папку сохранений (при первом включении туда копируются ваши сохранения); обычные сохранения не меняются.</string>

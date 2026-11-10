@@ -17,6 +17,9 @@ Usage:
   tl2_mod.py info    <mod>                         header, file counts, texture kinds
   tl2_mod.py convert <mod> <out_overlay> [--slot N] [--no-tex]   write <out_overlay>/PAKS/ZMOD_<NN>_<name>.PAK(.MAN) + .json
   tl2_mod.py unpack  <mod|pak> <dest>              extract files (as stored, decompressed)
+  tl2_mod.py rawsim  <romfs> [mod ...] [--out dir] [-v]   the game's own merge of MEDIA/*.RAW over the base packs + mods in load
+                                                   order: per pack entries kept / shadowed (dup) / dropped (no DAT); --out
+                                                   writes the merged RAWs (inspection only); --selftest: RAW round trip
   tl2_mod.py selftest <romfs>                      XTX layout: rebuild game textures from their own pixels, compare byte for byte;
                                                    PAK hash of DATA*.PAK
 """
@@ -307,6 +310,123 @@ def convert(mod_path, out_dir, slot=None, tex=True, log=print):
     for f in stats['failed'][:20]: log('  texture kept as PC bytes:', f)
     return meta
 
+# ---------------------------------------------------------------- RAW indexes (MEDIA/*.RAW)
+# Compiled indexes GUTS writes for the DATs of a pack; every pack (DATA..DATA5 and each PC mod) carries only its OWN entries (DATA's
+# UNITDATA.RAW 7623 units, DATA1..5 and mods a few dozen). Formats as Awkward-im/Torchlight TL2Lib/rgio.raw.pas (round trip checked on
+# all base RAWs: `rawsim --selftest`). The Switch game reads every pack's copy itself: each loader (UNITDATA main+0x27d800, SKILLS
+# 0x218190, MISSILES 0x36dcc0, ROOMPIECES 0x289300, AFFIXES 0x558880, TRIGGERABLES 0x41d0f0) asks the pack manager for the list of
+# all copies of its path (main+0x163fb0) and parses each in turn; UNITDATA skips a GUID it already has (first copy wins, 0x27db6c) and a
+# unit whose FILE no pack has (0x163350). UI.RAW is not read by the console game (no such string in main).
+RAW_KINDS = ('UNITDATA', 'SKILLS', 'AFFIXES', 'MISSILES', 'ROOMPIECES', 'TRIGGERABLES')
+UNIT_SECTIONS = ('ITEMS', 'MONSTERS', 'PLAYERS', 'PROPS')
+
+class _R:
+    def __init__(s, b): s.b, s.o = b, 0
+    def u(s, f):
+        v = struct.unpack_from(f, s.b, s.o); s.o += struct.calcsize(f); return v if len(v) > 1 else v[0]
+    def w(s): v, s.o = _ws(s.b, s.o); return v
+
+def raw_read(kind, b):
+    """-> list of entries (dicts); UNITDATA entries carry 'section' (0 items, 1 monsters, 2 players, 3 props)"""
+    r = _R(b); out = []
+    if kind == 'UNITDATA':
+        for sec in range(4):
+            for _ in range(r.u('<I')):
+                e = {'section': sec, 'guid': r.u('<q'), 'name': r.w(), 'file': r.w()}
+                e['equip'], e['level'], e['minlevel'], e['maxlevel'], e['rarity'], e['rarityhc'] = r.u('<B5I'); e['unittype'] = r.w(); out.append(e)
+    elif kind == 'SKILLS':
+        for _ in range(r.u('<I')): out.append({'name': r.w(), 'file': r.w(), 'guid': r.u('<q')})
+    elif kind == 'AFFIXES':
+        for _ in range(r.u('<H')):
+            e = {'file': r.w(), 'name': r.w()}; e['min'], e['max'], e['weight'], e['diff'] = r.u('<4I')
+            e['types'] = [r.w() for _ in range(r.u('<B'))]; e['nottypes'] = [r.w() for _ in range(r.u('<B'))]; out.append(e)
+    elif kind == 'MISSILES':
+        for _ in range(r.u('<H')): out.append({'file': r.w(), 'names': [r.w() for _ in range(r.u('<B'))]})
+    elif kind == 'ROOMPIECES':
+        files = [r.w() for _ in range(r.u('<I'))]
+        for f in files: out.append({'file': f, 'guids': [r.u('<q') for _ in range(r.u('<I'))]})
+    elif kind == 'TRIGGERABLES':
+        for _ in range(r.u('<H')): out.append({'file': r.w(), 'name': r.w()})
+    else: raise ValueError(f'unknown RAW kind {kind}')
+    if r.o != len(b): raise ValueError(f'{kind}.RAW: {len(b) - r.o} trailing bytes')
+    return out
+
+def raw_write(kind, ents):
+    p = struct.pack; o = []
+    if kind == 'UNITDATA':
+        for sec in range(4):
+            es = [e for e in ents if e['section'] == sec]; o.append(p('<I', len(es)))
+            o += [p('<q', e['guid']) + _wsw(e['name']) + _wsw(e['file']) + p('<B5I', e['equip'], e['level'], e['minlevel'], e['maxlevel'],
+                  e['rarity'], e['rarityhc']) + _wsw(e['unittype']) for e in es]
+    elif kind == 'SKILLS':
+        o.append(p('<I', len(ents))); o += [_wsw(e['name']) + _wsw(e['file']) + p('<q', e['guid']) for e in ents]
+    elif kind == 'AFFIXES':
+        o.append(p('<H', len(ents)))
+        o += [_wsw(e['file']) + _wsw(e['name']) + p('<4I', e['min'], e['max'], e['weight'], e['diff']) + p('<B', len(e['types'])) +
+              b''.join(map(_wsw, e['types'])) + p('<B', len(e['nottypes'])) + b''.join(map(_wsw, e['nottypes'])) for e in ents]
+    elif kind == 'MISSILES':
+        o.append(p('<H', len(ents))); o += [_wsw(e['file']) + p('<B', len(e['names'])) + b''.join(map(_wsw, e['names'])) for e in ents]
+    elif kind == 'ROOMPIECES':
+        o.append(p('<I', len(ents))); o += [_wsw(e['file']) for e in ents]
+        o += [p('<I', len(e['guids'])) + b''.join(p('<q', g) for g in e['guids']) for e in ents]
+    elif kind == 'TRIGGERABLES':
+        o.append(p('<H', len(ents))); o += [_wsw(e['file']) + _wsw(e['name']) for e in ents]
+    return b''.join(o)
+
+def raw_key(kind, e):   # what identifies an entry: GUID where the RAW has one, else the DAT / LAYOUT path
+    return e['guid'] if kind in ('UNITDATA', 'SKILLS') else e['file'].upper().replace('\\', '/')
+
+def _pack_files(pak_path=None, mod_path=None):
+    """-> (label, {upper path: (pak bytes, offset)}) of a Switch pack or a .MOD"""
+    if mod_path:
+        info, pak, root, ents = mod_read(mod_path); label = info['title'] or os.path.basename(mod_path)
+    else:
+        pak = open(pak_path, 'rb').read(); root, ents = man_read(open(pak_path + '.MAN', 'rb').read()); label = os.path.basename(pak_path)
+    files = {}
+    for d, n, typ, off, size, *_ in ents:
+        if typ != 7: files[(d + n).upper().replace('\\', '/')] = (pak, off, size)
+    return label, files
+
+def raw_sim(romfs, mods, out_dir=None, log=print):
+    """The game's own RAW merge for the base packs + mods in load order (DATA, DATA1..DATA5, then the mods as given = ZMOD_00..):
+    every pack's copy is read in that order; UNITDATA keeps the first entry per GUID and drops units whose FILE no pack has. For the
+    other kinds the game's duplicate rule is not traced, so a key present in several packs is reported as a conflict.
+    -> {kind: [(pack label, entry, status)]}; with out_dir writes the merged RAWs there (inspection only, the game does not need them)."""
+    pd = os.path.join(romfs, 'PAKS')
+    packs = [_pack_files(os.path.join(pd, f)) for f in sorted(os.listdir(pd)) if f.upper().endswith('.PAK')]
+    packs += [_pack_files(mod_path=m) for m in mods]
+    allfiles = set().union(*(f for _, f in packs))
+    res = {}
+    for kind in RAW_KINDS:
+        seen = {}; rows = []
+        for label, files in packs:
+            hit = files.get(f'MEDIA/{kind}.RAW')
+            if not hit or not hit[2]: continue
+            for e in raw_read(kind, pak_get(hit[0], hit[1])):
+                k = raw_key(kind, e)
+                if k in seen: st = f'dup of {seen[k]}'
+                elif kind == 'UNITDATA' and e['file'].upper().replace('\\', '/') not in allfiles: st = 'no DAT'
+                else: st = 'ok'; seen[k] = label
+                rows.append((label, e, st))
+        res[kind] = rows
+        if out_dir:
+            os.makedirs(out_dir, exist_ok=True)
+            open(os.path.join(out_dir, kind + '.RAW'), 'wb').write(raw_write(kind, [e for _, e, st in rows if st == 'ok']))
+    return res
+
+def raw_selftest(romfs):
+    """round trip of every RAW in the base packs and the mods' RAW parser against the game's own files"""
+    pd = os.path.join(romfs, 'PAKS'); bad = 0
+    for f in sorted(os.listdir(pd)):
+        if not f.upper().endswith('.PAK'): continue
+        _, files = _pack_files(os.path.join(pd, f))
+        for kind in RAW_KINDS:
+            hit = files.get(f'MEDIA/{kind}.RAW')
+            if not hit: continue
+            b = pak_get(hit[0], hit[1]); ents = raw_read(kind, b); same = raw_write(kind, ents) == b; bad += not same
+            print(f'{f} {kind}.RAW: {len(ents)} entries, {len(b)} bytes, round trip', 'ok' if same else 'MISMATCH')
+    return bad == 0
+
 # ---------------------------------------------------------------- selftest against the game's own data
 
 def selftest(romfs, per_kind=40):
@@ -354,6 +474,21 @@ def main(a):
             if typ == 7 or not size: continue
             t = os.path.join(a[2], (d + n).replace('\\', '/')); os.makedirs(os.path.dirname(t), exist_ok=True)
             open(t, 'wb').write(pak_get(pak, off))
+    elif len(a) >= 2 and a[0] == 'rawsim':
+        if '--selftest' in a: sys.exit(0 if raw_selftest(a[1]) else 1)
+        out = a[a.index('--out') + 1] if '--out' in a else None
+        mods = [m for i, m in enumerate(a[2:], 2) if not m.startswith('--') and a[i - 1] != '--out']
+        res = raw_sim(a[1], mods, out); import collections
+        for kind, rows in res.items():
+            if not rows: continue
+            by = collections.OrderedDict()
+            for label, e, st in rows: by.setdefault(label, collections.Counter())[st.split(' of ')[0]] += 1
+            print(f'{kind}.RAW: ' + '; '.join(f'{l} ' + ', '.join(f'{k} {v}' for k, v in c.items()) for l, c in by.items()))
+            for label, e, st in rows:
+                if label.endswith('.PAK') and st == 'ok': continue
+                if '-v' in a or st != 'ok':
+                    print(f'  [{label}] {st:<22} {e.get("guid", "")!s:>20} {e.get("name", "")} {e["file"]}' +
+                          (f' ({UNIT_SECTIONS[e["section"]]})' if 'section' in e else ''))
     elif len(a) >= 2 and a[0] == 'selftest':
         sys.exit(0 if selftest(a[1]) else 1)
     else:

@@ -77,14 +77,19 @@ final class Tl2Touch {
     private final android.graphics.Bitmap[] iconOf = new android.graphics.Bitmap[16];
     private final int[] iconState = new int[16];
     private int iconSerial = -2; private long iconPoll; private boolean icons = true;
-    private final android.graphics.Path clip = new android.graphics.Path(); private final RectF iconDst = new RectF();
+    private final RectF iconDst = new RectF(), iconSrc = new RectF(0, 0, ICON, ICON);
+    private final android.graphics.BitmapShader[] iconSh = new android.graphics.BitmapShader[16];
+    private final android.graphics.Matrix iconM = new android.graphics.Matrix();
+    private final Paint iconPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
     private static int codeOf(int key) {
         switch (key) { case K_A: return 1; case K_B: return 3; case K_X: return 2; case K_Y: return 0; case K_R: return 8; case K_ZR: return 9; case K_L: return 10; case K_ZL: return 11; default: return -1; }
     }
-    private void pollIcons() {
-        long t = now(); if (!icons || t < iconPoll) return; iconPoll = t + 500;
-        int s; try { s = nativeTl2IconSerial(); } catch (UnsatisfiedLinkError e) { icons = false; return; }
-        if (s < 0 || s == iconSerial) return;
+    // the icon serial is polled twice a second on its own timer; a redraw only when the game's icons changed
+    private final Runnable iconTick = new Runnable() { public void run() { if (!icons || editMode) return; if (pollIcons()) view.invalidate(); view.postDelayed(this, 500); } };
+    private boolean pollIcons() {
+        long t = now(); if (!icons || t < iconPoll) return false; iconPoll = t + 450;
+        int s; try { s = nativeTl2IconSerial(); } catch (UnsatisfiedLinkError e) { icons = false; return false; }
+        if (s < 0 || s == iconSerial) return false;
         iconSerial = nativeTl2Icons(iconPx, iconMeta);
         java.util.Arrays.fill(iconState, 0);
         for (int i = 0; i < NSLOT; i++) {
@@ -92,7 +97,10 @@ final class Tl2Touch {
             if (code < 0 || code >= 16) continue;
             iconState[code] = st;
             iconOf[code] = st == 1 ? android.graphics.Bitmap.createBitmap(iconPx, i * ICON * ICON, ICON, ICON, ICON, android.graphics.Bitmap.Config.ARGB_8888) : null;
+            // drawn as a shader-filled circle / rounded square: no clip path per button per frame
+            iconSh[code] = iconOf[code] == null ? null : new android.graphics.BitmapShader(iconOf[code], android.graphics.Shader.TileMode.CLAMP, android.graphics.Shader.TileMode.CLAMP);
         }
+        return true;
     }
     private static final String[] PANEL_LABELS = {"INV", "SKL", "CHR", "QST"};
     private static final int[] PANEL_TYPES = {0, 7, 9, 12};
@@ -158,6 +166,8 @@ final class Tl2Touch {
             add("ii", "II", 0, KIND_SWAP, "fan", A_BR, mx + 150 * (float) Math.cos(ia), my - 150 * (float) Math.sin(ia), 22);
             add("r3", "R3", K_R3, KIND_PLAIN, "tr", A_TR, -30, 30, 19);
             add("l3", "L3", K_L3, KIND_PLAIN, "tr", A_TR, -74, 30, 19);   // kept (not a HUD slot), next to R3 instead of the top-left row
+            // weapon swap = d-pad left: the console action table 0x230d968 binds TOGGLE_WEAPONS_BINDINGS to code 4 = BUTTON_SWITCH_DPAD_LEFT
+            add("swap", "⇄", K_LEFT, KIND_PLAIN, "tr", A_TR, -118, 30, 19);
             add("gear", "⚙", 0, KIND_GEAR, "top", A_TOP, 0, 30, 20);
             // bottom centre: only "-" and "+" (the owner: the d-pad arrows are not needed with menu taps always on)
             add("minus", "-", K_MINUS, KIND_PLAIN, "belt", A_BELT, -0.7f, 0, 20); add("plus", "+", K_PLUS, KIND_PLAIN, "belt", A_BELT, 0.7f, 0, 20);
@@ -384,8 +394,22 @@ final class Tl2Touch {
             sLx = lx; sLy = ly; sRx = rx; sRy = ry; axesSent = true;
             DmActivity.nativePadAxes(D3PadView.PAD_DEVICE, lx, ly, rx, ry, 0, 0, 0, 0);
         }
-        if (timed || !fingers.isEmpty()) view.postDelayed(tick, 16);
-        view.invalidate();
+        // a held finger alone changes nothing between touch events: 16 ms only while something is timed, else a slow safety tick
+        if (timed) view.postDelayed(tick, 16); else if (!fingers.isEmpty()) view.postDelayed(tick, 250);
+        int sig = shownSig();   // redraw (the whole window is composed again) only when what is drawn changed
+        if (sig != drawnSig) { drawnSig = sig; view.invalidate(); }
+    }
+    // What draw() shows of the fingers: the held buttons, set II, the stick knob, the zoom knob and the walk rings
+    private int drawnSig;
+    private int shownSig() {
+        int s = setII ? 1 : 0;
+        for (Map.Entry<Integer, Finger> en : fingers.entrySet()) {
+            Finger f = en.getValue(); int id = en.getKey(), h = 0;
+            if (f.target >= 0 && !f.cancelled) h = 31 * h + f.target + 7;
+            if (id == move.ptr || id == zoomPtr || (f.target == T_WORLD && f.walking)) h = 31 * (31 * (31 * h + Math.round(f.x)) + Math.round(f.y)) + id + 1;
+            s += h * 0x9e3779b1;
+        }
+        return s;
     }
     private void worldTap(float x, float y) {
         if (tapMode == TAP_OFF) return;
@@ -630,7 +654,8 @@ final class Tl2Touch {
     void draw(Canvas c) {
         layout();
         pollIcons();
-        if (icons && !editMode) view.postInvalidateDelayed(500);   // keep polling the icon serial while nothing else redraws
+        if (icons && !editMode) { view.removeCallbacks(iconTick); view.postDelayed(iconTick, 500); }
+        drawnSig = shownSig();
         if (editMode) c.drawColor(0x50000000);
         if (!controllerMode) {
             drawStick(c, move); drawZoom(c);
@@ -690,12 +715,11 @@ final class Tl2Touch {
         android.graphics.Bitmap ic = code >= 0 ? iconOf[code] : null;
         boolean empty = code >= 0 && iconState[code] == 2;
         if (ic != null) {   // the game's own icon inside the button, the button letter as a small badge
-            float ir = b.r * 0.86f; clip.reset();
-            if (b.square) { cell.set(b.x - ir, b.y - ir, b.x + ir, b.y + ir); clip.addRoundRect(cell, 6 * dp, 6 * dp, android.graphics.Path.Direction.CW); }
-            else clip.addCircle(b.x, b.y, ir, android.graphics.Path.Direction.CW);
+            float ir = b.r * 0.86f;
             iconDst.set(b.x - ir, b.y - ir, b.x + ir, b.y + ir);
-            c.save(); c.clipPath(clip); fill.setColor(0xffffffff); fill.setAlpha(on ? 0xff : Math.round(0xff * Math.max(kk, 0.85f)));   // the icon stays readable at low overlay opacity
-            c.drawBitmap(ic, null, iconDst, fill); c.restore();
+            iconM.setRectToRect(iconSrc, iconDst, android.graphics.Matrix.ScaleToFit.FILL); iconSh[code].setLocalMatrix(iconM);
+            iconPaint.setShader(iconSh[code]); iconPaint.setAlpha(on ? 0xff : Math.round(0xff * Math.max(kk, 0.85f)));   // the icon stays readable at low overlay opacity
+            if (b.square) c.drawRoundRect(iconDst, 6 * dp, 6 * dp, iconPaint); else c.drawCircle(b.x, b.y, ir, iconPaint);
             float bs = Math.max(9 * dp, 0.32f * b.r); text.setTextSize(bs); text.setColor(0xffffffff); text.setAlpha(Math.round(0xe0 * kk));
             float bx = b.x + b.r * 0.55f, by = b.y + b.r * 0.62f;
             fill.setColor(0xa0000000); c.drawCircle(bx, by - bs * 0.35f, bs * 0.85f, fill);

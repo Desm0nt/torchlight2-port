@@ -81,6 +81,8 @@ typedef struct thr {
     const uint32_t *whs; int whn;   // WaitSynchronization's handle array while waiting there: a signal wakes only waiters holding the object
     uint64_t nyield, nbackoff, yrun_svc, yrun_t0, yrun_sig, yrun_sig2;   // yields, back-off sleeps, current run of yields (thr_yield)
     uint64_t nspin, srun_svc, srun_t0, spin_ret;   // spin-wait passes and the current spin wait (dm_spin_wait)
+    uint64_t prun_svc, prun_t0, prun_ns, prun_ret;   // current run of idle timed polls (poll_sleep_ns)
+    uint64_t ss_n[5], ss_host, ss_t0, ss_last, ss_chain[4];   // DM_SLEEPSTAT: SleepThread calls by length, host time in them, the last one
 } thr_t;
 static thr_t *g_all;
 
@@ -682,8 +684,39 @@ static uint64_t yield_backoff_ns(uint64_t run_ns) {
     uint64_t s = run_ns / 8; if (s < 10000) s = 10000;
     return s < (uint64_t)cap ? s : (uint64_t)cap;
 }
+// [TL2] Idle job workers: the game's worker threads poll their queues with a fixed short SleepThread (three with 10 us, two with
+// 50 us, one with 100 us: main+0x1948fd0, 0x6df23c, 0x6f7188), 60 thousand host wake-ups a second together, about 90 % of a
+// core in the kernel. A thread other than the main one that has polled idle for over 2 ms sleeps an eighth of its idle run
+// per poll, up to DM_POLL_BACKOFF us (TL2 1000, other games 0 = off); the run ends when it does anything between two sleeps.
+static int64_t poll_cap_ns(void) {
+    static int64_t cap = -1;
+    if (cap < 0) { const char *e = getenv("DM_POLL_BACKOFF");
+#ifdef DM_GAME_TL2
+        cap = 1000000;
+#else
+        cap = 0;
+#endif
+        if (e && *e) cap = atoll(e) * 1000;
+        if (cap) LOG("[perf] idle poll back-off: worker threads polling with a short sleep back off to %lld us (DM_POLL_BACKOFF)", (long long)(cap / 1000)); }
+    return cap;
+}
+// The length a timed poll sleep of ns really sleeps (ns itself when the thread is not in an idle run)
+static uint64_t poll_sleep_ns(thr_t *me, uint64_t ns) {
+    int64_t cap = poll_cap_ns();
+    if (!cap || !me || me->handle == 0x1001 || ns >= 1000000 || ns >= (uint64_t)cap) return ns;
+    uint64_t now = now_ns();
+    if (me->prun_svc + 1 != me->nsvc || me->prun_ns != ns || now - me->prun_ret > 20000) me->prun_t0 = now;   // another SVC, another length or 20 us of work: a new run
+    me->prun_svc = me->nsvc; me->prun_ns = ns;
+    uint64_t run = now - me->prun_t0, s = run < 2000000 ? 0 : run / 8;
+    if (s > (uint64_t)cap) s = (uint64_t)cap;
+    if (s > ns) { me->nbackoff++; return s; }
+    return ns;
+}
 static void yield_for(thr_t *me, uint64_t run_ns) {
     uint64_t bo = yield_backoff_ns(run_ns);
+    if (bo && me->handle != 0x1001 && poll_cap_ns() > 250000) {   // workers: the same longer cap as their timed polls
+        uint64_t s = run_ns / 8, cap = (uint64_t)poll_cap_ns(); if (s > bo) bo = s < cap ? s : cap;
+    }
     if (bo) { me->nbackoff++; me->sleeping = 1; struct timespec ts = {0, (long)bo}; nanosleep(&ts, 0); me->sleeping = 0; }
     else sched_yield();
 }
@@ -695,8 +728,11 @@ static void thr_yield(thr_t *me, const uint64_t *regs) {
     uint64_t y0 = now_ns(), sig = 0xcbf29ce484222325ull;
     for (int i = 19; i <= 28; i++) sig = (sig ^ regs[i]) * 0x100000001b3ull;
     int moved = me->yrun_svc + 1 == me->nsvc && me->yrun_sig != sig && me->yrun_sig2 != sig;
-    me->nyield++; if (me->yrun_svc + 1 != me->nsvc || moved) me->yrun_t0 = y0; me->yrun_svc = me->nsvc; me->yrun_sig2 = me->yrun_sig; me->yrun_sig = sig;
+    // with the worker poll back-off: 20 us of guest work since the last yield also ends the run (a job done without any SVC)
+    int worked = me->handle != 0x1001 && poll_cap_ns() && y0 - me->prun_ret > 20000;
+    me->nyield++; if (me->yrun_svc + 1 != me->nsvc || moved || worked) me->yrun_t0 = y0; me->yrun_svc = me->nsvc; me->yrun_sig2 = me->yrun_sig; me->yrun_sig = sig;
     if (!moved) yield_for(me, y0 - me->yrun_t0);
+    me->prun_ret = now_ns();
     if (me->handle == 0x1001) { g_main_yield_ns += now_ns() - y0; g_main_yield_n++; }
 }
 // Spin waits (the rewriter's spin gate, when patch_nso.py emits one): a guest loop polling memory with no SVC. Polls on for its
@@ -734,6 +770,36 @@ void dm_guest_sleep_ns(int64_t ns) {
     thr_t *me = pthread_getspecific(g_keythr); if (me) me->sleeping = 1;
     sleep_precise(now_ns() + (uint64_t)ns);
     if (me) me->sleeping = 0;
+}
+// DM_SLEEPSTAT=1: every 5 s, for each guest thread with over 500 SleepThread calls in that time: calls per second by asked length
+// (yield 0/-1/-2, under 20 us, under 200 us, under 2 ms, longer), the host time spent in them, the last asked length and its
+// callers (module+offset up the frame chain). Finds poll-and-sleep loops (idle job workers) that cost host CPU
+static void sleep_stat(thr_t *me, int64_t ns, const uint64_t *regs, uint64_t host_ns) {
+    static int on = -1; if (on < 0) { const char *e = getenv("DM_SLEEPSTAT"); on = e && atoi(e); }
+    if (!on || !me) return;
+    uint64_t now = now_ns(); if (!me->ss_t0) me->ss_t0 = now;
+    me->ss_n[ns <= 0 ? 0 : ns < 20000 ? 1 : ns < 200000 ? 2 : ns < 2000000 ? 3 : 4]++; me->ss_host += host_ns; me->ss_last = (uint64_t)ns;
+    uint64_t tot = me->ss_n[0] + me->ss_n[1] + me->ss_n[2] + me->ss_n[3] + me->ss_n[4];
+    if ((tot & 255) == 0) {   // now and then: the callers of this one
+        uint64_t fp = regs[29]; me->ss_chain[0] = regs[30];
+        for (int i = 1; i < 4; i++) {
+            me->ss_chain[i] = 0;
+            if (!fp || (fp & 15) || !module_of((void *)me->ss_chain[i - 1])) break;
+            uint64_t nfp = ((uint64_t *)fp)[0]; me->ss_chain[i] = ((uint64_t *)fp)[1];
+            if (nfp <= fp || nfp - fp > 0x10000) fp = 0; else fp = nfp;
+        }
+    }
+    if (now - me->ss_t0 < 5000000000ull) return;
+    double sec = (now - me->ss_t0) / 1e9;
+    if (tot > 500) {
+        char ch[200]; int o = 0; ch[0] = 0;
+        for (int i = 0; i < 4 && me->ss_chain[i]; i++) { module_t *m = module_of((void *)me->ss_chain[i]);
+            o += snprintf(ch + o, sizeof ch - o, " %s+0x%llx", m ? m->name : "?", (unsigned long long)(m ? me->ss_chain[i] - (uint64_t)m->base : me->ss_chain[i])); }
+        LOG("[sleepstat] tid %d handle 0x%x: per s yield %.0f <20us %.0f <200us %.0f <2ms %.0f longer %.0f; host time in them %.1f%%, back-offs %llu; last asked %lld ns from%s",
+            (int)gettid(), me->handle, me->ss_n[0] / sec, me->ss_n[1] / sec, me->ss_n[2] / sec, me->ss_n[3] / sec, me->ss_n[4] / sec, me->ss_host / 1e7 / sec,
+            (unsigned long long)me->nbackoff, (long long)me->ss_last, ch);
+    }
+    memset(me->ss_n, 0, sizeof me->ss_n); me->ss_host = 0; me->ss_t0 = now;
 }
 static _Atomic uint64_t g_preempt_n, g_preempt_ns;   // same-core handoffs: count and total wait
 void dm_handoff_stats(uint64_t *n, uint64_t *ns) { *n = g_preempt_n; *ns = g_preempt_ns; }
@@ -791,8 +857,10 @@ static int svc_thread_impl(int num, uint64_t *regs) {
             thr_t *me = pthread_getspecific(g_keythr);
             uint64_t t0 = g_flag.bootprof ? now_ns() : 0;
             if ((ns > 0 || ns == -2) && me && me->nhand) { pthread_mutex_lock(&G); hand_leave(me); pthread_mutex_unlock(&G); }
-            if ((ns > 0 && dm_detclock_enabled()) || ns >= 20000) dm_guest_sleep_ns(ns);
-            else thr_yield(me, regs);   // yields, and sleeps under 20 us (sleep_precise would return at once): back-off path
+            uint64_t s0 = now_ns();
+            if ((ns > 0 && dm_detclock_enabled()) || ns >= 20000) { dm_guest_sleep_ns(dm_detclock_enabled() ? ns : (int64_t)poll_sleep_ns(me, (uint64_t)ns)); if (me) me->prun_ret = now_ns(); }
+            else thr_yield(me, regs);     // yields, and sleeps under 20 us (sleep_precise would return at once): back-off path
+            sleep_stat(me, ns, regs, now_ns() - s0);
             if (g_flag.bootprof) { uint64_t d = now_ns() - t0; dm_prof_add(PROF_SLEEP, d, 0); if (me && me->handle == 0x1001) dm_prof_add(PROF_MAIN_WAIT, d, 0); }
             return 1;
         }
