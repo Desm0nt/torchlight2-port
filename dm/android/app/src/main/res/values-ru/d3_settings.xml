@@ -10,7 +10,7 @@
     <string name="d3_ui_lang">Язык этого меню</string>
     <string name="d3_system">Как в системе</string>
     <string name="d3_game_lang">Язык игры</string>
-    <string name="d3_game_lang_note">Языкам, кроме английского, нужен DLC-пакет языка в Download/Torchlight2Mobile/aoc/&lt;индекс&gt;; без него игра остаётся на английском.</string>
+    <string name="d3_game_lang_note">Все языки игры встроены (языковые пакеты не нужны); смена применяется при следующем запуске игры.</string>
     <string name="d3_mode">Разрешение игры (режим Switch)</string>
     <string name="d3_mode_docked">В доке: %1$s</string>
     <string name="d3_mode_handheld">В руках: %1$s (легче для GPU)</string>
