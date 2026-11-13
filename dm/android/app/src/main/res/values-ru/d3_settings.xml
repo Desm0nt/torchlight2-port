@@ -99,4 +99,6 @@
     <string name="tl2_mods_bad">не читается как .MOD: %s</string>
     <string name="tl2_mods_preparing">Подготовка модов (%1$d из %2$d)…\n%3$s</string>
     <string name="tl2_mods_failed">Пропущены моды (не удалось преобразовать): %s</string>
+    <string name="d3_mp_lan">Локальная беспроводная игра по Wi-Fi</string>
+    <string name="tl2_mp_lan_note">Локальная сетевая игра работает между телефонами в одной сети Wi-Fi или на одной точке доступа. Пока не создана или не ищется локальная игра, ничего не открывается.</string>
 </resources>

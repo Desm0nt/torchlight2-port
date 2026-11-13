@@ -52,6 +52,7 @@ final class Tl2Gear {
         l.add(note(R.string.d3_fps_note));
         if (a.drivers() != null) { l.add(GearPages.driver(a.drivers())); l.add(note(R.string.d3_driver_note)); }
         l.add(GearPages.rumble());
+        l.add(localPlay());
         l.add(GearPages.fpsCounter());
         l.add(new Layout());
         l.add(GearPages.padControls());
@@ -59,6 +60,21 @@ final class Tl2Gear {
         l.add(TL2 ? new TouchRows() : new D3Touch());
         l.add(GearPages.gearButton());
         return l;
+    }
+
+    // ---- [mp] local wireless play over the LAN (hle_ldn.c; pref "mp_lan", on by default -> DM_LDN): the game's own local multiplayer (Pia over
+    // nn::ldn) between phones on one Wi-Fi / hotspot. No couch co-op row: TL2 on the Switch supports {Handheld, No1} only (main 0x13e9fc).
+    // (frontend-common GearPages.localPlay is the same section with the shared texts; this one uses the port's resources until the gear texts sync.)
+    static GearSettings.Section localPlay() {
+        return new GearSettings.Section() {
+            CheckBox lan;
+            public void build(GearSettings g, LinearLayout box) {
+                lan = g.check(box, g.when(g.str(R.string.d3_mp_lan), false), g.gamePrefs().getBoolean("mp_lan", true));
+                g.note(box, g.str(R.string.tl2_mp_lan_note));
+            }
+            public void save(GearSettings g, SharedPreferences.Editor game, SharedPreferences.Editor pad) { game.putBoolean("mp_lan", lan.isChecked()); }
+            public void env(GearSettings g) throws ErrnoException { Os.setenv("DM_LDN", g.gamePrefs().getBoolean("mp_lan", true) ? "1" : "0", true); }
+        };
     }
 
     // ---- a row-less note under the section before it

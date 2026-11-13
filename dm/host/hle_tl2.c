@@ -51,29 +51,13 @@ HLE_FORCE("_ZN2nn2ec30ShowShopApplicationInformationENS_13ApplicationIdE", "[TL2
 }
 
 // ---- the rest of TL2's imports that nxnative (MIT, https://github.com/seedds/nxnative: dm/host/hle_offline.c, hle_audio.c, hle_account.c)
-// serves and this tree did not: TL2's LAN co-op (ldn past Initialize, which hle_d3.c fails), nifm's SDK 8 overload, the socket overloads the
+// serves and this tree did not (TL2's LAN co-op - ldn and the socket overloads Pia uses - is hle_ldn.c / hle_net.c now): nifm's SDK 8 overload, the socket overloads the
 // DOOM set lacks (hle_net.c has the int / SockAddr ones), the AudioIn getters (microphone, no device) and AsyncContext's move
-HLE_FORCE("_ZN2nn3ldn22AttachStateChangeEventEPNS_2os15SystemEventTypeE", "[TL2] local wireless state event: bound, never fires", void, h_tl2_ldnAttach, void *ev) { hle_bind_system_event(ev, 0); }
-HLE_FORCE("_ZN2nn3ldn11ScanPrivateEPNS0_11NetworkInfoEPiiRKNS0_10ScanFilterEi", "[TL2] local wireless scan (cut): 0 found", Result, h_tl2_ldnScan,
-          void *out, int *n, int max, const void *f, int ch) { (void)out; (void)max; (void)f; (void)ch; if (n) *n = 0; return RES_FAIL; }
-HLE_FORCE("_ZN2nn3ldn20CreateNetworkPrivateERKNS0_13NetworkConfigERKNS0_14SecurityConfigERKNS0_17SecurityParameterERKNS0_10UserConfigEiPKNS0_12AddressEntryE", "[TL2] local wireless (cut)",
-          Result, h_tl2_ldnCreate, const void *a, const void *b, const void *c, const void *d, int n, const void *e) { (void)a; (void)b; (void)c; (void)d; (void)n; (void)e; return RES_FAIL; }
-HLE_FORCE("_ZN2nn3ldn14ConnectPrivateERKNS0_13NetworkConfigERKNS0_14SecurityConfigERKNS0_17SecurityParameterERKNS0_10UserConfigEiNS0_13ConnectOptionE", "[TL2] local wireless (cut)",
-          Result, h_tl2_ldnConnect, const void *a, const void *b, const void *c, const void *d, int v, int o) { (void)a; (void)b; (void)c; (void)d; (void)v; (void)o; return RES_FAIL; }
-HLE_FORCE("_ZN2nn3ldn14GetNetworkInfoEPNS0_11NetworkInfoE", "[TL2] local wireless (cut)", Result, h_tl2_ldnNetInfo, void *o) { (void)o; return RES_FAIL; }
-HLE_FORCE("_ZN2nn3ldn20GetSecurityParameterEPNS0_17SecurityParameterE", "[TL2] local wireless (cut)", Result, h_tl2_ldnSecPrm, void *o) { (void)o; return RES_FAIL; }
-HLE_FORCE("_ZN2nn3ldn19GetDisconnectReasonEv", "[TL2] local wireless (cut): 0", int, h_tl2_ldnDisc, void) { return 0; }
-HLE_FORCE("_ZN2nn3ldn22SetStationAcceptPolicyENS0_12AcceptPolicyE", "[TL2] local wireless (cut)", Result, h_tl2_ldnPolicy, int p) { (void)p; return RES_FAIL; }
-HLE_FORCE("_ZN2nn3ldn6RejectENS0_11Ipv4AddressE", "[TL2] local wireless (cut)", Result, h_tl2_ldnReject, uint32_t a) { (void)a; return RES_FAIL; }
-HLE_FORCE("_ZN2nn3ldn16GetNetworkConfigEPNS0_13NetworkConfigE", "[TL2] local wireless (cut)", Result, h_tl2_ldnNetCfg, void *o) { (void)o; return RES_FAIL; }
 HLE_FORCE("_ZN2nn4nifm22GetCurrentIpConfigInfoEPNS_6socket6InAddrES3_S3_S3_S3_", "[TL2] offline: no IP configuration", Result, h_tl2_nifmIpCfg,
           uint32_t *a, uint32_t *b, uint32_t *c, uint32_t *d, uint32_t *e) {
     uint32_t *p[5] = {a, b, c, d, e}; for (int i = 0; i < 5; i++) if (p[i]) *p[i] = 0; return RES_FAIL;
 }
 HLE_FORCE("_ZN2nn6socket11GAIStrErrorENS0_7AiErrnoE", "[TL2] resolver error text", const char *, h_tl2_GaiStr, int e) { (void)e; return "network unavailable"; }
-HLE_FORCE("_ZN2nn6socket6SendToEiPKvmNS0_7MsgFlagEPKNS0_8SockAddrEj", "[TL2] offline (cut)", long, h_tl2_SendTo,
-          int s, const void *b, unsigned long n, int f, const void *a, unsigned al) { (void)s; (void)b; (void)n; (void)f; (void)a; (void)al; return -1; }
-HLE_FORCE("_ZN2nn6socket8ShutdownEiNS0_14ShutdownMethodE", "[TL2] offline (cut)", int, h_tl2_Shutdown, int s, int h) { (void)s; (void)h; return -1; }
 HLE_FORCE("_ZN2nn5audio20GetAudioInSampleRateEPKNS0_7AudioInE", "[TL2] recording sample rate", int, h_tl2_aiRate, const void *g) { (void)g; return 48000; }
 HLE_FORCE("_ZN2nn5audio22GetAudioInChannelCountEPKNS0_7AudioInE", "[TL2] recording channel count", int, h_tl2_aiCh, const void *g) { (void)g; return 2; }
 HLE_FORCE("_ZN2nn5audio22GetAudioInSampleFormatEPKNS0_7AudioInE", "[TL2] recording sample format: PCM16", int, h_tl2_aiFmt, const void *g) { (void)g; return 2; }

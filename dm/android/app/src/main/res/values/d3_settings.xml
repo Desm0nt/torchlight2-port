@@ -101,4 +101,6 @@
     <string name="tl2_mods_bad">not a readable .MOD: %s</string>
     <string name="tl2_mods_preparing">Preparing mods (%1$d of %2$d)…\n%3$s</string>
     <string name="tl2_mods_failed">Mods skipped (could not be converted): %s</string>
+    <string name="d3_mp_lan">Local wireless play over Wi-Fi</string>
+    <string name="tl2_mp_lan_note">Local multiplayer works between phones on the same Wi-Fi or hotspot. Nothing is opened until you host or look for a local game.</string>
 </resources>

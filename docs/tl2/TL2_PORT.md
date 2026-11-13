@@ -512,3 +512,21 @@ zero-copy uncached на Mali — перф, не совместимость (на
 правило двух смертей для graphics/compute + списки по драйверу; нет заголовка версии (`.stale`) и ключей по SPIR-V.
 **Проверить на реальном Mali:** строки `NVN DM_GFX_VTX_RETYPE=1`, `NVN vertex input retype … refused` (должно не быть), `[selftest] …`,
 `NVN BC decode: self-test … -> gpu`, отсутствие `NVN unbound vertex buffer`; на PowerVR — `NVN sampler anisotropy 4 -> 1`.
+
+## Локальная сетевая игра по LAN (Pia поверх nn::ldn) — 13.11.2026 (ветка `wt/mp`; собрано, на телефонах не проверено)
+
+port-kb HLE-34, модуль `port-common/modules/ldn-lan` (общий с D3). TL2 на Switch — NintendoWare **Pia** (`nn::pia::local::Ldn*`, строки
+`LdnBackgroundProcessJob::…`, `LdnHostMigrationJob::…`): ldn Scan/Connect/CreateNetwork (вызовы в main `0x1bce904`, `0x1bced70`, `0x1bce1ac`),
+*Private-формы для миграции хоста (`0x1bcf9a4`, `0x1bcfd84`, `0x1bcf61c`), AttachStateChangeEvent `0x1bcacb8`, MakeBroadcastAddress `0x1bcd5e8`
+(«Pia Send Broadcast»). Сокеты Pia (`0x1bc0aa4`..`0x1bc1308`) — типизированные перегрузки `Socket(Family…)`, `Bind(SockAddr)`,
+`SetSockOpt(Level, Option)` (SO_REUSEADDR, SO_BROADCAST, IPPROTO_IP 4 = IP_TTL), `RecvFrom(…, MSG_DONTWAIT 0x80)`, `SendTo(MsgFlag…)`.
+Кооператива на одной консоли у TL2 нет (SetSupportedNpadIdType из двух id, `0x13e9fc`).
+
+Сделано: те же `hle_ldn_core.{h,c}`, `hle_ldn.c`, `hle_net.c`, `hle_d3.c`, что в D3; из `hle_tl2.c` убраны свои ldn-заглушки и
+`SendTo(MsgFlag)` / `Shutdown(ShutdownMethod)` (теперь в `hle_net.c`, реальные во время локальной игры). ⚙ «Локальная беспроводная игра по
+Wi-Fi» (`Tl2Gear.localPlay`, pref `mp_lan`, вкл. по умолчанию → `DM_LDN`). APK `work/TL2-port-debug.apk` (worktree `tl2-wt/mp`).
+
+Проверка (два телефона в одной Wi-Fi): в меню мультиплеера TL2 — локальная игра: создать на A, найти и войти на B. Строки: `[ldn] initialized`,
+`[ldn] host: network created … local id 010090400d366000`, на B `[ldn] scan: 1 network(s) answered`, `[ldn] station: connected`, на A
+`[ldn] host: node 1 joined`, затем `[net] lan: to <ip>:<порт> allowed` (UDP Pia) и `[net] lan: bind …`. Миграция хоста —
+`[ldn] host: network created … (private: given session)` / private connect. Без локальной игры — ни одной такой строки.
