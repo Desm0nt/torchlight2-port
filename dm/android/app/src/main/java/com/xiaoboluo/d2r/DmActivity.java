@@ -136,6 +136,10 @@ public class DmActivity extends Activity implements SurfaceHolder.Callback, Disp
         // [DOOM] Android 10 (the minSdk 29 build) has no ALWAYS: SHORT_EDGES is the same in landscape
         getWindow().getAttributes().layoutInDisplayCutoutMode = android.os.Build.VERSION.SDK_INT >= 30
             ? WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS : WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+        // [D3/DOOM] APP-13 (DOOM #38, D3 #23): on API 30-34 decorFitsSystemWindows defaults to true, so the content stays inset by the
+        // cutout even with ALWAYS (a strip at the camera on MIUI 13 / Android 12); draw edge to edge and keep the window background black.
+        if (android.os.Build.VERSION.SDK_INT >= 30) getWindow().setDecorFitsSystemWindows(false);
+        getWindow().setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(android.graphics.Color.BLACK));
         view = new SurfaceView(this);
         view.getHolder().addCallback(this);
         gameFrame = new FrameLayout(this);
