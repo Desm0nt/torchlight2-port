@@ -6966,8 +6966,10 @@ extern "C" int xbg_game_initialize(const xbg_game_config *c,char *error,size_t b
       xbg_logf("NVN readback buffers the other slot reads are written by the GPU=%d (marker gfx-xview-guard)",int(xview_guard));}
      {FILE *m=fopen(((cut==std::string::npos?dir:dir.substr(0,cut))+"/gfx-upload-prologue").c_str(),"rb");upload_prologue=false;if(m){upload_prologue=fgetc(m)!='0';fclose(m);}else if(const char *e=getenv("DM_GFX_UPLOAD_PROLOGUE"))upload_prologue=atoi(e)!=0;
       xbg_logf("NVN whole uploads of images not yet used in a submission go ahead of it=%d (marker gfx-upload-prologue)",int(upload_prologue));}
-     {FILE *m=fopen(((cut==std::string::npos?dir:dir.substr(0,cut))+"/gfx-async-pipelines").c_str(),"rb");warm::async_on=false;if(m){warm::async_on=fgetc(m)!='0';fclose(m);}else if(const char *e=getenv("DM_GFX_ASYNC_PIPELINES"))warm::async_on=atoi(e)!=0;
-      xbg_logf("NVN background builds for skippable draws=%d (marker gfx-async-pipelines)",int(warm::async_on));}
+     // [TL2] default on when the GPU policy is not Adreno (issue #4: Mali-G615 frames wait 0.2-0.7 s for the driver to build
+     // pipelines met for the first time); Adreno keeps the old default (off). Marker / DM_GFX_ASYNC_PIPELINES still win.
+     {FILE *m=fopen(((cut==std::string::npos?dir:dir.substr(0,cut))+"/gfx-async-pipelines").c_str(),"rb");warm::async_on=gpu_policy!=XBG_GPU_ADRENO;const char *why="default";if(m){warm::async_on=fgetc(m)!='0';fclose(m);why="marker";}else if(const char *e=getenv("DM_GFX_ASYNC_PIPELINES")){warm::async_on=atoi(e)!=0;why="env";}
+      xbg_logf("NVN background builds for skippable draws=%d (%s; policy family %s; marker gfx-async-pipelines)",int(warm::async_on),why,xbg_gpu_family_name(gpu_policy));}
      {uint32_t n=0;vkEnumerateDeviceExtensionProperties(cfg.physical,nullptr,&n,nullptr);std::vector<VkExtensionProperties> ext(n);vkEnumerateDeviceExtensionProperties(cfg.physical,nullptr,&n,ext.data());
       std::string list;for(auto &e:ext){list+=e.extensionName;list+=' ';}
       format_feature_flags2=properties.apiVersion>=VK_API_VERSION_1_3;for(auto &e:ext)if(!strcmp(e.extensionName,VK_KHR_FORMAT_FEATURE_FLAGS_2_EXTENSION_NAME))format_feature_flags2=true;
