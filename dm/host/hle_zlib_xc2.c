@@ -9,7 +9,9 @@
 //   DM_ZLIB_VERIFY=<n> (implies FAST) the first n calls are also decoded by the SDK into a scratch buffer; the result and the output
 //                      bytes are compared ("[zlib] VERIFY ..."), and the SDK's answer is the one returned for those calls
 // Any libdeflate failure (bad data, output larger than the buffer) falls back to the SDK function, so its answer stays authoritative.
-#ifdef DM_GAME_XC2
+// [TL2 16.11] also Torchlight II: main imports the same SDK call for its PAK entries; the first inventory open spent ~10 % of ~460 ms of
+// guest CPU in the SDK's inflate. TL2 defaults to libdeflate (DM_ZLIB_FAST=0 = the SDK code); a failure still falls back to the SDK.
+#if defined(DM_GAME_XC2) || defined(DM_GAME_TL2)
 #include "dm.h"
 #include "hle.h"
 #include "../third_party/libdeflate/libdeflate.h"
@@ -35,7 +37,11 @@ static void xz_init(void) {
     g_stats = s && atoi(s) != 0;
     for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "sdk")) g_orig = (xz_fn)module_sym(&g_mod[i], XZ_SYM);
     if (!g_orig) die("[zlib] sdk has no " XZ_SYM);
+#ifdef DM_GAME_TL2
+    g_fast = (f ? atoi(f) != 0 : 1) || g_verify_n > 0;
+#else
     g_fast = (f && atoi(f) != 0) || g_verify_n > 0;
+#endif
     LOG("[zlib] nn::util::DecompressZlib: %s%s%s", g_fast ? "libdeflate" : "SDK zlib 1.2.8 (DM_ZLIB_FAST=1 for libdeflate)",
         g_verify_n > 0 ? ", verify against the SDK" : "", g_stats ? ", stats" : "");
 }
