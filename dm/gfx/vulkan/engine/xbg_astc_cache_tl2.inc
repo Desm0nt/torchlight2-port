@@ -202,10 +202,15 @@ int64_t rgba_bytes(const Image &im){int64_t n=0;for(uint32_t l=0;l<im.levels;l++
 // Read the entry's blocks into a stream buffer and copy them into the image (the prologue when `pro`). Returns the staging bytes.
 size_t upload(Image &im,const tex_t *t,bool pro){
     const XbgAcEntry &e=im.pack_e;const int fd=fds[e.pad[0]<3?e.pad[0]:0];Buffer staging=stream_buffer(e.data_bytes,nullptr,0,false);
-    uint8_t *dst=static_cast<uint8_t*>(staging.mapped);uint64_t got=0;
+    // [TL2 16.11] read and sanitize in cached host memory, then one sequential copy into the staging map: the stream arena is
+    // write-combined, and xbg_ac_sanitize reading it back block by block took ~60 % of a 130 ms inventory-open frame (19 MB, Mi 14).
+    thread_local std::vector<uint8_t> scratch;if(scratch.size()<e.data_bytes)scratch.resize(e.data_bytes);
+    uint8_t *const out=static_cast<uint8_t*>(staging.mapped);uint8_t *dst=scratch.data();uint64_t got=0;
     while(fd>=0 && got<e.data_bytes){const ssize_t r=pread(fd,dst+got,size_t(e.data_bytes-got),off_t(e.data_off+got));if(r<=0)break;got+=uint64_t(r);}
     if(got<e.data_bytes){memset(dst+got,0,size_t(e.data_bytes-got));++read_fails;static unsigned n=0;if(n++<8)xbg_logf("NVN astc cache: read of serial=%llu (%s) failed at %llu of %u bytes (errno %d): the rest is transparent black",(unsigned long long)t->serial,SRC_NAME[e.pad[0]<3?e.pad[0]:0],(unsigned long long)got,e.data_bytes,errno);}
-    zero_fixed+=xbg_ac_sanitize(dst,e.data_bytes);staging.flush();
+    zero_fixed+=xbg_ac_sanitize(dst,e.data_bytes);memcpy(out,dst,e.data_bytes);
+    if(scratch.size()>(64u<<20))std::vector<uint8_t>().swap(scratch);   // one huge texture: do not keep its scratch
+    staging.flush();
     std::vector<VkBufferImageCopy> copies;uint64_t off=0;
     for(uint32_t l=0;l<im.levels && l<e.levels;l++){VkBufferImageCopy c{};c.bufferOffset=staging.offset+off;c.imageSubresource={VK_IMAGE_ASPECT_COLOR_BIT,l,0,1};
         c.imageExtent={std::max(1u,im.width>>l),std::max(1u,im.height>>l),1};copies.push_back(c);off+=xbg_ac_level_bytes(e,l);}
