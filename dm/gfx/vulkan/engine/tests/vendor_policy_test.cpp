@@ -140,6 +140,25 @@ int main(){
      // the widened integer stand-in of a 3-component scaled format (AMD lacks the 3-component integer ones too)
      CHECK(xbg_vertex_widen(VkFormat(xbg_vertex_scaled_int(int(VK_FORMAT_R16G16B16_SSCALED))))==VK_FORMAT_R16G16B16A16_SINT);}
 
+    // [tile] render-pass policy (DM_GFX_CLEAR_FOLD / STORE_HIST / TILE_BARRIER / NOLOAD / LEAN_USAGE): Adreno and unknown GPUs keep the old behaviour.
+    CHECK(!xbg_clear_fold_default(XBG_GPU_ADRENO) && !xbg_store_hist_default(XBG_GPU_ADRENO) && !xbg_tile_barrier_default(XBG_GPU_ADRENO) && !xbg_noload_default(XBG_GPU_ADRENO) && !xbg_lean_usage_default(XBG_GPU_ADRENO));
+    CHECK(!xbg_clear_fold_default(XBG_GPU_OTHER) && !xbg_store_hist_default(XBG_GPU_OTHER) && !xbg_lean_usage_default(XBG_GPU_OTHER));
+    CHECK(xbg_clear_fold_default(XBG_GPU_MALI)==1 && xbg_store_hist_default(XBG_GPU_MALI)==1 && xbg_tile_barrier_default(XBG_GPU_MALI) && xbg_noload_default(XBG_GPU_MALI) && xbg_lean_usage_default(XBG_GPU_MALI));
+    CHECK(xbg_clear_fold_default(XBG_GPU_POWERVR)==1 && xbg_store_hist_default(XBG_GPU_POWERVR)==1 && xbg_tile_barrier_default(XBG_GPU_POWERVR) && xbg_lean_usage_default(XBG_GPU_POWERVR));
+    CHECK(xbg_clear_fold_default(XBG_GPU_XCLIPSE)==1 && !xbg_store_hist_default(XBG_GPU_XCLIPSE) && !xbg_tile_barrier_default(XBG_GPU_XCLIPSE) && !xbg_lean_usage_default(XBG_GPU_XCLIPSE));
+    CHECK(xbg_clear_fold_default(xbg_effective_family(XBG_GPU_ADRENO,xbg_sim_parse("mali")))==1);   // DM_GFX_SIM_GPU=mali on the Mi 14 takes the Mali defaults
+    CHECK(xbg_store_hist_default(xbg_effective_family(XBG_GPU_ADRENO,xbg_sim_parse("family-mali")))==1);
+    // DM_GFX_LEAN_USAGE decision (DOOM 2016 vendor_policy_test): STORAGE goes only when no certain AFBC blocker is left.
+    {const VkImageUsageFlags rt=VK_IMAGE_USAGE_SAMPLED_BIT|VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT|VK_IMAGE_USAGE_TRANSFER_SRC_BIT|VK_IMAGE_USAGE_TRANSFER_DST_BIT,st=rt|VK_IMAGE_USAGE_STORAGE_BIT;
+     CHECK(xbg_lean_usage(st,XBG_AFBC_STORAGE)==rt);
+     CHECK(xbg_lean_usage(st,XBG_AFBC_STORAGE|XBG_AFBC_WIDE|XBG_AFBC_LISTED|XBG_AFBC_MUTABLE)==rt);
+     CHECK(xbg_lean_usage(st,XBG_AFBC_STORAGE|XBG_AFBC_NOT2D)==st);
+     CHECK(xbg_lean_usage(st,XBG_AFBC_STORAGE|XBG_AFBC_MSAA)==st);
+     CHECK(xbg_lean_usage(st,XBG_AFBC_STORAGE|XBG_AFBC_BLOCK)==st);
+     CHECK(xbg_lean_usage(rt,0)==rt);
+     CHECK(xbg_afbc_blockers(VK_IMAGE_TYPE_2D,VK_SAMPLE_COUNT_1_BIT,VK_IMAGE_TILING_OPTIMAL,st,VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT,false,32,false)==(XBG_AFBC_STORAGE|XBG_AFBC_MUTABLE));
+     CHECK(xbg_afbc_blockers(VK_IMAGE_TYPE_3D,VK_SAMPLE_COUNT_4_BIT,VK_IMAGE_TILING_OPTIMAL,rt,0,false,64,false)==(XBG_AFBC_NOT2D|XBG_AFBC_MSAA|XBG_AFBC_WIDE));}
+
     if(failures){printf("%d failure(s)\n",failures);return 1;}
     printf("vendor_policy_test: all checks passed\n");return 0;
 }

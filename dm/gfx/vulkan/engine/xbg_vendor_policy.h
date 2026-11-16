@@ -142,6 +142,62 @@ inline bool xbg_ubo_dynamic_default(XbgGpuFamily f){return f!=XBG_GPU_POWERVR;}
 // but Adreno (whose pipelines stay as they were). DM_GFX_NOOUT_MASK.
 inline bool xbg_noout_mask_default(XbgGpuFamily f){return f!=XBG_GPU_ADRENO;}
 
+// [tile] Render-pass policy for tile-based GPUs (ported from the DOS2 port cfbf59d / c3dd199; docs/port-kb MALI-03, MALI-DOS2-01/02,
+// PERF-X05). On Adreno the Mi 14 runs Turnip with TU_DEBUG=sysmem, where load / store ops cost nothing: every default below is
+// off there (bit-exact as before). Tiler family as in the DOOM 2016 port: Mali (stock + PanVK) and PowerVR.
+inline bool xbg_tile_family(XbgGpuFamily f){return f==XBG_GPU_MALI || f==XBG_GPU_POWERVR;}
+// DM_GFX_CLEAR_FOLD: ClearTexture and clear-only passes become loadOp CLEAR of the next pass (Arm: vkCmdClearColorImage outside a pass
+// "very expensive", a CLEAR load op free; in-pass vkCmdClearAttachments is a per-fragment shader clear on Mali). A win on any non-Adreno
+// GPU (AMD RDNA: fast clear through the load op), so on for every known non-Adreno family; unknown GPUs keep the old path.
+inline int xbg_clear_fold_default(XbgGpuFamily f){return f==XBG_GPU_MALI || f==XBG_GPU_POWERVR || f==XBG_GPU_XCLIPSE || f==XBG_GPU_MALEOON?1:0;}
+// DM_GFX_STORE_HIST: STORE DONT_CARE for attachments nothing ever read (depth write-back 986 -> 431 MiB/s on Mali). Bandwidth only
+// matters on tilers; a wrong prediction is a frame of garbage, so tilers only.
+inline int xbg_store_hist_default(XbgGpuFamily f){return xbg_tile_family(f)?1:0;}
+// DM_GFX_TILE_BARRIER: fragment-stage-only read barriers and pass dependencies (-13 % frame on Mali). DOOM 2016 default.
+inline bool xbg_tile_barrier_default(XbgGpuFamily f){return xbg_tile_family(f);}
+// DM_GFX_NOLOAD: a pass whose first draw provably overwrites every colour pixel begins with colour loadOp DONT_CARE (first_draw_covers;
+// DOOM 2016 MALI-03, known rare false accept -> the D16 refusals are ported with it). Tilers only. The marker gfx-noload still wins.
+inline bool xbg_noload_default(XbgGpuFamily f){return xbg_tile_family(f);}
+// DM_GFX_LEAN_USAGE (DOOM 2016 xbg_lean_usage, MALI-03 AFBC): render targets are created without STORAGE usage (STORAGE disables AFBC
+// on Mali) until a shader binds one as a storage image; then that image is re-created with the full usage. Tilers only.
+inline bool xbg_lean_usage_default(XbgGpuFamily f){return xbg_tile_family(f);}
+// Why the driver would not compress an image (Arm's documented rules; one bit per reason; DOOM 2016 xbg_vendor_policy.h). The CERTAIN
+// ones hold on every Mali generation; STORAGE / MUTABLE / WIDE were relaxed on some newer ones.
+enum : uint32_t {
+    XBG_AFBC_STORAGE  =1u<<0,   // VK_IMAGE_USAGE_STORAGE_BIT
+    XBG_AFBC_MUTABLE  =1u<<1,   // MUTABLE_FORMAT without a VkImageFormatListCreateInfo
+    XBG_AFBC_LISTED   =1u<<2,   // MUTABLE_FORMAT with a format list
+    XBG_AFBC_MSAA     =1u<<3,   // samples > 1
+    XBG_AFBC_NOT2D    =1u<<4,   // 1D / 3D image
+    XBG_AFBC_BLOCK    =1u<<5,   // block-compressed format (BC / ASTC / ETC2): already compressed
+    XBG_AFBC_WIDE     =1u<<6,   // more than 32 bits per texel (Valhall <= 3rd gen documents 32 at most)
+    XBG_AFBC_LINEAR   =1u<<7,   // VK_IMAGE_TILING_LINEAR
+    XBG_AFBC_TRANSIENT=1u<<8,   // VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT
+    XBG_AFBC_ALIAS    =1u<<9,   // VK_IMAGE_CREATE_ALIAS_BIT
+};
+constexpr uint32_t XBG_AFBC_CERTAIN=XBG_AFBC_MSAA|XBG_AFBC_NOT2D|XBG_AFBC_BLOCK|XBG_AFBC_LINEAR|XBG_AFBC_TRANSIENT|XBG_AFBC_ALIAS;
+// texel_bits: bits per texel of an uncompressed format (0 unknown); block: the format is block-compressed.
+inline uint32_t xbg_afbc_blockers(VkImageType type,VkSampleCountFlagBits samples,VkImageTiling tiling,VkImageUsageFlags usage,VkImageCreateFlags flags,
+                                  bool format_list,uint32_t texel_bits,bool block){
+    uint32_t r=0;
+    if(usage&VK_IMAGE_USAGE_STORAGE_BIT)r|=XBG_AFBC_STORAGE;
+    if(flags&VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT)r|=format_list?XBG_AFBC_LISTED:XBG_AFBC_MUTABLE;
+    if(samples!=VK_SAMPLE_COUNT_1_BIT)r|=XBG_AFBC_MSAA;
+    if(type!=VK_IMAGE_TYPE_2D)r|=XBG_AFBC_NOT2D;
+    if(block)r|=XBG_AFBC_BLOCK;
+    else if(texel_bits>32)r|=XBG_AFBC_WIDE;
+    if(tiling!=VK_IMAGE_TILING_OPTIMAL)r|=XBG_AFBC_LINEAR;
+    if(usage&VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT)r|=XBG_AFBC_TRANSIENT;
+    if(flags&VK_IMAGE_CREATE_ALIAS_BIT)r|=XBG_AFBC_ALIAS;
+    return r;
+}
+// DM_GFX_LEAN_USAGE decision: the usage to create with. STORAGE goes only when it is the one thing between the image and AFBC on
+// some generation (no CERTAIN blocker; WIDE / MUTABLE are not certain on newer GPUs, so they do not keep it). Anything else as wanted.
+inline VkImageUsageFlags xbg_lean_usage(VkImageUsageFlags wanted,uint32_t blockers){
+    if(!(wanted&VK_IMAGE_USAGE_STORAGE_BIT) || (blockers&XBG_AFBC_CERTAIN))return wanted;
+    return wanted&~VkImageUsageFlags(VK_IMAGE_USAGE_STORAGE_BIT);
+}
+
 // [vtxscaled] 1 = a *_SSCALED format, 2 = a *_USCALED one, 0 = neither (vertex-only formats: integer data fetched as float).
 inline uint32_t xbg_vk_format_scaled(VkFormat f){
     switch(f){

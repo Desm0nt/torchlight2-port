@@ -550,3 +550,16 @@ port-kb PERF-D07, модуль `port-common/modules/present-thread` (из DOOM 2
 `NVN present thread mode=1 …`, `NVN present thread started tid=…`, `NVN present thread tid=… cpus X -> Y …`, `NVN PERF present_thread mode=1 handed=1.00
 jobs=1.00 busy_ms=… wait_ms=…` (wait_ms <= 0.3, full_ms 0). ABBA 90 с одной сцены (P0 `=0` / P1 `=1` / P2 `=2`): `present_cpu_ms` падает,
 `submit_cpu_ms` тот же, fps; home / back, блокировка, поворот, загрузка — без зависаний и `Game presentation failed`.
+## Тайловая политика проходов для Mali / PowerVR (16.11.2026, ветка `tl2-tile`; собрано, на устройстве не проверено)
+Issue #4 (Mali-G615, 2400×1080): GPU 15–25 мс, 6 полноэкранных проходов, отдельный clear-проход без draw 0.9 мс (`lazy_clear flushed=1.00`),
+depth всегда сохраняется. Перенесено (KB MALI-03, MALI-DOS2-01/02, PERF-X05):
+- из DOS2 `cfbf59d` + `c3dd199` (без NB): `DM_GFX_CLEAR_FOLD` (ClearTexture / clear-only проход → loadOp CLEAR следующего прохода, нужен
+  LAZY_CLEAR), `DM_GFX_STORE_HIST` (store DONT_CARE для нечитаемых ≥ `DM_GFX_STORE_HIST_FRAMES`=8 кадров; 2 = только счёт, 3 = poison),
+  `DM_GFX_TILE_BARRIER` (фрагментные барьеры чтения и зависимости проходов + WAR-страховка), отказы `first_draw_covers` из D16;
+  `xbg_store_hist.h` + `tests/store_hist_test.cpp`;
+- `DM_GFX_NOLOAD`: по умолчанию вкл. на тайлерах (маркер `gfx-noload` по-прежнему главнее);
+- из D16: `DM_GFX_LEAN_USAGE` (рендер-таргеты без STORAGE до первого storage-бинда → AFBC; `upgrade_mutable(add_usage)`).
+Умолчания: Mali / PowerVR — всё 1; Xclipse / Maleoon — только CLEAR_FOLD; Adreno и неизвестные — всё 0 (поток Vulkan как раньше).
+`DM_GFX_SIM_GPU=mali` на Mi 14 включает всё. Лог: `NVN tile pass policy (policy family …)`, `NVN proven full-overwrite … load=`,
+`NVN PERF tile … violations=N … lean dropped=… upgrades=…`, `NVN store-hist VIOLATION …`, `NVN lean usage upgrade …`.
+Проверка на Mi 14 (`SIM_GPU=mali`, затем `DM_GFX_STORE_HIST=3` — poison): меню, город, бой; искать пурпур / мусор, `violations=0`.
