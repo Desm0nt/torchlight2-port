@@ -5,6 +5,7 @@
 #include <sys/mman.h>
 #include <unistd.h>
 #include <errno.h>
+#include <fcntl.h>
 #include "../../nvn/nvn_copy_pitch.h"
 #include "../../xtrace.h"
 #include <pthread.h>
@@ -656,6 +657,16 @@ struct Chain{
     bool hit() const{return (whole.flags&VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT_EXT)!=0;}
     void account(int kind){if(!on || !valid())return;++n[kind];if(hit())++hits[kind];ns[kind]+=whole.duration;}
 };
+// [TL2] Where the time of a pipeline built inside a frame goes (16.11: 75 creates took 927 ms of wall time while the driver reported
+// ~1 ms, all cache hits). Probe samples the calling thread around vkCreateGraphicsPipelines: wall clock, the thread's own CPU time
+// (CLOCK_THREAD_CPUTIME_ID) and its run-queue wait (/proc/thread-self/schedstat field 2: runnable but not on a core). The rest of the
+// wall time is sleep: waiting for a lock (driver / cache) or for I/O. Logged as NVN PERF pipelines_wait.
+std::atomic<uint64_t> w_n{0},w_wall{0},w_cpu{0},w_runq{0},w_drv{0},w_slow{0},w_slow_wall{0},w_slow_cpu{0},w_slow_runq{0};
+inline uint64_t thread_cpu_ns(){timespec t{};clock_gettime(CLOCK_THREAD_CPUTIME_ID,&t);return uint64_t(t.tv_sec)*1000000000ull+uint64_t(t.tv_nsec);}
+inline uint64_t thread_runq_ns(){FILE *f=fopen("/proc/thread-self/schedstat","r");if(!f)return 0;unsigned long long a=0,b=0;int got=fscanf(f,"%llu %llu",&a,&b);fclose(f);return got==2?b:0;}
+struct Probe{uint64_t wall0,cpu0,runq0;Probe():wall0(timing_clock()),cpu0(thread_cpu_ns()),runq0(thread_runq_ns()){}
+    void done(const Chain &c){const uint64_t wall=timing_clock()-wall0,cpu=thread_cpu_ns()-cpu0,rq=thread_runq_ns()-runq0;++w_n;w_wall+=wall;w_cpu+=cpu;w_runq+=rq;
+        if(c.valid())w_drv+=c.whole.duration;if(wall>=4000000ull){++w_slow;w_slow_wall+=wall;w_slow_cpu+=cpu;w_slow_runq+=rq;}}};
 }
 // 长帧日志的读数（nvn_vk.c 把它们接到 hle_nvn.c 的 mtl_create_* / mtl_pkg_stats / mtl_upload_* / mtl_gpu_ms）：自启动起的累计，图形线程写、
 // 游戏线程读。只算帧里同步做的：管线现建（预热和后台建的不算）、着色器载入（读文件、SPIR-V 改写、建模块）、贴图整份上传（含解交错与 BC 解码）。
@@ -1277,7 +1288,12 @@ void perf_frame(){
     if(warm::async_mode==2 || pfb::on){uint64_t c[3],h[3],t[3];for(int k=0;k<3;k++){c[k]=pfb::n[k].exchange(0);h[k]=pfb::hits[k].exchange(0);t[k]=pfb::ns[k].exchange(0);}
         xbg_logf("NVN PERF pipelines_bg async_mode=%d opaque_skips=%llu sync_first=%llu sync_young=%llu feedback=%d fb_frame=%llu fb_frame_hits=%llu fb_frame_ms=%.1f fb_bg=%llu fb_bg_hits=%llu fb_bg_ms=%.1f fb_cs=%llu fb_cs_hits=%llu fb_cs_ms=%.1f",
             warm::async_mode,(unsigned long long)warm::async2_skips.exchange(0),(unsigned long long)warm::async2_first.exchange(0),(unsigned long long)warm::async2_young.exchange(0),int(pfb::on),
-            (unsigned long long)c[0],(unsigned long long)h[0],t[0]/1e6,(unsigned long long)c[1],(unsigned long long)h[1],t[1]/1e6,(unsigned long long)c[2],(unsigned long long)h[2],t[2]/1e6);}
+            (unsigned long long)c[0],(unsigned long long)h[0],t[0]/1e6,(unsigned long long)c[1],(unsigned long long)h[1],t[1]/1e6,(unsigned long long)c[2],(unsigned long long)h[2],t[2]/1e6);
+    {const uint64_t n=pfb::w_n.exchange(0);if(n){const double wall=pfb::w_wall.exchange(0)/1e6,cpu=pfb::w_cpu.exchange(0)/1e6,rq=pfb::w_runq.exchange(0)/1e6,drv=pfb::w_drv.exchange(0)/1e6;
+        const uint64_t sn=pfb::w_slow.exchange(0);const double sw=pfb::w_slow_wall.exchange(0)/1e6,sc=pfb::w_slow_cpu.exchange(0)/1e6,sr=pfb::w_slow_runq.exchange(0)/1e6;
+        // frame-built pipelines: wall = cpu (the thread ran) + runq (runnable, no core free) + sleep (lock / I/O); drv = the driver's own feedback time
+        xbg_logf("NVN PERF pipelines_wait n=%llu wall_ms=%.1f cpu_ms=%.1f runq_ms=%.1f sleep_ms=%.1f drv_ms=%.1f slow(>=4ms) n=%llu wall_ms=%.1f cpu_ms=%.1f runq_ms=%.1f sleep_ms=%.1f",
+            (unsigned long long)n,wall,cpu,rq,std::max(0.0,wall-cpu-rq),drv,(unsigned long long)sn,sw,sc,sr,std::max(0.0,sw-sc-sr));}}}
     xbg_logf("NVN PERF setcache ab=%d hits=%.1f misses=%.1f template=%.1f plain=%.1f memo_hits=%.1f memo_misses=%.1f memo_front=%.1f why=texel%.1f/simg%.1f/dm%.1f/dynbuf%.1f/store%.1f",int(ab_frame_on),set_cache_hits/f,set_cache_misses/f,template_updates/f,plain_updates/f,desc_memo_hits/f,desc_memo_misses/f,memo_front_hits/f,desc_memo_why[0]/f,desc_memo_why[1]/f,desc_memo_why[2]/f,desc_memo_why[3]/f,desc_memo_why[4]/f);desc_memo_hits=desc_memo_misses=memo_front_hits=0;for(auto &w:desc_memo_why)w=0;xbg_logf("NVN PERF keydiff shader%.0f pool%.0f ubo%.0f uaddr%.0f size%.0f vp%.0f alpha%.0f drv%.0f tex%.0f samp%.0f saddr%.0f same%.0f new%.0f len%.0f",key_diff[0]/tf,key_diff[1]/tf,key_diff[2]/tf,key_diff[3]/tf,key_diff[4]/tf,key_diff[5]/tf,key_diff[6]/tf,key_diff[7]/tf,key_diff[8]/tf,key_diff[9]/tf,key_diff[10]/tf,key_diff[11]/tf,key_diff[12]/tf,key_diff[13]/tf);for(auto &k:key_diff)k=0;   // per timed frame
     xbg_logf("NVN PERF binds_skipped_per_frame=%.1f xmemo_hits=%.1f drops=%llu bumps=%llu/%llu/%llu/%llu/%llu pinned=%zu/%zu",binds_skipped/f,xmemo_hits/f,(unsigned long long)xmemo_drops,(unsigned long long)memo_bump[0],(unsigned long long)memo_bump[1],(unsigned long long)memo_bump[2],(unsigned long long)memo_bump[3],(unsigned long long)memo_bump[4],memo_pinned[0].size(),memo_pinned[1].size());binds_skipped=0;{char top[160]="";int at=0;bool used[32]={};
     crumbs::report_perf(f);   // [DOOM] NVN PERF crumbs (DM_GFX_CRUMBS)
@@ -3503,6 +3519,25 @@ void report_pipeline_cache(){
 //   two crashed boots in a row goes to gfx-gpipe-skip (its draws and warm-up builds are skipped from then on; delete the file to
 //   retry);
 // - DM_GFX_PIPE_SERIAL (default: PowerVR, whose compiler is not thread-safe): one driver pipeline build at a time, warm-up included.
+// [TL2] Crash markers without file churn (16.11, Mi 14 SIM mali: 79 pipelines built in frames took 1374 ms, 345 ms of it in the driver;
+// the rest was pipeguard's fopen/write/close + remove of a marker on /sdcard (FUSE) around every graphics build). A marker is now one
+// file per thread and guard in internal storage (DM_MARKER_DIR = the app's files dir; DM_RUNTIME_DIR can be /sdcard), mapped once (MAP_SHARED) and rewritten in place: set() writes
+// "<text>" plus a newline, clear() makes it an empty line. A dead process leaves the page in the page cache, so the next boot still reads
+// the text; the readers already skip empty lines and remove the files. Without the map (open / mmap failed) the old fopen / remove path runs.
+namespace fmark{
+constexpr size_t SZ=1024;
+std::string dir(){const char *r=getenv("DM_MARKER_DIR");if(!r || !*r)r=getenv("DM_RUNTIME_DIR");if(r && *r)return r;std::string d=cfg.shader_directory?cfg.shader_directory:"";size_t c=d.find_last_of('/');return c==std::string::npos?d:d.substr(0,c);}
+char *map_for(const std::string &path){
+    thread_local std::vector<std::pair<std::string,char*>> maps;for(auto &e:maps)if(e.first==path)return e.second;
+    const int fd=open(path.c_str(),O_RDWR|O_CREAT|O_CLOEXEC,0600);if(fd<0)return nullptr;
+    if(ftruncate(fd,off_t(SZ))!=0){close(fd);return nullptr;}
+    void *p=mmap(nullptr,SZ,PROT_READ|PROT_WRITE,MAP_SHARED,fd,0);close(fd);if(p==MAP_FAILED)return nullptr;
+    char *c=static_cast<char*>(p);memset(c,0,SZ);c[0]='\n';maps.emplace_back(path,c);return c;}
+// text first, then the newline and terminator, the first byte last: a reader never sees a half-written line as complete
+bool set(const std::string &path,const std::string &text){char *c=map_for(path);if(!c)return false;const size_t n=std::min(text.size(),SZ-2);if(!n){c[0]='\n';return true;}
+    c[0]='\n';memcpy(c+1,text.data()+1,n-1);c[n]='\n';c[n+1]=0;c[0]=text[0];return true;}
+bool clear(const std::string &path){char *c=map_for(path);if(!c)return false;c[0]='\n';return true;}
+}
 namespace gpguard{
 bool serial=false,guard=false,careful=false,loaded=false;
 std::mutex create_mu,mu;std::unordered_set<std::string> skip,told,proven;std::atomic<int> next_slot{0};
@@ -3517,7 +3552,8 @@ void load(){   // once, at initialization (before the warm-up threads start)
     if(!guard){if(!skip.empty())xbg_logf("NVN graphics pipeline combinations skipped=%zu (gfx-gpipe-skip)",skip.size());return;}
     std::unordered_set<std::string> suspects,inflight;
     read_lines(d+"/gfx-gpipe-suspect",suspects);
-    for(int i=0;i<16;i++){const std::string m=d+"/gfx-gpipe-inflight."+std::to_string(i);if(FILE *f=fopen(m.c_str(),"rb")){std::string s=read_line(f);fclose(f);remove(m.c_str());if(!s.empty())inflight.insert(s);}}
+    {std::vector<std::string> mds{d};if(fmark::dir()!=d)mds.push_back(fmark::dir());   // [TL2] markers live in fmark::dir(); older builds wrote them to d
+     for(const std::string &md:mds)for(int i=0;i<16;i++){const std::string m=md+"/gfx-gpipe-inflight."+std::to_string(i);if(FILE *f=fopen(m.c_str(),"rb")){std::string s=read_line(f);fclose(f);remove(m.c_str());if(!s.empty())inflight.insert(s);}}}
     for(auto &s:inflight)if(suspects.count(s) && skip.insert(s).second){
         if(FILE *f=fopen((d+"/gfx-gpipe-skip").c_str(),"ab")){fprintf(f,"%s\n",s.c_str());fclose(f);}
         any=true;xbg_logf("NVN graphics pipeline %s was being built when the last two boots ended: its draws are skipped from now on (gfx-gpipe-skip)",s.c_str());}
@@ -3533,8 +3569,9 @@ void record(const std::string &combo,VkResult r){++failures;std::lock_guard<std:
 thread_local int slot=-1;
 // Marker around one build; returns whether a marker was written (end() must then be called).
 bool begin(const std::string &combo){if(!guard || combo.empty())return false;{std::lock_guard<std::mutex> l(mu);if(proven.count(combo))return false;}
-    if(slot<0)slot=next_slot.fetch_add(1)%16;if(FILE *f=fopen((dir()+"/gfx-gpipe-inflight."+std::to_string(slot)).c_str(),"wb")){fprintf(f,"%s\n",combo.c_str());fclose(f);}return true;}
-void end(const std::string &combo,bool ok){remove((dir()+"/gfx-gpipe-inflight."+std::to_string(slot)).c_str());if(ok){std::lock_guard<std::mutex> l(mu);proven.insert(combo);}}
+    if(slot<0)slot=next_slot.fetch_add(1)%16;
+    if(!fmark::set(fmark::dir()+"/gfx-gpipe-inflight."+std::to_string(slot),combo))if(FILE *f=fopen((dir()+"/gfx-gpipe-inflight."+std::to_string(slot)).c_str(),"wb")){fprintf(f,"%s\n",combo.c_str());fclose(f);}return true;}
+void end(const std::string &combo,bool ok){if(!fmark::clear(fmark::dir()+"/gfx-gpipe-inflight."+std::to_string(slot)))remove((dir()+"/gfx-gpipe-inflight."+std::to_string(slot)).c_str());if(ok){std::lock_guard<std::mutex> l(mu);proven.insert(combo);}}
 // VK_INCOMPLETE with a handle is a built pipeline (Mali); anything else non-zero is a failure.
 inline bool built(VkResult r,VkPipeline p){return r==VK_SUCCESS || (r==VK_INCOMPLETE && p!=VK_NULL_HANDLE);}
 std::string join(const std::vector<std::string> &keys){std::string s;for(auto &k:keys){if(!s.empty())s+='+';s+=k;}return s;}
@@ -3828,7 +3865,8 @@ std::string gkey(const std::string *const *keys,unsigned n){std::vector<std::str
 void gload(){
     std::lock_guard<std::mutex> l(gmu);if(gloaded)return;gloaded=true;const std::string dir=base();char line[512];
     if(FILE *f=fopen((dir+"/gfx-gpipe-skip"+drv()).c_str(),"rb")){while(fgets(line,sizeof line,f)){line[strcspn(line,"\r\n")]=0;if(*line)gskip.insert(line);}fclose(f);}
-    if(DIR *d=opendir(dir.c_str())){while(dirent *e=readdir(d)){{const std::string pre="gfx-gpipe-inflight"+drv()+"-";if(strncmp(e->d_name,pre.c_str(),pre.size()) || !isdigit((unsigned char)e->d_name[pre.size()]))continue;}const std::string path=dir+"/"+e->d_name;
+    std::vector<std::string> mds{dir};if(fmark::dir()!=dir)mds.push_back(fmark::dir());   // [TL2] markers live in fmark::dir(); older builds wrote them to dir
+    for(const std::string &md:mds)if(DIR *d=opendir(md.c_str())){while(dirent *e=readdir(d)){{const std::string pre="gfx-gpipe-inflight"+drv()+"-";if(strncmp(e->d_name,pre.c_str(),pre.size()) || !isdigit((unsigned char)e->d_name[pre.size()]))continue;}const std::string path=md+"/"+e->d_name;
 #if defined(DM_GAME_XC2) || defined(DM_GAME_D3)
         // [XC2] two boots in a row: a combination left by one dead boot becomes a suspect (gfx-gpipe-suspect); only the next boot dying on it
         // again skips it. One death is too often our own SIGSEGV thread dump (tools/run.sh) or a force-stop landing in a pipeline build.
@@ -3848,8 +3886,9 @@ void gload(){
 }
 bool gskipped(const std::string &k){gload();if(!gskip_n)return false;std::lock_guard<std::mutex> l(gmu);return gskip.count(k)!=0;}
 std::string gpath(){return base()+"/gfx-gpipe-inflight"+drv()+"-"+std::to_string(gettid());}
-void gbegin(const std::string &k){gload();if(FILE *f=fopen(gpath().c_str(),"wb")){fprintf(f,"%s\n",k.c_str());fclose(f);}}
-void gend(){remove(gpath().c_str());}
+std::string gmpath(){thread_local std::string p=fmark::dir()+"/gfx-gpipe-inflight"+drv()+"-"+std::to_string(gettid());return p;}
+void gbegin(const std::string &k){gload();if(fmark::set(gmpath(),k))return;if(FILE *f=fopen(gpath().c_str(),"wb")){fprintf(f,"%s\n",k.c_str());fclose(f);}}
+void gend(){if(!fmark::clear(gmpath()))remove(gpath().c_str());}
 #endif
 }
 void pipeline_lookup(PipelineLease &out,const XbgPipelineKey &key,bool cacheable,const VkGraphicsPipelineCreateInfo *graphics,const VkComputePipelineCreateInfo *compute,bool may_skip=false){
@@ -3875,9 +3914,9 @@ void pipeline_lookup(PipelineLease &out,const XbgPipelineKey &key,bool cacheable
         pipeguard::gend();
 #endif
             return;}
-        pfb::Chain fb;fb.attach(g,g.stageCount);
+        pfb::Chain fb;fb.attach(g,g.stageCount);pfb::Probe probe;
         VkResult made;{gpguard::Lock serial;made=vkCreateGraphicsPipelines(cfg.device,pipeline_cache,1,&g,nullptr,&out.pipeline);}
-        fb.account(pfb::FRAME);
+        probe.done(fb);fb.account(pfb::FRAME);
 #if defined(DM_GAME_ETERNAL) || defined(DM_GAME_XC2) || defined(DM_GAME_D3)
         pipeguard::gend();
 #endif

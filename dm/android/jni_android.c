@@ -351,6 +351,7 @@ JNIEXPORT jint JNICALL Java_com_xiaoboluo_d2r_DmActivity_nativeStart(JNIEnv *env
     { char aoc[1100]; snprintf(aoc, sizeof aoc, "%s/aoc", g_src); setenv("DM_AOC", aoc, 0); LOG("boot: add-on content %s", getenv("DM_AOC")); }
     // [TL2 stutter] pipeline warm-up seeds of the APK (assets warm-seed/<family>.bin), unpacked by DmActivity.unpackWarmSeeds; read by warm::start (xbg_game.cpp)
     { char ws[1100]; snprintf(ws, sizeof ws, "%s/warm-seed", g_files); setenv("DM_WARM_SEED_DIR", ws, 0); }
+    setenv("DM_MARKER_DIR", g_files, 0);   // [TL2] crash markers around pipeline builds: internal storage, not FUSE (xbg_game.cpp fmark)
     setenv("DM_RUNTIME_DIR", g_runtime, 1);   // [D3] the dm/ directory for hle_d3_ui.c (ui-dump-now trigger, ui-dump.tsv, ui-names.tsv)
 #endif
 #ifdef DM_ANDROID_DEBUG_ENV
