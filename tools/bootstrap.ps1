@@ -19,9 +19,9 @@ $Private = Join-Path $Runtime 'python'
 $PrivatePy = Join-Path $Private 'python.exe'
 $PyVersion = '3.12.10'
 $NuGetUrl = "https://api.nuget.org/v3-flatcontainer/python/$PyVersion/python.$PyVersion.nupkg"
-$Packages = @('cryptography', 'zstandard', 'lz4', 'capstone<6', 'unicorn<3')
+$Packages = @('cryptography', 'zstandard', 'lz4', 'capstone<6', 'unicorn<3', 'astc-encoder-py==0.1.12', 'numpy<2.4')
 $NeedVersion = 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)'
-$NeedAll = 'import sys; assert sys.version_info >= (3, 10); import cryptography, zstandard, lz4, capstone, unicorn'
+$NeedAll = 'import sys; assert sys.version_info >= (3, 10); import cryptography, zstandard, lz4, capstone, unicorn, astc_encoder, numpy'
 $Yes = $env:TL2_SETUP_YES -eq '1'
 
 function Say($text) { Write-Host "== $text" }

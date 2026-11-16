@@ -5,14 +5,16 @@
       Looks for the base game, the update v327680 and prod.keys in put-game-files-here/ (next to the setup scripts) and in
       the current directory, under any file names, and prepares everything.
   setup FILE_OR_FOLDER... [--work DIR] [--push [SERIAL]] [--dry-run] [--yes] [--keep-nsp] [--skip-shaders] [--skip-verify]
-        [--steps exefs,patch,verify,romfs,shaders]
+        [--skip-astc] [--steps exefs,patch,verify,romfs,shaders,astc]
       The same with explicit files (or folders to search), in any order. Packages: NSP, NSZ, XCI, XCZ, also split dumps
       (a folder of 00, 01, ... parts, or name.xc0 / name.ns0 with .xc1 ... next to it); one package may hold several titles.
       Base, update and DLC are told apart by the title id in their content meta (CNMT), not by the name.
       Then: ExeFS of the update -> offline patch (dm/tools/patch_nso.py, DM_TARGET=android) -> per-site equivalence check of the
       patch (dm/verify/equiv.py) -> RomFS (base + BKTR update) -> shader jobs from RomFS PROGRAMS/*.NVN (tools/tl2_shader_jobs.py)
       and offline translation to Vulkan (dm/gfx/tools/dmsh_vk_xc2.py) -> the phone folder
-      <work>/Torchlight2Mobile/{romfs, dm/out, dm/shaders, mods}. Every step is skipped when its output is already complete;
+      <work>/Torchlight2Mobile/{romfs, dm/out, dm/shaders, mods} -> the ASTC texture cache for phones without BC textures
+      (tools/tl2_astc_cache.py -> <work>/Torchlight2Mobile/astc/tl2-astc.pack, ~0.8 GB, 1-3 min; docs/tl2/ASTC_CACHE.md;
+      optional: --skip-astc, or the phone makes it itself). Every step is skipped when its output is already complete;
       delete an output to redo its step. --dry-run identifies the inputs, checks the tools and the free space and prints the
       plan. --yes answers yes to every question (download .NET, copy to the phone).
   setup check [FILE_OR_FOLDER...] [--work DIR]
@@ -83,7 +85,8 @@ STAGES = [('Finding and checking your game files', 'a few seconds'),
           ('Patching the program for Android', 'under a minute'),
           ('Checking the patch (per-site equivalence)', '1-5 min'),
           ('Extracting the game data (RomFS, ~1.9 GiB)', '1-5 min, longer with NSZ / XCZ'),
-          ('Translating the shaders', '1-3 min; the first run also downloads build packages from NuGet')]
+          ('Translating the shaders', '1-3 min; the first run also downloads build packages from NuGet'),
+          ('Preparing textures for phones without BC (ASTC cache, ~0.8 GB)', '1-3 min')]
 
 
 class Fail(Exception):
@@ -173,6 +176,7 @@ class Layout:
         self.work = Path(work).resolve()
         self.phone = self.work / DATA_NAME
         self.romfs, self.mods = self.phone / 'romfs', self.phone / 'mods'
+        self.astc = self.phone / 'astc'   # tl2-astc.pack: the ASTC texture cache (tools/tl2_astc_cache.py)
         self.out, self.shaders = self.phone / 'dm' / 'out', self.phone / 'dm' / 'shaders'
         self.exefs, self.nsp = self.work / 'exefs-update', self.work / 'nsp'
         self.jobs = self.work / 'shaders-jobs'
@@ -209,6 +213,14 @@ class Layout:
 
     def shaders_ok(self):
         return (self.shaders / '_vk_build.json').is_file() and self.shader_count() > 0
+
+    def astc_ok(self):
+        try:
+            import tl2_astc_cache
+            m = json.loads((self.astc / 'manifest.json').read_text(encoding='utf-8'))
+            return m.get('complete') is True and (self.astc / tl2_astc_cache.PACK).stat().st_size == m.get('pack_bytes')
+        except (OSError, ValueError, ImportError):
+            return False
 
     def complete(self):
         return self.out_ok() and self.romfs_ok() and self.shaders_ok()
@@ -672,6 +684,17 @@ def step_shaders(L, dn):
     print(f'  {L.shader_count()} shader bundles')
 
 
+def step_astc(L, jobs=None):
+    """The ASTC texture cache (tools/tl2_astc_cache.py): every BC texture of the RomFS once to ASTC, for phones without BC."""
+    import tl2_astc_cache
+    miss = tl2_astc_cache.missing_packages()
+    if miss:
+        print(f'  skipped: the Python packages {", ".join(miss)} are missing (setup.bat / ./setup.sh install them); '
+              'the phone can prepare the textures itself (pause menu: Prepare textures)')
+        return False
+    return tl2_astc_cache.setup_step(L.romfs, L.astc, jobs=jobs, log=lambda s: print('  ' + s, flush=True)) == 0
+
+
 def make_mods_folder(L):
     """An empty mods/ folder with a short how-to: PC .MOD files go there on the phone (the gear dialog's mod manager)."""
     L.mods.mkdir(parents=True, exist_ok=True)
@@ -723,6 +746,7 @@ def push_commands(L):
             f'adb push {w(L.out)} {PHONE_DIR}/dm/',
             f'adb push {w(L.shaders)} {PHONE_DIR}/dm/',
             f'adb push {w(L.mods)} {PHONE_DIR}/',
+            f'adb push {w(L.astc)} {PHONE_DIR}/   (only on phones without BC textures: Mali, PowerVR, Xclipse; ~0.8 GB)',
             f'adb shell appops set {APP_ID} MANAGE_EXTERNAL_STORAGE allow   (after installing the APK)']
 
 
@@ -736,7 +760,7 @@ def push(L, serial):
     if subprocess.run(adb + ['get-state'], capture_output=True, text=True).stdout.strip() != 'device':
         raise Fail(f'adb device {serial} not reachable')
     make_mods_folder(L)
-    for local in (L.out, L.shaders, L.mods, L.romfs):
+    for local in (L.out, L.shaders, L.mods, L.romfs) + ((L.astc,) if L.astc_ok() else ()):
         rel = local.relative_to(L.phone).as_posix()
         remote = f'{PHONE_DIR}/{rel}'
         listing = subprocess.run(adb + ['shell', f"cd '{remote}' 2>/dev/null && find . -type f -exec stat -c '%s %n' {{}} +"],
@@ -842,6 +866,7 @@ def check(L, files):
     print(f"  {'OK ' if L.verify_ok() else '.. '} patch equivalence check (dm/verify/equiv.py){'' if L.verify_ok() else ': not run yet'}")
     item(L.romfs_ok(), 'romfs: extracted and verified', RUN_SETUP)
     item(L.shaders_ok(), f'dm/shaders: {L.shader_count()} SPIR-V bundles', RUN_SETUP)
+    print(f"  {'OK ' if L.astc_ok() else '.. '} astc: ASTC texture cache for phones without BC{'' if L.astc_ok() else ' (optional; setup makes it, or the phone does)'}")
     if L.nsp.is_dir(): print(f'  ..  temporary NSPs in {L.nsp} (removed after the RomFS step)')
     if nxt:
         say(f'Next: {nxt[0]}')
@@ -918,6 +943,11 @@ def prepare(a, L):
     if shaders_needed:
         step_shaders(L, dn or find_dotnet() or install_dotnet(a.yes)); print(f'  done in {took(t0)}')
     else: print('  already done' if L.shaders_ok() else '  skipped')
+    t0 = stage(8)
+    if 'astc' in steps and not a.skip_astc and L.romfs_ok():
+        if step_astc(L): print(f'  done in {took(t0)}')
+        else: print('  not made (the game still works; on phones without BC it prepares the textures itself)')
+    else: print('  skipped' + (' (--skip-astc / --steps)' if L.romfs_ok() else ' (no RomFS yet)'))
     if not L.complete():
         say(f'finished the requested steps; the folder is not complete yet: {L.phone}'); return 0
     make_mods_folder(L)
@@ -953,7 +983,8 @@ def main(argv=None):
     ap.add_argument('--skip-shaders', action='store_true')
     ap.add_argument('--skip-verify', action='store_true', help='do not run the patch equivalence check (dm/verify/equiv.py)')
     ap.add_argument('--no-dlc', action='store_true', help=argparse.SUPPRESS)   # accepted for the Diablo III habit; DLC are never used
-    ap.add_argument('--steps', default='exefs,patch,verify,romfs,shaders', help='comma list of steps to run (default: all)')
+    ap.add_argument('--skip-astc', action='store_true', help='do not make the ASTC texture cache (tools/tl2_astc_cache.py)')
+    ap.add_argument('--steps', default='exefs,patch,verify,romfs,shaders,astc', help='comma list of steps to run (default: all)')
     a = ap.parse_args(argv)
     L = Layout(a.work)
     start_log(Path(a.work))

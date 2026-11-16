@@ -65,9 +65,9 @@ fast → 4x4 medium → thorough; BC2/BC3 4x4 fast → medium → thorough; не
 
 ## Setup (ПК)
 `python -I tools/tl2_astc_cache.py <work>/Torchlight2Mobile/romfs <work>/Torchlight2Mobile/astc [--jobs N]` (зависимости —
-`tools/requirements-astc.txt`). Шаг setup «8/8 Preparing textures for phones without BC» — патч для публичного репо
-`docs/tl2/setup-astc.repo.patch` (`setup_tl2.py`: шаг `astc` по умолчанию, `--skip-astc`, `check`, `push` копирует `astc/`, если пак
-готов; `bootstrap.ps1` / `setup.sh`: пакеты `astc-encoder-py==0.1.12`, `numpy<2.4`); `git apply` в `tl2-port-repo` при выпуске.
+`tools/requirements-astc.txt`). Шаг setup «8/8 Preparing textures for phones without BC» (`setup_tl2.py`: шаг `astc` по умолчанию,
+`--skip-astc`, `check`, `push` копирует `astc/`, если пак готов; `bootstrap.ps1` / `setup.sh`: пакеты `astc-encoder-py==0.1.12`,
+`numpy<2.4`).
 Пак не обязателен: без него телефон соберёт его сам (меню паузы) или наберёт лениво.
 
 ## Замеры на ПК (16.11, 12 потоков, этот RomFS)
@@ -79,7 +79,7 @@ fast → 4x4 medium → thorough; BC2/BC3 4x4 fast → medium → thorough; не
 - Ленивый кодировщик (`astc_lazy_test`) на 6 текстурах TL2: 6 закэшировано, журнал читается парсером движка, PSNR совпадает.
 
 ## Малый пак для теста на телефоне
-Полный пак 800 МБ — по правилу «без больших пушей» не толкать по tailscale без спроса. Малый: интерфейс (виден сразу в меню),
+Полный пак 800 МБ — по правилу «без больших пушей» не заливать на телефон по медленному adb без спроса. Малый: интерфейс (виден сразу в меню),
 70 текстур, **28 МБ**:
 ```
 python -I tools/tl2_astc_cache.py <romfs> <out>/astc --only "media/ui/*"
