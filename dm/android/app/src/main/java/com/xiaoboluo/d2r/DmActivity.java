@@ -60,6 +60,29 @@ public class DmActivity extends Activity implements SurfaceHolder.Callback, Disp
     private DoomPadView doomPad;
     private D3PadView d3Pad;   // [D3] its own on-screen controls (touch / gamepad layouts) instead of doomPad
     static native int nativeStart(String filesDir, String extDir, String romfsSrc, String lang);
+    // [TL2 stutter] Pipeline warm-up seeds: APK assets warm-seed/<gpu family>.bin (dm/android/tl2/warm-seed, put in by tools/build_apk.ps1) are
+    // copied to files/warm-seed before the native start, where the engine merges the one of this GPU family into the phone's own warm-up list
+    // (xbg_game.cpp warm::start, DM_WARM_SEED_DIR). The folder mirrors the APK: a seed an update dropped is removed, so every update brings its own.
+    private void unpackWarmSeeds() {
+        try {
+            File dir = new File(getFilesDir(), "warm-seed");
+            String[] names = getAssets().list("warm-seed");
+            java.util.HashSet<String> keep = new java.util.HashSet<>();
+            if (names != null) for (String n : names) {
+                if (!n.endsWith(".bin")) continue;
+                if (!dir.isDirectory() && !dir.mkdirs()) return;
+                keep.add(n);
+                File tmp = new File(dir, n + ".tmp");
+                try (java.io.InputStream in = getAssets().open("warm-seed/" + n); java.io.OutputStream os = new java.io.FileOutputStream(tmp)) {
+                    byte[] buf = new byte[65536];
+                    for (int k; (k = in.read(buf)) > 0; ) os.write(buf, 0, k);
+                }
+                if (!tmp.renameTo(new File(dir, n))) tmp.delete();
+            }
+            File[] old = dir.listFiles();
+            if (old != null) for (File f : old) if (!keep.contains(f.getName())) f.delete();
+        } catch (Exception e) { android.util.Log.i("dm", "warm-up seeds not unpacked: " + e); }
+    }
     static native void nativeSurface(Object surface, int w, int h);
     static native void nativeRefresh(float hz);
     static native void nativeFrameStats(float[] out);   // [DOOM] {fps, mean ms, max ms, GPU ms} over the last 0.5 s
@@ -572,6 +595,7 @@ public class DmActivity extends Activity implements SurfaceHolder.Callback, Disp
         if (!data.isDirectory() && earlier.isDirectory()) data = earlier;
         String src = DOOM ? new File(downloads, DATA_DIR).getAbsolutePath() : data.getAbsolutePath();   // [DOOM] Download/DOOM Mobile/{romfs,dm}
         if (DOOM) CrashLog.session(this, "fg");   // [DOOM] the game runs from here: a leftover marker at the next start = it did not end cleanly
+        unpackWarmSeeds();
         int result = nativeStart(getFilesDir().getAbsolutePath(), ext.getAbsolutePath(), src, Locale.getDefault().toLanguageTag());
         if (DOOM) { nativeLogReady = true; flushCrumbs(); crumb("nativeStart " + result); }
         if (result < 0) {

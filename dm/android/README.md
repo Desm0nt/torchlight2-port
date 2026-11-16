@@ -137,12 +137,17 @@ locations, the c1 bytes, then the SPIR-V (`xbg_shader_header` in
   directory>` compiles `dm/gfx/vulkan/kernels/builtin_queries.comp` with
   `glslc` (the NDK has it under `shader-tools/`) and writes the 4 files.
 
-A bundle set can also carry `vk-pipeline-list.seed`. On a first launch, before
-`files/dm/vk-pipeline-list.bin` exists, the engine builds the pipelines the seed
-lists during start-up, so a first visit to the places it covers does not
-stutter while pipelines build. `dm/android/tools/merge_warm_lists.py` merges
-several devices' `files/dm/vk-pipeline-list.bin` into one seed. A seed only
-works with the bundles it was recorded with, so it ships with them. The
+Pipeline warm-up seeds: at every start the engine merges the seed of the phone's
+GPU family behind the phone's own `dm/vk-pipeline-list.bin` and builds the
+pipelines it lists during start-up, so a first launch and a first visit to the
+places it covers do not stutter while pipelines build. Seeds ship in the APK
+(`dm/android/<game>/warm-seed/<family>.bin` -> assets `warm-seed/`, see
+`dm/android/tl2/warm-seed/README.md`); a bundle set can still carry
+`vk-pipeline-list.<family>.seed` or the family-less `vk-pipeline-list.seed`.
+`dm/android/tools/merge_warm_lists.py` merges several devices'
+`vk-pipeline-list.bin` into one seed (`--compare` counts the keys two lists
+share). A seed only works with the bundles it was recorded with.
+`DM_GFX_WARM_SEED=0` turns the merge off. The
 measurements are in `docs/android-notes/2026-10-22-first-play-stutter.md`.
 
 ## Validation and remaining work

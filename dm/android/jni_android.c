@@ -342,6 +342,8 @@ JNIEXPORT jint JNICALL Java_com_xiaoboluo_d2r_DmActivity_nativeStart(JNIEnv *env
     // [D3] language-pack DLC: Download/Diablo3Mobile/aoc/<index> holds each pack's extracted RomFS (10 Russian: ruRU_*.cpk;
     // tools/d3_dlc_romfs.py); hle_misc.c lists the indices that have a *_Common.cpk, hle_oe.c lets the game language use them
     { char aoc[1100]; snprintf(aoc, sizeof aoc, "%s/aoc", g_src); setenv("DM_AOC", aoc, 0); LOG("boot: add-on content %s", getenv("DM_AOC")); }
+    // [TL2 stutter] pipeline warm-up seeds of the APK (assets warm-seed/<family>.bin), unpacked by DmActivity.unpackWarmSeeds; read by warm::start (xbg_game.cpp)
+    { char ws[1100]; snprintf(ws, sizeof ws, "%s/warm-seed", g_files); setenv("DM_WARM_SEED_DIR", ws, 0); }
     setenv("DM_RUNTIME_DIR", g_runtime, 1);   // [D3] the dm/ directory for hle_d3_ui.c (ui-dump-now trigger, ui-dump.tsv, ui-names.tsv)
 #endif
 #ifdef DM_ANDROID_DEBUG_ENV

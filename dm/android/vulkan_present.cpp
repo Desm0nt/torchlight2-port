@@ -225,6 +225,7 @@ void wait_resize(){std::unique_lock<std::mutex> lock(window_mutex);window_cv.wai
 // [DOOM] Optional sharpening of the game's frame at present: RCAS, the sharpening pass of AMD FSR 1 (shaders/rcas.comp, offline
 // compiled). DM_GFX_SHARPEN=<stops> turns it on (0 = strongest, 0.2 typical, 1 mild); used with DM_DOOM_RES (the game renders
 // 3D at a fraction and upscales it itself). Only for 8-bit UNORM RGBA/BGRA frames; anything else is presented unsharpened.
+extern "C" { int dm_vk_pipe_feedback=0; }   // [TL2 stutter] VK_EXT_pipeline_creation_feedback enabled on the device (xbg_game.cpp pfb)
 extern "C" { int dm_vk_format_list=0; int dm_vk_custom_border=0; }   // [XC2] custom_border: VK_EXT_custom_border_color enabled (customBorderColorWithoutFormat)   // VK_KHR_image_format_list enabled on the device (read by the Vulkan engine)
 extern "C" { int dm_vk_descriptor_indexing=0; }   // [ETERNAL] VK_EXT_descriptor_indexing enabled: partially bound + sampled-image update-after-bind (bindless pools)
 namespace rcas {
@@ -616,6 +617,14 @@ extern "C" int dm_android_vk_initialize(const char *path,char *error,size_t byte
     // Diagnostic (marker gfx-pipe-stats): the driver's per-pipeline statistics (VK_KHR_pipeline_executable_properties).
     VkPhysicalDevicePipelineExecutablePropertiesFeaturesKHR pef{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_EXECUTABLE_PROPERTIES_FEATURES_KHR};
     if(FILE *ps=[&]{std::string dir=path;size_t cut=dir.find_last_of('/');return fopen(((cut==std::string::npos?dir:dir.substr(0,cut))+"/gfx-pipe-stats").c_str(),"rb");}()){fclose(ps);dext.push_back(VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME);pef.pipelineExecutableInfo=VK_TRUE;pef.pNext=draw.pNext;draw.pNext=&pef;}
+    // [TL2 stutter] VK_EXT_pipeline_creation_feedback (no feature struct): the engine asks every pipeline creation whether the driver took it
+    // from the pipeline cache and how long it worked (NVN PERF pipelines_bg fb_*), to see whether the cache helps on Mali (issue #4).
+    // DM_GFX_PIPE_FEEDBACK=1 / 0; default: on when the GPU is not an Adreno or DM_GFX_SIM_GPU is set, so an Adreno device is created as before.
+    {bool has=false;for(auto &e:available)if(std::string(e.extensionName)==VK_EXT_PIPELINE_CREATION_FEEDBACK_EXTENSION_NAME)has=true;
+     VkPhysicalDeviceProperties pp;vkGetPhysicalDeviceProperties(physical,&pp);const char *fe=getenv("DM_GFX_PIPE_FEEDBACK"),*sim=getenv("DM_GFX_SIM_GPU");
+     const bool want=fe && *fe?atoi(fe)!=0:(pp.vendorID!=0x5143 || (sim && *sim));
+     dm_vk_pipe_feedback=0;if(has && want){dext.push_back(VK_EXT_PIPELINE_CREATION_FEEDBACK_EXTENSION_NAME);dm_vk_pipe_feedback=1;}
+     __android_log_print(ANDROID_LOG_INFO,"dm-vulkan","Pipeline creation feedback ext=%d wanted=%d -> %s (DM_GFX_PIPE_FEEDBACK)",int(has),int(want),dm_vk_pipe_feedback?"enabled":"off");}
 #ifdef DM_GAME_ETERNAL
     // [ETERNAL] id Tech 7 shaders index the whole texture / sampler pools: the engine mirrors them in update-after-bind descriptor
     // arrays (xbg_game.cpp namespace bindless). Only the features it uses are enabled; it logs and skips such shaders without them.

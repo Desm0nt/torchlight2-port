@@ -563,3 +563,49 @@ depth всегда сохраняется. Перенесено (KB MALI-03, MAL
 `DM_GFX_SIM_GPU=mali` на Mi 14 включает всё. Лог: `NVN tile pass policy (policy family …)`, `NVN proven full-overwrite … load=`,
 `NVN PERF tile … violations=N … lean dropped=… upgrades=…`, `NVN store-hist VIOLATION …`, `NVN lean usage upgrade …`.
 Проверка на Mi 14 (`SIM_GPU=mali`, затем `DM_GFX_STORE_HIST=3` — poison): меню, город, бой; искать пурпур / мусор, `violations=0`.
+## Рывки первой сборки пайплайнов на Mali (issue #4) — 16.11.2026 (ветка `tl2-stutter`, worktree `tl2-wt/stutter`; собрано, на телефоне не проверено)
+
+Лог игрока (Poco X6 Pro, Mali-G615 MC6 r44p1, 0.1.1): 311 пайплайнов / 5085 мс собраны внутри кадров, `warm list=0`, три компут-пайплайна
+декодера BC — ещё 432 мс. Разбор — в сеансе Fable 16.11 (раздел 1), KB MALI-17. Сделано четыре вещи, каждая за переключателем; на Adreno
+умолчания прежние (всё ниже выключено либо не срабатывает), путь Mali проверяется на Adreno через `DM_GFX_SIM_GPU=mali`.
+
+| Что | Переключатель (env / маркер в `dm/`) | Умолчание | Строки boot.log |
+|---|---|---|---|
+| Сид списка прогрева по семейству GPU из APK, **слияние** со списком телефона при каждом старте | `DM_GFX_WARM_SEED` / `gfx-warm-seed` | 1 (файлов сида пока нет → ничего не меняется) | `NVN warm seed <путь> new=N`, `NVN warm list=N enabled=1 own=A seed=B family=mali (...)` |
+| Фоновая сборка пайплайнов: режим 2 — ещё и непрозрачные draw в «ежекадровые» цели | `DM_GFX_ASYNC_PIPELINES=0/1/2` / `gfx-async-pipelines` | 2 не на Adreno, 0 на Adreno (1 = прежнее «только смешивание») | `NVN background builds for skippable draws=2 (default; policy family mali; ...)`, `NVN PERF pipelines_bg async_mode=2 opaque_skips= sync_first= sync_young= ...`, в старой строке `async_skips=` / `async_built=` |
+| Компут-пайплайны декодера BC — в фоне при старте | `DM_GFX_BC_PREWARM` / `gfx-bc-prewarm` | 1 не на Adreno | `NVN BC decode pipelines built at start=1 (...) device decodes BC=1`, `NVN BC decode: prewarm pipelines=3 (...)`, `NVN BC decode: prewarm pipeline fmt=0x42 ... ms= cache_hit= driver_ms=`, при первой текстуре `NVN BC decode: pipeline fmt=0x42 opt=0 prewarmed=1 waited_ms=`, `... self-test fmt=0x42 opt=0 took ms=` |
+| `VK_EXT_pipeline_creation_feedback`: попал ли пайплайн в кэш драйвера и сколько работал драйвер | `DM_GFX_PIPE_FEEDBACK` | 1 не на Adreno или при `DM_GFX_SIM_GPU` (расширение включается при создании устройства) | logcat `Pipeline creation feedback ext=1 wanted=1 -> enabled`, `NVN pipeline creation feedback=1`, `NVN PERF pipelines_bg ... fb_frame= fb_frame_hits= fb_frame_ms= fb_bg= fb_bg_hits= fb_bg_ms= fb_cs= ...` |
+
+**Сид.** `dm/android/tl2/warm-seed/<family>.bin` → `tools/build_apk.ps1` кладёт в assets `warm-seed/` → `DmActivity.unpackWarmSeeds` копирует в
+`files/warm-seed/` (папка зеркалит APK) → `jni_android.c` ставит `DM_WARM_SEED_DIR` → `warm::start` читает свой список, затем сиды семейства
+(`xbg_warm_seed_paths`: APK, `dm/warm-seed/`, `shaders/vk-pipeline-list.<family>.seed`, старое `shaders/vk-pipeline-list.seed`), дубликаты
+отсекаются по ключу. Записи сида в список телефона не дописываются. Прежнее «сид копируется, только если списка нет» убрано. Как сделать сид —
+`dm/android/tl2/warm-seed/README.md` (`merge_warm_lists.py -o …/mali.bin <списки>`, `--compare` — сколько ключей общих у двух списков).
+Файла сида Mali пока нет: нужен `vk-pipeline-list.bin` игрока либо прогон на Mi 14 с `DM_GFX_SIM_GPU=mali` (совпадение ключей с настоящим Mali
+не проверено).
+
+**Режим 2: точное правило** (`xbg_async_policy.h` `xbg_async_may_skip` / `xbg_target_age_steady`, сбор фактов — `async_skippable` в `xbg_game.cpp`).
+Draw пропускается, пока его пайплайн строится в фоне (1–2 потока), если:
+- никогда: идёт capture; игра читает отчёты samples-passed; есть запись в storage-буфер / storage-image; запись stencil (это маска для
+  следующих draw);
+- как раньше (режим 1): все записываемые цвет-цели смешиваются с назначением и нет записи depth — где угодно;
+- новое (режим 2), непрозрачные / alpha-test / depth-only: нет rasterizer discard; draw больше квадрата (> 6 вершин или инстансинг — непрозрачный
+  квад = полноэкранная копия / фон); draw **продолжает открытый проход** (не начинает проход и не идёт первым после clear — выбор
+  LOAD / CLEAR / DONT_CARE уже сделан записанным draw); **каждая** цель прохода (цвет и depth): рисовалась в этом present и в двух предыдущих
+  подряд, получила ≥ 8 draw в предыдущем present и уже получила draw в этом.
+
+Следствия: объект сцены / тень / элемент UI появляется на несколько кадров позже; одноразовые цели (портрет, миникарта), полноэкранные
+пост-проходы (1–2 draw на цель), первый draw после clear и текстуры окна (чередуются между present) собираются сразу, как раньше. Первые два
+кадра новой сцены (цели ещё «молодые») тоже собираются сразу — это закрывает только сид.
+Счётчики: `opaque_skips` (пропуски по правилу режима 2), `sync_young` / `sync_first` (подошёл бы, но цель не ежекадровая / draw начинает проход).
+
+**Декодер BC.** `bcgpu::prewarm` при инициализации (если устройство декодирует BC: нет нативного BC1 и нет ASTC-оверлея) вызывает
+`bc_decode_init` заранее и строит в одном фоновом потоке пайплайны форматов из `dm/vk-bc-pipelines.txt` (пары «fmt opt», которые прошлые запуски
+собирали в кадре) плюс умолчания TL2 0x42 / 0x43 / 0x44. Самотест (`DM_GFX_BC_SELFTEST`) остаётся в кадре при первой текстуре формата —
+ему нужна очередь; его время теперь в логе (`self-test ... took ms=`).
+
+Хост-тест: `dm/gfx/vulkan/engine/tests/async_policy_test.cpp` (режимы, возраст целей, правило, чтение списка с обрезанным хвостом, пути сидов) —
+проходит (WSL g++); `vendor_policy_test` проходит.
+
+Не проверено на устройстве: всё. Что смотреть в первом прогоне (Mi 14, `DM_GFX_SIM_GPU=mali`, стёртый `vk-pipeline-list.bin`): пропажи /
+мигание объектов при `opaque_skips > 0`, `created` и `create_ms` против прогона с `DM_GFX_ASYNC_PIPELINES=1`, `fb_*_hits` на втором запуске.

@@ -7,6 +7,12 @@ pipelines the others have seen. Records as in the engine (xbg_game.cpp warm::sta
 each stage's shader key (length <= 256), the create-info key (<= 4096 words). Records are de-duplicated by the create-info
 key, keeping the first file's order; a bad record and everything after it is dropped, as the engine does. A record a
 device cannot build fails in its warm-up (warm_failed) without affecting the game.
+
+Seeds shipped in the APK (per GPU family, dm/android/<game>/warm-seed/<family>.bin; the engine merges the phone's family into
+its own list at every start, xbg_game.cpp warm::start):
+    merge_warm_lists.py -o dm/android/tl2/warm-seed/mali.bin phoneA/vk-pipeline-list.bin phoneB/vk-pipeline-list.bin
+--compare A B prints how many create-info keys two lists share (is a list recorded with DM_GFX_SIM_GPU=mali on an Adreno
+phone the same as a real Mali's?) and writes nothing.
 """
 import argparse
 import struct
@@ -54,8 +60,19 @@ def records(data):
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('lists', nargs='+', help='vk-pipeline-list.bin files, first one first')
-    ap.add_argument('-o', '--output', required=True)
+    ap.add_argument('-o', '--output')
+    ap.add_argument('--compare', action='store_true', help='two lists: count shared create-info keys, write nothing')
     a = ap.parse_args()
+    if a.compare:
+        if len(a.lists) != 2:
+            ap.error('--compare takes exactly two lists')
+        ka, kb = ({k for k, _ in records(open(p, 'rb').read())} for p in a.lists)
+        both = len(ka & kb)
+        print('%s: %d keys, %s: %d keys, shared %d (%.0f%% of the first, %.0f%% of the second)' % (
+            a.lists[0], len(ka), a.lists[1], len(kb), both, 100.0 * both / max(1, len(ka)), 100.0 * both / max(1, len(kb))))
+        return 0
+    if not a.output:
+        ap.error('-o / --output is required')
     seen, merged = set(), []
     for path in a.lists:
         recs = records(open(path, 'rb').read())

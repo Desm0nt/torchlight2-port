@@ -25,6 +25,7 @@ extern "C" int xbg_completion_wait_selftest(char *report,size_t bytes);
 #include "xbg_clear.h"
 #include "xbg_blit.h"
 #include "xbg_adreno_policy.h"
+#include "xbg_async_policy.h"   // [TL2 stutter] DM_GFX_ASYNC_PIPELINES rule, render-target age, warm-up list reader
 #include "xbg_bc_policy.h"
 #include "xbg_astc_overlay.h"
 #include "xbg_writeback_policy.h"
@@ -633,6 +634,23 @@ extern std::atomic<uint64_t> memo_epoch;extern uint64_t key_diff[14];extern uint
 extern uint64_t memo_front_hits;extern uint64_t desc_memo_hits,desc_memo_misses,desc_memo_why[6],desc_ns[6],noload_passes,img_cache_hits,img_cache_misses,noload_why[8],binds_skipped,set_binds,set_bind_offsets,set_binds_offsets_only,offset_changes[10],offset_changed_at[32];
 namespace warm{extern uint64_t hits,creates,create_ns,create_max_ns;extern std::atomic<uint64_t> built,failed,build_ns,async_built,async_skips,compiled;extern bool async_on;void flush();void register_module(VkShaderModule m,const std::string &key);
     extern bool keep_rewritten;bool take_rewritten(const std::string &key,std::vector<uint32_t> &out);}
+namespace warm{extern int async_mode;extern std::atomic<uint64_t> async2_skips,async2_first,async2_young;}   // [TL2 stutter] DM_GFX_ASYNC_PIPELINES=2 (xbg_async_policy.h)
+// [TL2 stutter] VK_EXT_pipeline_creation_feedback (DM_GFX_PIPE_FEEDBACK; vulkan_present.cpp enables the extension when the GPU is
+// not an Adreno or DM_GFX_SIM_GPU is set, and says so in dm_vk_pipe_feedback): each pipeline creation asks the driver whether it
+// came from the application's pipeline cache and how long the driver itself worked. Summed per kind for the NVN PERF
+// pipelines_bg line, so a phone log shows whether the Vulkan pipeline cache does anything on Mali (issue #4: 35 new pipelines
+// cost 322 ms and added no byte to the cache file).
+extern "C" int dm_vk_pipe_feedback __attribute__((weak));
+namespace pfb{
+bool on=false;enum{FRAME=0,BACKGROUND=1,COMPUTE=2};std::atomic<uint64_t> n[3],hits[3],ns[3];   // FRAME: built by a draw; BACKGROUND: warm-up / async threads; COMPUTE: BC decoder
+struct Chain{
+    VkPipelineCreationFeedbackEXT whole{},stage[6]{};VkPipelineCreationFeedbackCreateInfoEXT info{VK_STRUCTURE_TYPE_PIPELINE_CREATION_FEEDBACK_CREATE_INFO_EXT};
+    template<class CI> void attach(CI &ci,uint32_t stages){if(!on || stages>6)return;info.pPipelineCreationFeedback=&whole;info.pipelineStageCreationFeedbackCount=stages;info.pPipelineStageCreationFeedbacks=stage;info.pNext=ci.pNext;ci.pNext=&info;}
+    bool valid() const{return (whole.flags&VK_PIPELINE_CREATION_FEEDBACK_VALID_BIT_EXT)!=0;}
+    bool hit() const{return (whole.flags&VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT_EXT)!=0;}
+    void account(int kind){if(!on || !valid())return;++n[kind];if(hit())++hits[kind];ns[kind]+=whole.duration;}
+};
+}
 // 长帧日志的读数（nvn_vk.c 把它们接到 hle_nvn.c 的 mtl_create_* / mtl_pkg_stats / mtl_upload_* / mtl_gpu_ms）：自启动起的累计，图形线程写、
 // 游戏线程读。只算帧里同步做的：管线现建（预热和后台建的不算）、着色器载入（读文件、SPIR-V 改写、建模块）、贴图整份上传（含解交错与 BC 解码）。
 // Readings for the long-frame log (nvn_vk.c wires them to hle_nvn.c's mtl_create_* / mtl_pkg_stats / mtl_upload_* / mtl_gpu_ms): totals since
@@ -1245,6 +1263,13 @@ void perf_frame(){
     if(tex_dirty){xbg_logf("NVN PERF texdirty tracked=%.1f checks=%.1f changed=%.1f",tex_dirty_tracked/f,tex_dirty_checks/f,tex_dirty_changed/f);tex_dirty_tracked=tex_dirty_checks=tex_dirty_changed=0;}{char buf[512];int at=0;std::vector<std::pair<uint64_t,int>> v;for(auto &e:pass_end_lines)v.push_back({e.second,e.first});std::sort(v.rbegin(),v.rend());for(size_t i=0;i<v.size() && i<8;i++)at+=snprintf(buf+at,sizeof buf-at," L%d=%.1f",v[i].second,v[i].first/f);pass_end_lines.clear();xbg_logf("NVN PERF pass_end_lines%s read_break layout/written/attach=%.1f/%.1f/%.1f/%.1f depth_feedback_reads=%.1f",at?buf:"",read_break_why[1]/f,read_break_why[2]/f,read_break_why[4]/f,(read_break_why[3]+read_break_why[5]+read_break_why[6]+read_break_why[7])/f,depth_feedback_reads/f);memset(read_break_why,0,sizeof read_break_why);depth_feedback_reads=0;}xbg_logf("NVN PERF hash_sites MB/calls other=%.2f/%.0f texcheck=%.2f/%.0f texel=%.2f/%.0f upload=%.2f/%.0f",hash_site_bytes[0]/f/1048576,hash_site_calls[0]/f,hash_site_bytes[1]/f/1048576,hash_site_calls[1]/f,hash_site_bytes[2]/f/1048576,hash_site_calls[2]/f,hash_site_bytes[3]/f/1048576,hash_site_calls[3]/f);memset(hash_site_bytes,0,sizeof hash_site_bytes);memset(hash_site_calls,0,sizeof hash_site_calls);if(zc::enabled>0){xbg_logf("NVN PERF zerocopy hits=%.1f sticky_miss=%.1f align_miss=%.1f pending_miss=%.1f mapped=%.0fMB chunks=%d retired=%llu",zc::hits/f,zc::sticky_misses/f,zc::align_misses/f,zc::pending_misses/f,zc::mapped_bytes/1048576.0,zc::live_chunks,(unsigned long long)zc::retired);zc::hits=zc::sticky_misses=zc::align_misses=zc::pending_misses=0;}if(storage_chained || guest_barriers_skipped){xbg_logf("NVN PERF storage-chain reused=%.1f gpu_merges=%.1f prologue_copies=%.1f guest_barriers_skipped=%.1f barriers_avoided=%.1f",storage_chained/f,storage_merges/f,pro_copies/f,guest_barriers_skipped/f,barriers_avoided/f);storage_chained=storage_merges=pro_copies=guest_barriers_skipped=barriers_avoided=0;}if(gpu_indirect_draws || gpu_indirect_fallbacks){xbg_logf("NVN PERF gpu-indirect draws=%.1f fallbacks=%.1f cpu=%.1f",gpu_indirect_draws/f,gpu_indirect_fallbacks/f,gpu_indirect_cpu/f);gpu_indirect_draws=gpu_indirect_fallbacks=gpu_indirect_cpu=0;}if(partial_uploads){xbg_logf("NVN PERF partial-tex uploads=%.1f blocks=%.1f KB=%.1f",partial_uploads/f,partial_blocks/f,partial_bytes/f/1024);partial_uploads=partial_blocks=partial_bytes=0;}
     if(vcache::enabled){xbg_logf("NVN PERF vcache hits=%.1f (%.2fMB) fills=%.1f (%.2fMB) refills=%.2f volatile=%llu untracked=%llu flushes=%llu entries=%zu arena=%.1fMB pools=%d",vcache::hits/f,vcache::hit_bytes/1048576.0/f,vcache::fills/f,vcache::fill_bytes/1048576.0/f,vcache::refills/f,(unsigned long long)vcache::volatiles,(unsigned long long)vcache::untracked,(unsigned long long)vcache::flushes,vcache::live(),vcache::arena_bytes()/1048576.0,[]{int live=0,used=0;uint64_t adds=0;if(nvn_dirty_slot_stats)nvn_dirty_slot_stats(&live,&used,&adds);return used;}());vcache::hits=vcache::hit_bytes=vcache::fills=vcache::fill_bytes=vcache::refills=0;}
     {static uint64_t pm=0,pe=0;xbg_logf("NVN PERF pipelines_new=%llu evicted=%llu warm_hits=%llu created=%llu create_ms=%.1f create_max_ms=%.1f warm_built=%llu warm_failed=%llu warm_ms=%.0f async_skips=%llu async_built=%llu",(unsigned long long)(pipeline_counts.misses-pm),(unsigned long long)(pipeline_counts.evictions-pe),(unsigned long long)warm::hits,(unsigned long long)warm::creates,warm::create_ns/1e6,warm::create_max_ns/1e6,(unsigned long long)warm::built.load(),(unsigned long long)warm::failed.load(),warm::build_ns.load()/1e6,(unsigned long long)warm::async_skips.exchange(0),(unsigned long long)warm::async_built.load());warm::hits=warm::creates=warm::create_ns=warm::create_max_ns=0;pm=pipeline_counts.misses;pe=pipeline_counts.evictions;}
+    // [TL2 stutter] only with DM_GFX_ASYNC_PIPELINES=2 or pipeline creation feedback on (neither on Adreno by default). opaque_skips: draws
+    // left out under the mode-2 rule; sync_first / sync_young: draws that would have qualified but begin a pass / go to a target not drawn
+    // every present (built at once). fb_*: pipelines the driver reported on, how many it took from the pipeline cache, its own time.
+    if(warm::async_mode==2 || pfb::on){uint64_t c[3],h[3],t[3];for(int k=0;k<3;k++){c[k]=pfb::n[k].exchange(0);h[k]=pfb::hits[k].exchange(0);t[k]=pfb::ns[k].exchange(0);}
+        xbg_logf("NVN PERF pipelines_bg async_mode=%d opaque_skips=%llu sync_first=%llu sync_young=%llu feedback=%d fb_frame=%llu fb_frame_hits=%llu fb_frame_ms=%.1f fb_bg=%llu fb_bg_hits=%llu fb_bg_ms=%.1f fb_cs=%llu fb_cs_hits=%llu fb_cs_ms=%.1f",
+            warm::async_mode,(unsigned long long)warm::async2_skips.exchange(0),(unsigned long long)warm::async2_first.exchange(0),(unsigned long long)warm::async2_young.exchange(0),int(pfb::on),
+            (unsigned long long)c[0],(unsigned long long)h[0],t[0]/1e6,(unsigned long long)c[1],(unsigned long long)h[1],t[1]/1e6,(unsigned long long)c[2],(unsigned long long)h[2],t[2]/1e6);}
     xbg_logf("NVN PERF setcache ab=%d hits=%.1f misses=%.1f template=%.1f plain=%.1f memo_hits=%.1f memo_misses=%.1f memo_front=%.1f why=texel%.1f/simg%.1f/dm%.1f/dynbuf%.1f/store%.1f",int(ab_frame_on),set_cache_hits/f,set_cache_misses/f,template_updates/f,plain_updates/f,desc_memo_hits/f,desc_memo_misses/f,memo_front_hits/f,desc_memo_why[0]/f,desc_memo_why[1]/f,desc_memo_why[2]/f,desc_memo_why[3]/f,desc_memo_why[4]/f);desc_memo_hits=desc_memo_misses=memo_front_hits=0;for(auto &w:desc_memo_why)w=0;xbg_logf("NVN PERF keydiff shader%.0f pool%.0f ubo%.0f uaddr%.0f size%.0f vp%.0f alpha%.0f drv%.0f tex%.0f samp%.0f saddr%.0f same%.0f new%.0f len%.0f",key_diff[0]/tf,key_diff[1]/tf,key_diff[2]/tf,key_diff[3]/tf,key_diff[4]/tf,key_diff[5]/tf,key_diff[6]/tf,key_diff[7]/tf,key_diff[8]/tf,key_diff[9]/tf,key_diff[10]/tf,key_diff[11]/tf,key_diff[12]/tf,key_diff[13]/tf);for(auto &k:key_diff)k=0;   // per timed frame
     xbg_logf("NVN PERF binds_skipped_per_frame=%.1f xmemo_hits=%.1f drops=%llu bumps=%llu/%llu/%llu/%llu/%llu pinned=%zu/%zu",binds_skipped/f,xmemo_hits/f,(unsigned long long)xmemo_drops,(unsigned long long)memo_bump[0],(unsigned long long)memo_bump[1],(unsigned long long)memo_bump[2],(unsigned long long)memo_bump[3],(unsigned long long)memo_bump[4],memo_pinned[0].size(),memo_pinned[1].size());binds_skipped=0;{char top[160]="";int at=0;bool used[32]={};
     crumbs::report_perf(f);   // [DOOM] NVN PERF crumbs (DM_GFX_CRUMBS)
@@ -1815,6 +1840,7 @@ struct Image {
     // (gfx-upload-prologue decides by it whether an upload may go ahead of the submission).
     uint64_t slot_use=0;
     uint64_t dirty_stamp=0,dirty_seen=0;   // tex_dirty: the tracker stamp of the checked content (0: not tracked yet) and the tracker generation last checked
+    XbgTargetAge rt_age;   // [TL2 stutter] DM_GFX_ASYNC_PIPELINES=2: presents in a row this image was drawn into, draws per present (xbg_async_policy.h)
 #ifdef DM_GAME_ETERNAL
     uint64_t sparse_gen=0,sparse_stamp=0;bool sparse=false;   // [ETERNAL] storage in a virtual pool: mapping generation and dirty stamp of the checked content (sparse_check)
 #endif
@@ -2394,7 +2420,7 @@ enum BcStore{BC_NOT=0,BC_NATIVE,BC_DECODED,BC_SUBST};
 int bc_partial_flag=-1;size_t bc_batch=0;
 bool bc_partial_on(){if(bc_partial_flag<0){const char *e=getenv("DM_GFX_BC_PARTIAL");bc_partial_flag=e?atoi(e)!=0:1;}return bc_partial_flag!=0;}
 size_t bc_batch_bytes(){if(!bc_batch){const char *e=getenv("DM_GFX_BC_BATCH_MB");long mb=e?atol(e):32;if(mb<4)mb=4;if(mb>128)mb=128;bc_batch=size_t(mb)<<20;}return bc_batch;}
-namespace bcgpu{bool prepare();VkPipeline pipeline(uint32_t fmt,uint32_t opt);size_t in_cap();size_t out_cap();void shutdown();}
+namespace bcgpu{bool prepare();VkPipeline pipeline(uint32_t fmt,uint32_t opt);size_t in_cap();size_t out_cap();void shutdown();void prewarm();}
 // Once, at the first decoded texture: the decoder (DM_GFX_BC_DECODE), E5B9G9R9 for unsigned BC6H (DM_GFX_BC6_E5) and the log line.
 void bc_decode_init(){
     if(bc_mode>=0)return;
@@ -3592,7 +3618,9 @@ bool build(const Rec &rec){
         pipeguard::gend();
 #endif
         return false;}
+    pfb::Chain fb;fb.attach(ci,ns);
     uint64_t c0=timing_clock();VkPipeline pl=VK_NULL_HANDLE;VkResult made_;{gpguard::Lock serial;made_=vkCreateGraphicsPipelines(cfg.device,pipeline_cache,1,&ci,nullptr,&pl);}
+    fb.account(pfb::BACKGROUND);
 #if defined(DM_GAME_ETERNAL) || defined(DM_GAME_XC2) || defined(DM_GAME_D3)
     pipeguard::gend();
 #endif
@@ -3612,6 +3640,10 @@ void worker(){
 // host asks (DM_GFX_ASYNC_PIPELINES; marker gfx-async-pipelines 1 / 0).
 bool async_on=false;std::deque<Rec> async_q;std::unordered_set<std::string> async_pending,async_failed;std::condition_variable async_cv;std::thread async_thread;
 std::atomic<uint64_t> async_built{0},async_skips{0};
+// [TL2 stutter] DM_GFX_ASYNC_PIPELINES=2 (xbg_async_policy.h, async_skippable): opaque draws wait too, so a level's first frames can queue
+// dozens of builds; a second builder then halves the time objects are missing (6+ cores; the driver's compiler is serialised where the
+// family needs it, gpguard::Lock). Mode 1 keeps its single thread.
+int async_mode=0;std::thread async_thread2;std::atomic<uint64_t> async2_skips{0},async2_first{0},async2_young{0};
 void async_worker(){
     setpriority(PRIO_PROCESS,0,5);
     for(;;){Rec r;{std::unique_lock<std::mutex> l(mu);async_cv.wait(l,[]{return stop.load() || !async_q.empty();});if(stop.load())return;r=std::move(async_q.front());async_q.pop_front();}
@@ -3625,34 +3657,40 @@ bool async_request(const VkGraphicsPipelineCreateInfo &ci,const XbgPipelineKey &
         for(uint32_t i=0;i<ci.stageCount;i++){auto it=ids.find(ci.pStages[i].module);if(it==ids.end())return false;r.keys.push_back(id_keys[it->second]);}
         r.words.assign(key.words,key.words+key.count);async_pending.insert(bytes);async_q.push_back(std::move(r));}
     if(!async_thread.joinable())async_thread=std::thread(async_worker);
-    async_cv.notify_one();record(ci,key);return true;
+    if(async_mode==2 && !async_thread2.joinable() && std::thread::hardware_concurrency()>=6)async_thread2=std::thread(async_worker);
+    async_cv.notify_all();record(ci,key);return true;
 }
-// 首次启动还没有列表。这时随着色器发的种子（shaders/vk-pipeline-list.seed，用 dm/android/tools/merge_warm_lists.py 合并各设备的
-// 列表而成）就成为列表，预热便在第一场战斗之前、而不是在战斗中建好那些设备见过的管线；设备建不了的记录在预热时失败（warm_failed）。
-// A first launch has no list yet. A seed shipped with the shaders (shaders/vk-pipeline-list.seed, made from devices' lists
-// with dm/android/tools/merge_warm_lists.py) then becomes the list, so the warm-up builds the pipelines those devices saw
-// before the first fight instead of in it; records a device cannot build fail in the warm-up (warm_failed).
-void seed(){
-    const std::string list=list_path();if(FILE *f=fopen(list.c_str(),"rb")){fclose(f);return;}
-    const std::string from=std::string(cfg.shader_directory)+"/vk-pipeline-list.seed";FILE *in=fopen(from.c_str(),"rb");if(!in)return;
-    const std::string tmp=list+".tmp";FILE *out=fopen(tmp.c_str(),"wb");bool ok=out!=nullptr;size_t total=0;
-    for(char buf[65536];ok;){size_t n=fread(buf,1,sizeof buf,in);if(!n)break;ok=fwrite(buf,1,n,out)==n;total+=n;}
-    fclose(in);if(out)ok=fclose(out)==0 && ok;if(ok)ok=rename(tmp.c_str(),list.c_str())==0;if(!ok)remove(tmp.c_str());
-    xbg_logf("NVN warm list seeded from %s bytes=%zu ok=%d",from.c_str(),total,int(ok));
+// [TL2 stutter] The warm-up list is the device's own list (every pipeline it ever built, in the order met) with the seeds of its GPU
+// family merged in behind it. A seed is a list made on other devices of the same family (dm/android/tools/merge_warm_lists.py) and shipped
+// in the APK (assets warm-seed/<family>.bin, unpacked by DmActivity to DM_WARM_SEED_DIR), so a first launch and every place a player has
+// not been to yet are built before they are met instead of inside a frame (issue #4, Mali-G615: 311 pipelines / 5085 ms in frames, list=0).
+// Per family because the key holds the descriptor layout and attachment formats (ubo_dynamic, depth stand-ins): an Adreno list builds
+// nothing useful on Mali, and each useless record costs a background build. Records this device cannot build fail in the warm-up
+// (warm_failed), harmlessly. Seed records are not written to the device's list: they come from the APK at every start, and an update that
+// ships a better seed replaces them. The seed used to be copied only when no list existed (and lived in dm/shaders, where no update
+// reaches a player); that copy is gone, the old path is still read.
+// DM_GFX_WARM_SEED=0 / marker gfx-warm-seed 0: the device's own list only.
+size_t load_list(const std::string &path,bool &found){
+    FILE *f=fopen(path.c_str(),"rb");found=f!=nullptr;if(!f)return 0;
+    fseek(f,0,SEEK_END);long n=ftell(f);rewind(f);std::vector<uint8_t> b(n>0 && n<(64l<<20)?size_t(n):0);bool ok=b.empty() || fread(b.data(),1,b.size(),f)==b.size();fclose(f);if(!ok)return 0;
+    size_t added=0;
+    xbg_warm_list_parse(b.data(),b.size(),XbgPipelineKey::Capacity,[&](std::vector<std::string> &&keys,const uint8_t *w,uint32_t count){
+        Rec r;r.keys=std::move(keys);r.words.resize(count);if(count)memcpy(r.words.data(),w,size_t(count)*4);
+        if(known.insert(std::string(reinterpret_cast<const char*>(r.words.data()),r.words.size()*4)).second){recs.push_back(std::move(r));++added;}});
+    return added;
 }
 void start(){
-    seed();
-    FILE *f=fopen(list_path().c_str(),"rb");if(f){fseek(f,0,SEEK_END);long n=ftell(f);rewind(f);std::vector<uint8_t> b(n>0 && n<(64l<<20)?size_t(n):0);bool ok=b.empty() || fread(b.data(),1,b.size(),f)==b.size();fclose(f);
-        size_t i=0;auto get=[&](uint32_t &v){if(i+4>b.size())return false;memcpy(&v,b.data()+i,4);i+=4;return true;};
-        while(ok && i<b.size()){uint32_t magic,ns,count;if(!get(magic)||magic!=0x57504c58||!get(ns)||ns>5)break;Rec r;bool good=true;
-            for(uint32_t s=0;s<ns && good;s++){uint32_t len;if(!get(len)||len>256||i+len>b.size()){good=false;break;}r.keys.emplace_back(reinterpret_cast<const char*>(b.data()+i),len);i+=len;}
-            if(!good||!get(count)||count>XbgPipelineKey::Capacity||i+size_t(count)*4>b.size())break;r.words.resize(count);memcpy(r.words.data(),b.data()+i,size_t(count)*4);i+=size_t(count)*4;
-            if(known.insert(std::string(reinterpret_cast<const char*>(r.words.data()),r.words.size()*4)).second)recs.push_back(std::move(r));}}
-    xbg_logf("NVN warm list=%zu enabled=%d",recs.size(),int(enabled));
+    const std::string list=list_path(),base=list.substr(0,list.find_last_of('/'));
+    bool found=false;const size_t own=load_list(list,found);
+    bool seed_on=true;const char *why="default";{FILE *m=fopen((base+"/gfx-warm-seed").c_str(),"rb");if(m){seed_on=fgetc(m)!='0';fclose(m);why="marker";}else if(const char *e=getenv("DM_GFX_WARM_SEED")){seed_on=atoi(e)!=0;why="env";}}
+    size_t seeded=0;
+    if(seed_on)for(const std::string &p:xbg_warm_seed_paths(getenv("DM_WARM_SEED_DIR"),base,cfg.shader_directory,gpu_policy)){bool have=false;const size_t n=load_list(p,have);
+        if(have){xbg_logf("NVN warm seed %s new=%zu",p.c_str(),n);seeded+=n;}}
+    xbg_logf("NVN warm list=%zu enabled=%d own=%zu seed=%zu family=%s (DM_GFX_WARM_SEED=%d %s; APK assets warm-seed/<family>.bin)",recs.size(),int(enabled),own,seeded,xbg_gpu_family_name(gpu_policy),int(seed_on),why);
     if(!enabled || recs.empty())return;stop=false;next=0;unsigned n=std::min<unsigned>(3,std::max(1u,std::thread::hardware_concurrency()/3));
     for(unsigned i=0;i<n;i++)threads.emplace_back(worker);
 }
-void shutdown(){{std::lock_guard<std::mutex> l(mu);stop=true;}async_cv.notify_all();for(auto &t:threads)if(t.joinable())t.join();threads.clear();if(async_thread.joinable())async_thread.join();std::lock_guard<std::mutex> l(mu);async_q.clear();async_pending.clear();async_failed.clear();
+void shutdown(){{std::lock_guard<std::mutex> l(mu);stop=true;}async_cv.notify_all();for(auto &t:threads)if(t.joinable())t.join();threads.clear();if(async_thread.joinable())async_thread.join();if(async_thread2.joinable())async_thread2.join();std::lock_guard<std::mutex> l(mu);async_q.clear();async_pending.clear();async_failed.clear();
     for(auto &p:ready)vkDestroyPipeline(cfg.device,p.second,nullptr);ready.clear();for(auto &p:layouts)vkDestroyPipelineLayout(cfg.device,p.second,nullptr);layouts.clear();for(auto s:set_layouts)vkDestroyDescriptorSetLayout(cfg.device,s,nullptr);set_layouts.clear();
     for(auto &p:passes)vkDestroyRenderPass(cfg.device,p.second,nullptr);passes.clear();for(auto &m:modules)vkDestroyShaderModule(cfg.device,m.second,nullptr);modules.clear();ids.clear();id_keys.clear();recs.clear();known.clear();rewritten.clear();}
 bool take(const std::string &bytes,VkPipeline &out){std::lock_guard<std::mutex> l(mu);auto it=ready.find(bytes);if(it==ready.end())return false;out=it->second;ready.erase(it);return true;}
@@ -3798,7 +3836,9 @@ void pipeline_lookup(PipelineLease &out,const XbgPipelineKey &key,bool cacheable
         pipeguard::gend();
 #endif
             return;}
+        pfb::Chain fb;fb.attach(g,g.stageCount);
         VkResult made;{gpguard::Lock serial;made=vkCreateGraphicsPipelines(cfg.device,pipeline_cache,1,&g,nullptr,&out.pipeline);}
+        fb.account(pfb::FRAME);
 #if defined(DM_GAME_ETERNAL) || defined(DM_GAME_XC2) || defined(DM_GAME_D3)
         pipeguard::gend();
 #endif
@@ -5638,18 +5678,37 @@ bool first_draw_covers(const Pass &p,int prim,int first,int count,const p_draw_i
         ++noload_why[state.poly.cull && nvn_cover(P,count,prim,NVN_COVER_CULL_NONE,1,1,vp,1,sc,long(p.width),long(p.height))?3:7];return false;}
     return true;
 }
-// gfx-async-pipelines: may this draw be skipped while its pipeline builds? Only when losing it for a few frames loses a
+// gfx-async-pipelines: may this draw be skipped while its pipeline builds? The rule itself is xbg_async_may_skip
+// (xbg_async_policy.h, tests/async_policy_test.cpp); this gathers the facts.
+// Mode 1 (the rule before DM_GFX_ASYNC_PIPELINES=2, unchanged): only when losing it for a few frames loses a
 // translucent effect: every written color target blends with the destination (a destination factor other than ZERO, so
 // a ONE / ZERO "blend" that overwrites is not one), no depth or stencil write, no storage buffer or image writes in any
 // stage, no capture running, and no samples counted once the game has recorded a samples-passed report. D2R counts samples
 // for every draw after its first counter reset but never reports them, so counting alone excluded every draw (fc46144).
-bool async_skippable(const std::vector<VkPipelineColorBlendAttachmentState> &att,const VkPipelineDepthStencilStateCreateInfo &ds){
-    if(!warm::async_on || (state.count_samples && samples_report_seen) || capture.active || ds.depthWriteEnable)return false;
-    if(ds.stencilTestEnable && (ds.front.writeMask || ds.back.writeMask))return false;
-    bool writes=false;for(auto &a:att)if(a.colorWriteMask){if(!a.blendEnable || a.dstColorBlendFactor==VK_BLEND_FACTOR_ZERO)return false;writes=true;}
-    if(!writes)return false;
-    for(unsigned i=0;i<5;i++)if(state.shader[i]){if(!state.shader[i]->storage_writes.empty())return false;for(auto &b:state.shader[i]->bindings)if(b.type==VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)return false;}
-    return true;
+// Mode 2 ([TL2 stutter], default when the GPU policy is not Adreno) adds opaque and depth-writing draws, by nx2android's rule
+// (nxnative gfx_vk_exec.c, DM_VK_ASYNC_PIPE) made stricter: the draw continues an open pass (it does not begin one and no
+// lazy clear waits for it, so the LOAD / CLEAR / DONT_CARE choice of the pass was made by a recorded draw) and every
+// attachment of the pass was drawn into in this present and each of the two before, took 8+ draws in the last one and has
+// already taken a draw in this one (Image::rt_age, advanced by draw() for every draw), and the draw is more than a quad
+// (an opaque draw of at most 6 vertices is a full-screen copy or backdrop). Still never: stencil writes (a mask
+// later draws test), storage writes, rasterizer discard, captures, counted samples the game reads. So a scene object, a
+// shadow caster or a UI element appears a few presents late, while one-shot targets (portraits, the minimap), full-screen
+// post-processing passes and the first draw after a clear always build at once.
+bool async_skippable(const std::vector<VkPipelineColorBlendAttachmentState> &att,const VkPipelineDepthStencilStateCreateInfo &ds,const VkPipelineRasterizationStateCreateInfo &rs,const Pass &p,VkCommandBuffer cmd,bool quad){
+    if(!warm::async_on)return false;
+    XbgAsyncDraw d;d.capture=capture.active;d.samples_reported=state.count_samples && samples_report_seen;d.depth_write=ds.depthWriteEnable!=0;
+    d.stencil_write=ds.stencilTestEnable && (ds.front.writeMask || ds.back.writeMask);d.raster_discard=rs.rasterizerDiscardEnable!=0;d.quad=quad;
+    d.blends_all=true;for(auto &a:att)if(a.colorWriteMask){d.color_write=true;if(!a.blendEnable || a.dstColorBlendFactor==VK_BLEND_FACTOR_ZERO)d.blends_all=false;}
+    for(unsigned i=0;i<5 && !d.storage_writes;i++)if(state.shader[i]){if(!state.shader[i]->storage_writes.empty())d.storage_writes=true;for(auto &b:state.shader[i]->bindings)if(b.type==VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)d.storage_writes=true;}
+    if(warm::async_mode<2)return xbg_async_may_skip(1,d);
+    d.pass_open=open_pass.cmd==cmd && open_pass.pass==p.pass && open_pass.framebuffer==p.framebuffer && !lazy_pending;
+    const uint64_t frame=stats.presents.load(std::memory_order_relaxed);d.targets_steady=p.images.n>0;
+    for(const Image *im:p.images)if(!xbg_target_age_steady(im->rt_age,frame))d.targets_steady=false;
+    const bool skip=xbg_async_may_skip(2,d);
+    // NVN PERF pipelines_bg: opaque_skips (mode 2 alone left it out), sync_young / sync_first (only the target's age / the pass start made it build at once)
+    if(skip){if(!xbg_async_may_skip(1,d))++warm::async2_skips;}
+    else{XbgAsyncDraw e=d;e.pass_open=e.targets_steady=true;if(xbg_async_may_skip(2,e)){if(!d.targets_steady)++warm::async2_young;else ++warm::async2_first;}}
+    return skip;
 }
 // 盖满整个界面矩形的无贴图块（同 nvn_mtl.m ui_cover_all）：顶点 4 个 × 20 字节，投影后正好铺满界面矩形
 // An untextured quad covering the whole UI rectangle (as nvn_mtl.m ui_cover_all): 4 vertices × 20 bytes that, after projection, exactly fill the UI rectangle
@@ -5875,6 +5934,8 @@ Pass p;create_pass(p,c);
     VkDynamicState dynamic[]={VK_DYNAMIC_STATE_VIEWPORT,VK_DYNAMIC_STATE_SCISSOR};VkPipelineDynamicStateCreateInfo dy{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};dy.dynamicStateCount=2;dy.pDynamicStates=dynamic;
     VkPipelineTessellationStateCreateInfo tess{VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO};tess.patchControlPoints=state.patch_size;need((state.shader[1]!=nullptr)==(state.shader[2]!=nullptr),"Incomplete tessellation shader pair");
     VkGraphicsPipelineCreateInfo ci{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};ci.stageCount=stages.size();ci.pStages=stages.data();ci.pVertexInputState=&vi;ci.pInputAssemblyState=&ia;ci.pViewportState=&vp;ci.pRasterizationState=&rs;ci.pMultisampleState=&ms;ci.pDepthStencilState=&ds;ci.pColorBlendState=&blend;ci.pDynamicState=&dy;ci.pTessellationState=state.shader[1]?&tess:nullptr;ci.layout=d.pipeline_layout;ci.renderPass=p.pass;
+    // [TL2 stutter] DM_GFX_ASYNC_PIPELINES=2: every draw ages its targets (async_skippable reads the ages when a pipeline is missing)
+    if(warm::async_mode==2){const uint64_t age_frame=stats.presents.load(std::memory_order_relaxed);for(Image *im:p.images)xbg_target_age_touch(im->rt_age,age_frame);}
     PipelineLease pipeline;{CPU_SCOPE(Pipeline);
         static std::vector<uint32_t> fast;fast.clear();bool use_fast=pipeline_fast_enabled && !ab_off("pipefast") && d.entry->definition.valid && p.definition->valid;
         bool memo=use_fast && pipe_memo && !ab_off("pipememo");
@@ -5883,7 +5944,7 @@ Pass p;create_pass(p,c);
         if(use_fast && !pipeline.pipeline){uint64_t a=uint64_t(uintptr_t(&d.entry->definition)),b=uint64_t(uintptr_t(p.definition));uint32_t ids[4]={uint32_t(a),uint32_t(a>>32),uint32_t(b),uint32_t(b>>32)};
             static XbgPipelineKey fkey;fkey.count=0;fkey.valid=true;   // 16 KB: one static, graphics thread only
             if(xbg_graphics_pipeline_key(fkey,ci,{ids,2,true},{ids+2,2,true})){fast.assign(fkey.words,fkey.words+fkey.count);auto f=pipeline_fast.find(fast);if(f!=pipeline_fast.end()){pipeline.pipeline=f->second;++pipeline_fast_hits;}}else use_fast=false;}
-        if(!pipeline.pipeline){XbgPipelineKey key;bool cacheable=xbg_graphics_pipeline_key(key,ci,d.entry->definition.view(),p.definition->view());pipeline_lookup(pipeline,key,cacheable,&ci,nullptr,async_skippable(attachments,ds));
+        if(!pipeline.pipeline){XbgPipelineKey key;bool cacheable=xbg_graphics_pipeline_key(key,ci,d.entry->definition.view(),p.definition->view());pipeline_lookup(pipeline,key,cacheable,&ci,nullptr,async_skippable(attachments,ds,rs,p,c.command,!gi && count<=6 && instances<=1 && (!indexed || indexed->instances<=1)));
             if(use_fast && cacheable && !pipeline.transient)pipeline_fast.emplace(fast,pipeline.pipeline);}
         if(memo && use_fast && pipeline.pipeline && !pipeline.transient){pipe_memo_key=pipe_memo_next;pipe_memo_pipeline=pipeline.pipeline;pipe_memo_valid=true;}}
     // gfx-async-pipelines: this draw is skipped while its pipeline builds in the background
@@ -5995,9 +6056,14 @@ VkCommandPool kat_pool{};VkFence kat_fence{};VkCommandBuffer kat_cb{};   // [non
 bool tried=false,ok=false;VkBuffer in_buf{},out_buf{};VkDeviceMemory in_mem{},out_mem{};size_t in_bytes=0,out_bytes=0;
 VkDescriptorSetLayout set_layout{};VkPipelineLayout layout{};VkDescriptorPool pool{};VkDescriptorSet set{};VkShaderModule module{};
 std::map<uint32_t,VkPipeline> pipelines;
+// [TL2 stutter] DM_GFX_BC_PREWARM (prewarm() below): pipelines one background thread builds at start. pw_queue: not started yet;
+// pw_building: the key in the driver now; pw_done: built (a null handle = the build failed), until pipeline() takes them.
+std::mutex pw_mu;std::condition_variable pw_cv;std::deque<uint32_t> pw_queue;uint32_t pw_building=UINT32_MAX;std::map<uint32_t,VkPipeline> pw_done;std::thread pw_thread;bool pw_stop=false,pw_on=false;std::set<uint32_t> pw_known;
 size_t out_cap(){return out_bytes?out_bytes:bc_batch_bytes();}
 size_t in_cap(){return in_bytes?in_bytes:bc_batch_bytes()/2+(16384u*32u);}   // raw blocks: at most half the decoded bytes (BC4/BC5 8-bit); 16384 regions
 void shutdown(){
+    {std::lock_guard<std::mutex> l(pw_mu);pw_stop=true;pw_queue.clear();}if(pw_thread.joinable())pw_thread.join();pw_stop=false;pw_building=UINT32_MAX;
+    for(auto &p:pw_done)if(p.second)vkDestroyPipeline(cfg.device,p.second,nullptr);pw_done.clear();pw_known.clear();pw_on=false;
     for(auto &p:pipelines)if(p.second)vkDestroyPipeline(cfg.device,p.second,nullptr);pipelines.clear();
     if(module)vkDestroyShaderModule(cfg.device,module,nullptr);if(pool)vkDestroyDescriptorPool(cfg.device,pool,nullptr);
     if(layout)vkDestroyPipelineLayout(cfg.device,layout,nullptr);if(set_layout)vkDestroyDescriptorSetLayout(cfg.device,set_layout,nullptr);
@@ -6087,15 +6153,63 @@ bool selftest(VkPipeline pipe,uint32_t fmt,uint32_t opt){
     xbg_logf("NVN BC decode: self-test fmt=%#x opt=%u blocks=%u bad=%u modes=%#x%s -> %s",fmt,opt,n,bad,modes,first,good?"gpu":selftest_mode()==2?"gpu (DM_GFX_BC_SELFTEST=2 keeps it)":"cpu (this format is decoded on the CPU)");
     return good;
 }
+// One decode pipeline (format and options are specialization constants of the one module). Any thread: the pipeline cache is
+// internally synchronised, the driver's compiler is serialised where the family needs it (gpguard::Lock).
+VkPipeline create(uint32_t fmt,uint32_t opt,VkResult &r,double &ms,int &cache_hit,double &driver_ms){
+    const uint32_t spec[2]={fmt,opt};const VkSpecializationMapEntry map[2]={{0,0,4},{1,4,4}};VkSpecializationInfo si{2,map,sizeof(spec),spec};
+    VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};ci.stage={VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};ci.stage.stage=VK_SHADER_STAGE_COMPUTE_BIT;ci.stage.module=module;ci.stage.pName="main";ci.stage.pSpecializationInfo=&si;ci.layout=layout;
+    pfb::Chain fb;fb.attach(ci,1);
+    VkPipeline p{};const uint64_t t0=timing_clock();{gpguard::Lock serial;r=vkCreateComputePipelines(cfg.device,pipeline_cache,1,&ci,nullptr,&p);}
+    ms=(timing_clock()-t0)/1e6;fb.account(pfb::COMPUTE);cache_hit=fb.valid()?int(fb.hit()):-1;driver_ms=fb.valid()?fb.whole.duration/1e6:0;
+    if(r!=VK_SUCCESS)p={};
+    return p;
+}
+// [TL2 stutter] DM_GFX_BC_PREWARM / marker gfx-bc-prewarm (default: on when the GPU policy is not Adreno): the decode pipelines are
+// built by one background thread at start instead of inside the frame that meets the first texture of each format (issue #4,
+// Mali-G615: 87.7 + 204.7 + 139.9 = 432 ms in frames). Which ones: the (format, options) pairs earlier runs used on this device
+// (vk-bc-pipelines.txt beside the warm-up list, one "fmt opt" line per pipeline a frame had to build) and, for a first launch,
+// the game's known formats (Torchlight II: BC1 / BC2 / BC3). The known-answer self-test (DM_GFX_BC_SELFTEST) still runs at the
+// first texture of the format, on the graphics thread: it needs the queue. A pipeline the thread has not started when a frame
+// needs it is built by the frame as before; one it is building is waited for.
+std::string pw_path(){std::string dir=cfg.shader_directory;size_t cut=dir.find_last_of('/');return (cut==std::string::npos?dir:dir.substr(0,cut))+"/vk-bc-pipelines.txt";}
+void pw_worker(){
+    setpriority(PRIO_PROCESS,0,5);
+    for(;;){uint32_t key;{std::lock_guard<std::mutex> l(pw_mu);if(pw_stop || pw_queue.empty())return;key=pw_queue.front();pw_queue.pop_front();pw_building=key;}
+        VkResult r=VK_SUCCESS;double ms=0,dms=0;int hit=-1;VkPipeline p=create(key&255u,key>>8,r,ms,hit,dms);
+        xbg_logf("NVN BC decode: prewarm pipeline fmt=%#x opt=%u result=%d ms=%.1f cache_hit=%d driver_ms=%.1f (background thread)",key&255u,key>>8,int(r),ms,hit,dms);
+        {std::lock_guard<std::mutex> l(pw_mu);pw_done[key]=p;pw_building=UINT32_MAX;}pw_cv.notify_all();}
+}
+void prewarm(){   // graphics thread, at initialization, once bc_decode_init chose the GPU decoder
+    if(pw_thread.joinable() || !ok)return;pw_on=true;std::vector<uint32_t> keys;
+    auto add=[&](uint32_t fmt,uint32_t opt){xbg_bc_format info;if(fmt>255 || opt>3 || xbg_bc_format_info(fmt,&info))return false;const uint32_t k=fmt|opt<<8;
+        if(std::find(keys.begin(),keys.end(),k)==keys.end() && !pipelines.count(k) && keys.size()<32)keys.push_back(k);return true;};
+    if(FILE *f=fopen(pw_path().c_str(),"rb")){char line[64];while(fgets(line,sizeof line,f)){unsigned a=0,b=0;if(sscanf(line,"%x %u",&a,&b)==2 && add(a,b))pw_known.insert(a|b<<8);}fclose(f);}
+    const size_t learned=keys.size();
+#ifdef DM_GAME_TL2
+    for(uint32_t fmt:{0x42u,0x43u,0x44u})add(fmt,0);   // the three of the issue #4 log
+#endif
+    xbg_logf("NVN BC decode: prewarm pipelines=%zu (from vk-bc-pipelines.txt=%zu, game defaults=%zu)",keys.size(),learned,keys.size()-learned);
+    if(keys.empty())return;
+    {std::lock_guard<std::mutex> l(pw_mu);pw_stop=false;pw_queue.assign(keys.begin(),keys.end());}
+    pw_thread=std::thread(pw_worker);
+}
 VkPipeline pipeline(uint32_t fmt,uint32_t opt){
     if(!tried)prepare();if(!ok)return VK_NULL_HANDLE;
     const uint32_t key=fmt|opt<<8;auto it=pipelines.find(key);if(it!=pipelines.end())return it->second;
-    const uint32_t spec[2]={fmt,opt};const VkSpecializationMapEntry map[2]={{0,0,4},{1,4,4}};VkSpecializationInfo si{2,map,sizeof(spec),spec};
-    VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};ci.stage={VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};ci.stage.stage=VK_SHADER_STAGE_COMPUTE_BIT;ci.stage.module=module;ci.stage.pName="main";ci.stage.pSpecializationInfo=&si;ci.layout=layout;
-    VkPipeline p{};const uint64_t t0=timing_clock();VkResult r;{gpguard::Lock serial;r=vkCreateComputePipelines(cfg.device,pipeline_cache,1,&ci,nullptr,&p);}
-    if(r!=VK_SUCCESS)p={};
-    xbg_logf("NVN BC decode: pipeline fmt=%#x opt=%u result=%d ms=%.1f",fmt,opt,int(r),(timing_clock()-t0)/1e6);
+    VkPipeline p{};
+    if(pw_on){const uint64_t w0=timing_clock();bool queued=false;{std::unique_lock<std::mutex> l(pw_mu);
+            for(auto q=pw_queue.begin();q!=pw_queue.end();++q)if(*q==key){pw_queue.erase(q);queued=true;break;}   // not started: this frame builds it, as before
+            pw_cv.wait(l,[&]{return pw_building!=key;});
+            auto d=pw_done.find(key);if(d!=pw_done.end()){p=d->second;pw_done.erase(d);}}
+        xbg_logf("NVN BC decode: pipeline fmt=%#x opt=%u prewarmed=%d waited_ms=%.1f%s",fmt,opt,int(p!=VK_NULL_HANDLE),(timing_clock()-w0)/1e6,queued?" (still queued: built by this frame)":"");}
+    if(!p){VkResult r=VK_SUCCESS;double ms=0,dms=0;int hit=-1;p=create(fmt,opt,r,ms,hit,dms);
+        if(hit<0)xbg_logf("NVN BC decode: pipeline fmt=%#x opt=%u result=%d ms=%.1f",fmt,opt,int(r),ms);
+        else xbg_logf("NVN BC decode: pipeline fmt=%#x opt=%u result=%d ms=%.1f cache_hit=%d driver_ms=%.1f",fmt,opt,int(r),ms,hit,dms);
+        // remembered for the next start (a format the defaults do not list)
+        if(pw_on && p && pw_known.insert(key).second)if(FILE *f=fopen(pw_path().c_str(),"ab")){fprintf(f,"%x %u\n",fmt,opt);fclose(f);}}
+    const uint64_t s0=timing_clock();
     if(p && !selftest(p,fmt,opt) && selftest_mode()==1){vkDestroyPipeline(cfg.device,p,nullptr);p={};}   // BcUpload then decodes this format on the CPU
+    if(pw_on)xbg_logf("NVN BC decode: self-test fmt=%#x opt=%u took ms=%.1f (in the frame)",fmt,opt,(timing_clock()-s0)/1e6);
     pipelines[key]=p;return p;
 }
 // [nonadreno] DM_GFX_BC_BARRIER (DOOM 2016 06.11): the barriers between the steps of a batch. full (default): each step waits behind an
@@ -7167,6 +7281,9 @@ extern "C" int xbg_game_initialize(const xbg_game_config *c,char *error,size_t b
      xbg_logf("NVN translator output clean-up: component fold=%d (marker gfx-ldc-fold) forwarded temporaries=%d (marker gfx-forward-temps)",int(ldc_fold),int(forward_temps));
      {FILE *q=fopen((base+"/gfx-shader-reuse").c_str(),"rb");shader_reuse=0;if(q){int c=fgetc(q);shader_reuse=c=='0'?0:c=='2'?2:1;fclose(q);}else if(const char *e=getenv("DM_GFX_SHADER_REUSE"))shader_reuse=atoi(e);
       warm::keep_rewritten=shader_reuse!=0;xbg_logf("NVN shader loads take the warm-up's rewritten SPIR-V=%d (marker gfx-shader-reuse; 2 also rewrites and compares)",shader_reuse);}}
+    // [TL2 stutter] pipeline creation feedback: on when vulkan_present.cpp enabled the extension (not on Adreno unless DM_GFX_SIM_GPU / DM_GFX_PIPE_FEEDBACK=1)
+    pfb::on=&dm_vk_pipe_feedback && dm_vk_pipe_feedback;for(int k=0;k<3;k++){pfb::n[k]=0;pfb::hits[k]=0;pfb::ns[k]=0;}
+    xbg_logf("NVN pipeline creation feedback=%d (VK_EXT_pipeline_creation_feedback, DM_GFX_PIPE_FEEDBACK; NVN PERF pipelines_bg fb_*)",int(pfb::on));
     xbg_module_id_hook=warm::module_id;{std::string lp=warm::list_path();FILE *nw=fopen((lp.substr(0,lp.find_last_of('/'))+"/gfx-no-warm").c_str(),"rb");warm::enabled=!nw;if(nw)fclose(nw);}warm::start();
     wtrack::enabled=false;state=State{};state.color.logic_op=3;state.color.alpha_func=8;for(unsigned i=0;i<8;i++)state.blend[i]={i,2,1,2,1,1,1};stats.reset();timing=XbgCpuTiming(timing_clock);pipeline_counts={};pipeline_before={};pipeline_tick=0;timing_active=false;timing_first=timing_last=0;live_profile_used=false;descriptor_detail=false;descriptor_timing=XbgDescriptorTiming{};descriptor_root=nullptr;draw_detail=false;draw_timing=XbgDrawTiming{};draw_root=nullptr;completed=0;last_attachment_trace=UINT64_MAX;sampler_mirror_clamp_enabled=VK_FALSE;sampler_minmax_enabled=VK_FALSE;failed=false;error_text[0]=0;initialized=true;
     {std::string dir=cfg.shader_directory;size_t cut=dir.find_last_of('/');FILE *m=fopen(((cut==std::string::npos?dir:dir.substr(0,cut))+"/gfx-sync-submit").c_str(),"rb");bool sync_submit=false;if(m){sync_submit=fgetc(m)=='1';fclose(m);}{FILE *w=fopen(((cut==std::string::npos?dir:dir.substr(0,cut))+"/gfx-async-pool-reset").c_str(),"rb");poolreset::enabled=false;if(w){poolreset::enabled=fgetc(w)!='0';fclose(w);}else if(const char *e=getenv("DM_GFX_ASYNC_POOL_RESET"))poolreset::enabled=atoi(e)!=0;poolreset::start();xbg_logf("NVN async command pool reset=%d (marker gfx-async-pool-reset)",int(poolreset::enabled));}{FILE *w=fopen(((cut==std::string::npos?dir:dir.substr(0,cut))+"/gfx-no-bindcache").c_str(),"rb");if(w){bind_cache_enabled=false;fclose(w);}}{FILE *w=fopen(((cut==std::string::npos?dir:dir.substr(0,cut))+"/gfx-no-imgcache").c_str(),"rb");if(w){img_cache_enabled=false;fclose(w);}}{FILE *w=fopen(((cut==std::string::npos?dir:dir.substr(0,cut))+"/gfx-pass-profile").c_str(),"rb");if(w){pass_prof_enabled=true;unsigned long long from=0,period=0,count=0;if(fscanf(w,"%llu %llu %llu",&from,&period,&count)>=2){pass_prof_next=from;pass_prof_period=period?period:1;if(count)pass_prof_until=from+count;}fclose(w);}}
@@ -7192,8 +7309,18 @@ extern "C" int xbg_game_initialize(const xbg_game_config *c,char *error,size_t b
       xbg_logf("NVN whole uploads of images not yet used in a submission go ahead of it=%d (marker gfx-upload-prologue)",int(upload_prologue));}
      // [TL2] default on when the GPU policy is not Adreno (issue #4: Mali-G615 frames wait 0.2-0.7 s for the driver to build
      // pipelines met for the first time); Adreno keeps the old default (off). Marker / DM_GFX_ASYNC_PIPELINES still win.
-     {FILE *m=fopen(((cut==std::string::npos?dir:dir.substr(0,cut))+"/gfx-async-pipelines").c_str(),"rb");warm::async_on=gpu_policy!=XBG_GPU_ADRENO;const char *why="default";if(m){warm::async_on=fgetc(m)!='0';fclose(m);why="marker";}else if(const char *e=getenv("DM_GFX_ASYNC_PIPELINES")){warm::async_on=atoi(e)!=0;why="env";}
-      xbg_logf("NVN background builds for skippable draws=%d (%s; policy family %s; marker gfx-async-pipelines)",int(warm::async_on),why,xbg_gpu_family_name(gpu_policy));}
+     // [TL2 stutter] 0 off / 1 blended draws / 2 also opaque draws into targets drawn every present (xbg_async_policy.h, async_skippable);
+     // default 2 when the GPU policy is not Adreno, 0 on Adreno. An old marker / value other than 0 and 2 means 1, as before.
+     {FILE *m=fopen(((cut==std::string::npos?dir:dir.substr(0,cut))+"/gfx-async-pipelines").c_str(),"rb");int mb=-1;if(m){mb=fgetc(m);if(mb<0)mb='1';fclose(m);}const char *why="default";
+      warm::async_mode=xbg_async_mode(mb,getenv("DM_GFX_ASYNC_PIPELINES"),gpu_policy,&why);warm::async_on=warm::async_mode!=0;warm::async2_skips=0;warm::async2_first=0;warm::async2_young=0;
+      xbg_logf("NVN background builds for skippable draws=%d (%s; policy family %s; marker gfx-async-pipelines; 1 = blended draws, 2 = also opaque draws into targets drawn every present)",warm::async_mode,why,xbg_gpu_family_name(gpu_policy));}
+     // [TL2 stutter] DM_GFX_BC_PREWARM: the BC decoder's compute pipelines are built at start (bcgpu::prewarm) when this device decodes BC
+     // (no native BC1, no ASTC overlay mounted). Default on when the GPU policy is not Adreno; an Adreno has BC and never decodes.
+     {FILE *m=fopen(((cut==std::string::npos?dir:dir.substr(0,cut))+"/gfx-bc-prewarm").c_str(),"rb");bool on=gpu_policy!=XBG_GPU_ADRENO;const char *why="default";if(m){on=fgetc(m)!='0';fclose(m);why="marker";}else if(const char *e=getenv("DM_GFX_BC_PREWARM")){on=atoi(e)!=0;why="env";}
+      const VkFormatFeatureFlags need_bc=VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT|VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT|VK_FORMAT_FEATURE_TRANSFER_SRC_BIT|VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+      VkFormatProperties np{};vkGetPhysicalDeviceFormatProperties(cfg.physical,VK_FORMAT_BC1_RGBA_UNORM_BLOCK,&np);const bool decodes=!(native_bc && (np.optimalTilingFeatures&need_bc)==need_bc) && !astc_ov_mask;
+      xbg_logf("NVN BC decode pipelines built at start=%d (%s; marker gfx-bc-prewarm / DM_GFX_BC_PREWARM) device decodes BC=%d",int(on),why,int(decodes));
+      if(on && decodes){bc_decode_init();if(bc_mode==2)bcgpu::prewarm();}}
      {uint32_t n=0;vkEnumerateDeviceExtensionProperties(cfg.physical,nullptr,&n,nullptr);std::vector<VkExtensionProperties> ext(n);vkEnumerateDeviceExtensionProperties(cfg.physical,nullptr,&n,ext.data());
       std::string list;for(auto &e:ext){list+=e.extensionName;list+=' ';}
       format_feature_flags2=properties.apiVersion>=VK_API_VERSION_1_3;for(auto &e:ext)if(!strcmp(e.extensionName,VK_KHR_FORMAT_FEATURE_FLAGS_2_EXTENSION_NAME))format_feature_flags2=true;

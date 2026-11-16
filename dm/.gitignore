@@ -2,6 +2,8 @@ host/dmhost
 host/dmhost_m3
 host/*.dSYM/
 *.bin
+# pipeline warm-up seeds shipped in the APK (android/<game>/warm-seed/<family>.bin)
+!android/*/warm-seed/*.bin
 *.pkl
 __pycache__/
 # 着色器翻译工具的编译中间产物（dotnet 在源码目录旁生成）

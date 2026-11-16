@@ -79,6 +79,15 @@ if (Test-Path $fa) { Remove-Item -Recurse -Force $fa }
 New-Item -ItemType Directory -Force $fa | Out-Null
 if (Test-Path work/driver-assets/drivers) { Copy-Item -Recurse work/driver-assets/drivers $fa }
 Copy-Item -Recurse dm/android/front-assets/* $fa
+# Pipeline warm-up seeds per GPU family (dm/android/tl2/warm-seed/<family>.bin, made with dm/android/tools/merge_warm_lists.py; see the README
+# there) become APK assets warm-seed/<family>.bin; DmActivity unpacks them and the engine merges the one of the phone's GPU family into its
+# own warm-up list. No seed files = no assets, nothing changes. Empty files are left out.
+$seeds = @(Get-ChildItem dm/android/tl2/warm-seed -Filter '*.bin' -ErrorAction SilentlyContinue | Where-Object { $_.Length -gt 0 })
+if ($seeds.Count) {
+    New-Item -ItemType Directory -Force $fa/warm-seed | Out-Null
+    $seeds | Copy-Item -Destination $fa/warm-seed
+    $seeds | ForEach-Object { "warm-up seed $($_.Name): $($_.Length) bytes" }
+}
 $drv = '-PdmDriverAssets=' + ((Resolve-Path $fa).Path -replace '\\', '/')
 if (-not (Get-Command $gradle -ErrorAction SilentlyContinue)) { throw "Gradle not found: '$gradle' (put gradle on PATH or set GRADLE to gradle.bat)" }
 $built = Join-Path $PWD 'dm/android/app/build/outputs/apk/debug/app-debug.apk'; if (Test-Path $built) { Remove-Item $built }   # never re-sign a stale APK
