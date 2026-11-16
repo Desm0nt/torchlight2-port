@@ -530,3 +530,23 @@ Wi-Fi» (`Tl2Gear.localPlay`, pref `mp_lan`, вкл. по умолчанию →
 `[ldn] host: network created … local id 010090400d366000`, на B `[ldn] scan: 1 network(s) answered`, `[ldn] station: connected`, на A
 `[ldn] host: node 1 joined`, затем `[net] lan: to <ip>:<порт> allowed` (UDP Pia) и `[net] lan: bind …`. Миграция хоста —
 `[ldn] host: network created … (private: given session)` / private connect. Без локальной игры — ни одной такой строки.
+
+## Present на своём потоке (DM_GFX_PRESENT_THREAD, PERF-D07, 16.11.2026; ветка `tl2-present`, по умолчанию выкл.; на телефоне не проверено)
+port-kb PERF-D07, модуль `port-common/modules/present-thread` (из DOOM 2016 `pt::loop`, как в DOS2 644078b). Ожидание fence кадра,
+`vkAcquireNextImageKHR`, letterbox / RCAS / blit, его submit и `vkQueuePresentKHR` уходят с потока трансляции на `dm-present`; порядок в очереди
+тот же, что при present inline (каждый submit движка ждёт, пока переданный blit окажется в очереди), один lock на VkQueue, drain перед
+`vkQueueWaitIdle` (finish, shutdown), ошибка present останавливает игру на следующем submit. `nvn_vk.c`: AcquireTexture ждёт blit прошлого present.
+
+Применено: `pc_apply` (из копии port-common без 4 несовпавших hunk'ов `xbg_game.cpp`) — `present_thread.h`, `vulkan_present.cpp` (+ строка `[pc]`),
+`xbg_present_thread.inc`, `nvn_vk.c`, в `xbg_game.cpp` submit_slots / NVN PERF / BC self-test / xbg_legacy_finish. Руками (текст TL2 другой):
+`#include "xbg_present_thread.inc"` перед `xbg_vendor_policy.h`, `ptq::init()` перед `crumbs::init()`, `ptq::drain()` + `ptq::wait_idle` в
+`xbg_game_shutdown`, `ptq::handoff` в `xbg_present_texture_now`. Остальные `vkQueueSubmit` движка: `xbg_selftest.cpp` (только при инициализации,
+до первого present), `xbg_vulkan.cpp` (2D-рендерер, в TL2 не вызывается). cpu-place / adpf-boost в дереве нет: поток берёт «все ядра, кроме пина
+переводчика» (минус самый медленный класс).
+
+Ключи: `DM_GFX_PRESENT_THREAD=0` (по умолчанию, как раньше) / `1` (поток) / `2` (тот же протокол inline), `DM_GFX_PRESENT_UNPIN=1`, `DM_GFX_PRESENT_CPUS=<hex>`.
+Тест: `python port-common/modules/present-thread/test/t_present_thread.py <дерево>` (WSL g++, TSan + ASan/UBSan): PASS, 39 прогонов, обе мутации пойманы.
+Телефон (boot.log): `[pc] present-thread: skipped (DM_GFX_PRESENT_THREAD=0: presents inline)`; с `=1`: `NVN DM_GFX_PRESENT_THREAD=1: …`,
+`NVN present thread mode=1 …`, `NVN present thread started tid=…`, `NVN present thread tid=… cpus X -> Y …`, `NVN PERF present_thread mode=1 handed=1.00
+jobs=1.00 busy_ms=… wait_ms=…` (wait_ms <= 0.3, full_ms 0). ABBA 90 с одной сцены (P0 `=0` / P1 `=1` / P2 `=2`): `present_cpu_ms` падает,
+`submit_cpu_ms` тот же, fps; home / back, блокировка, поворот, загрузка — без зависаний и `Game presentation failed`.
