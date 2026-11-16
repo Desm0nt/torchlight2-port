@@ -332,6 +332,13 @@ JNIEXPORT jint JNICALL Java_com_xiaoboluo_d2r_DmActivity_nativeStart(JNIEnv *env
 #endif
     log_cpu();                                // [DOOM] after the env files (DM_CPU_NOLSE), before any NVN thunk is handed out
     setenv("DM_ROMFS", romfs, 0); setenv("DM_SAVE", save, 0); setenv("DM_TEMP", temp, 0);
+#ifdef DM_GAME_TL2
+    // [TL2] ASTC texture cache for GPUs without BC (xbg_astc_cache_tl2.inc, docs/tl2/ASTC_CACHE.md): the setup / phone pack lives in
+    // Download/Torchlight2Mobile/astc (DM_ASTC_DATA_DIR), the lazy cache in the app's own external directory (FUSE bypass, no storage
+    // permission, removed with the app: DM_TEX_ASTC_CACHE_DIR). dm/env wins both.
+    setenv("DM_ASTC_DATA_DIR", g_src, 0);
+    { char ad[1200]; snprintf(ad, sizeof ad, "%s/astc", g_ext); setenv("DM_TEX_ASTC_CACHE_DIR", ad, 0); }
+#endif
 #ifdef DM_GAME_XC2
     // [XC2] add-on content: Download/Xenoblade2Mobile/aoc/<index> holds each DLC's extracted RomFS (index 1 Torna); present = owned
     { char aoc[1100]; snprintf(aoc, sizeof aoc, "%s/aoc", g_src); setenv("DM_AOC", aoc, 0);
@@ -771,3 +778,24 @@ void dm_hold_quit(void);
 JNIEXPORT void JNICALL Java_com_xiaoboluo_d2r_DmActivity_nativeQuit(JNIEnv *env, jclass cls) { (void)env; (void)cls; LOG("[java] the app ends (pause menu)"); dm_hold_quit(); }
 JNIEXPORT jint JNICALL Java_com_xiaoboluo_d2r_DmActivity_nativeOpmode(JNIEnv *env, jclass cls) { (void)env; (void)cls; return dm_opmode(); }
 JNIEXPORT void JNICALL Java_com_xiaoboluo_d2r_DmActivity_nativeSetOpmode(JNIEnv *env, jclass cls, jint m) { (void)env; (void)cls; dm_set_opmode(m ? 1 : 0); }
+
+#ifdef DM_ASTC_CONVERT
+// [TL2] On-phone ASTC texture cache (astc_convert.cpp, Tl2Textures.java; docs/tl2/ASTC_CACHE.md; the D3 port's builder): "[astc] ..."
+// lines go to logcat, which the wrapped __android_log_print also copies into boot.log.
+#include "astc_convert.h"
+static void astc_log(const char *line) { __android_log_print(ANDROID_LOG_INFO, "dm", "%s", line); }
+JNIEXPORT jint JNICALL Java_com_xiaoboluo_d2r_Tl2Textures_nativeAstcStart(JNIEnv *env, jclass cls, jstring dir, jint threads) {
+    (void)cls; const char *d = (*env)->GetStringUTFChars(env, dir, NULL); astc_conv_set_log(astc_log);
+    int r = astc_conv_start(d, threads); (*env)->ReleaseStringUTFChars(env, dir, d); return r;
+}
+JNIEXPORT void JNICALL Java_com_xiaoboluo_d2r_Tl2Textures_nativeAstcLimit(JNIEnv *env, jclass cls, jint n) { (void)env; (void)cls; astc_conv_limit(n); }
+JNIEXPORT void JNICALL Java_com_xiaoboluo_d2r_Tl2Textures_nativeAstcCancel(JNIEnv *env, jclass cls) { (void)env; (void)cls; astc_conv_cancel(); }
+JNIEXPORT void JNICALL Java_com_xiaoboluo_d2r_Tl2Textures_nativeAstcProgress(JNIEnv *env, jclass cls, jlongArray out) {
+    (void)cls; int64_t v[ASTC_CONV_FIELDS]; astc_conv_progress(v);
+    jsize n = (*env)->GetArrayLength(env, out); if (n > ASTC_CONV_FIELDS) n = ASTC_CONV_FIELDS;
+    jlong w[ASTC_CONV_FIELDS]; for (int i = 0; i < ASTC_CONV_FIELDS; i++) w[i] = (jlong)v[i];
+    (*env)->SetLongArrayRegion(env, out, 0, n, w);
+}
+JNIEXPORT jint JNICALL Java_com_xiaoboluo_d2r_Tl2Textures_nativeAstcBigCores(JNIEnv *env, jclass cls) { (void)env; (void)cls; return astc_conv_big_cores(); }
+JNIEXPORT jint JNICALL Java_com_xiaoboluo_d2r_Tl2Textures_nativeAstcEstimateMinutes(JNIEnv *env, jclass cls) { (void)env; (void)cls; return astc_conv_estimate_minutes(); }
+#endif

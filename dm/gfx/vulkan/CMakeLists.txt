@@ -20,3 +20,19 @@ set_target_properties(dm_vulkan_engine PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_link_libraries(dm_vulkan_engine PUBLIC log nativewindow)   # Vulkan: trampolines in the Android host (vk_driver.c)
 # nvn_vk.c is compiled in dmcore (host compatibility flags); engine deliberately
 # reuses dmcore's nvn_tex.c / nvn_deswizzle.c rather than duplicate definitions.
+# [TL2] ASTC texture cache for GPUs without BC (engine/xbg_astc_cache_tl2.inc in xbg_game.cpp: the setup / phone pack, KB TEX-15; the
+# lazy background encoder engine/xbg_astc_lazy.cpp from the DOS2 port, TEX-DOS2-01; docs/tl2/ASTC_CACHE.md): ARM astc-encoder 5.7.0
+# (Apache-2.0, dm/third_party/astcenc; NEON chosen by its own headers on arm64), zlib for the D3 cache key (CRC-32 + Adler-32).
+# Other games build without it (astccache stubs). dm/android links the same astcenc for the on-phone builder (astc_convert.cpp).
+if(DM_GAME STREQUAL "tl2")
+  if(NOT TARGET astcenc)
+    file(GLOB ASTCENC_SRCS ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/astcenc/*.cpp)
+    add_library(astcenc STATIC ${ASTCENC_SRCS})
+    target_compile_options(astcenc PRIVATE -O3 -ffp-contract=fast -Wno-unused-parameter)
+    set_target_properties(astcenc PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    target_include_directories(astcenc PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/astcenc)
+  endif()
+  target_sources(dm_vulkan_engine PRIVATE ${E}/xbg_astc_lazy.cpp)
+  target_compile_definitions(dm_vulkan_engine PRIVATE DM_ASTC_CACHE=1 DM_ASTC_LAZY=1)
+  target_link_libraries(dm_vulkan_engine PUBLIC astcenc z)
+endif()

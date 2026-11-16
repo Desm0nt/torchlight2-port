@@ -11,6 +11,7 @@ These are already in the repository; nothing to download. Each keeps its license
 | Path | What | License | Upstream |
 |---|---|---|---|
 | `dm/third_party/bcdec` | BC texture decompression | MIT or Unlicense (your choice) | <https://github.com/iOrange/bcdec> |
+| `dm/third_party/astcenc` | ARM astc-encoder 5.7.0: the ASTC texture cache for GPUs without BC (lazy encoder in the engine, on-phone builder; docs/tl2/ASTC_CACHE.md) | Apache-2.0 | <https://github.com/ARM-software/astc-encoder> |
 | `dm/third_party/flip` | Image difference metric | BSD 3-Clause | <https://github.com/NVlabs/flip> |
 | `dm/third_party/libdeflate` | Decompression | MIT | <https://github.com/ebiggers/libdeflate> |
 | `dm/gfx/vulkan/engine/third_party/bcdec` | BC texture decompression in the Android Vulkan graphics layer (same project as the bcdec above, pinned separately) | MIT or Unlicense (your choice) | <https://github.com/iOrange/bcdec> |

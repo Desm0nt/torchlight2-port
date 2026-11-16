@@ -484,6 +484,7 @@ paused (...)` / `allowed again`.
 `xbg_selftest.cpp` = D3 байт в байт (без CRLF). Покрытие форматов TL2: все 28 вершинных шейдеров `work/shaders-vk` переписаны
 `xbg_vertex_retype` во все uint и во все sint (56 модулей, 0 отказов) и прошли `spirv-val --target-env vulkan1.1` (84 модуля).
 Текстуры TL2 — BC1/BC2/BC3 + RGBA8 (XTX): на Mali/PowerVR идут через GPU-декод BC (ниже), DrawTexture — RGBA8→RGBA8 blit.
+**ASTC-кэш (16.11, ветка `tl2-astc`):** на GPU без BC BC1–3 создаются сразу в ASTC из пака setup (`tools/tl2_astc_cache.py`, 800 МБ, 67 с), сборки на телефоне («Подготовить текстуры») или ленивого кэша (фоновое кодирование промахов, моды) — `DM_GFX_ASTC_CACHE=auto`; подробности, ключ и строки лога — [ASTC_CACHE.md](ASTC_CACHE.md).
 
 **Перенесено (коммиты):**
 - `d7669f1` port-common: `audioout-keeper` (HLE-17, TL2 зовёт `OpenAudioOut`), `thread-exit-hoststack` (HLE-06), строки `[pc]` для

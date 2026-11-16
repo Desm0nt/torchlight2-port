@@ -6,6 +6,7 @@ This is code written by others, shipped with the repository so there is nothing 
 
 | Directory | What it is | Version and changes | Where it is used | License file |
 |---|---|---|---|---|
+| `astcenc/` | ARM astc-encoder (ASTC encoder / decoder library) | 5.7.0, unmodified (taken from the Diablo III port, `d3-port-repo/dm/third_party/astcenc`) | [TL2] ASTC texture cache for GPUs without BC: the lazy background encoder (`dm/gfx/vulkan/engine/xbg_astc_lazy.cpp`, from the DOS2 port) and the on-phone builder (`dm/android/astc_convert.cpp`), built only with `DM_GAME=tl2`; docs/tl2/ASTC_CACHE.md | `astcenc/LICENSE.txt` (Apache-2.0) |
 | `bcdec/` | Decompression of BC-compressed textures, a single header `bcdec.h` | 0.985 (upstream commit `80859ed`), unmodified | Graphics layer: decompresses textures on the CPU when the GPU does not support BC formats (`dm/gfx/tex/nvn_bcdec.c`) | `bcdec/LICENSE` (MIT or Unlicense, your choice) |
 | `flip/` | NVIDIA FLIP, an image difference metric that models human viewing. `FLIP.h` plus the source of the command-line tool in `tool/` | Not recorded in the directory | Verification: the image quality measurements in `dm/verify/gfxq/`; build `flip` first with `make -C dm/third_party/flip` | `flip/LICENSE` (BSD 3-Clause) |
 | `libdeflate/` | Decompression library | Upstream commit `92e6a0d`, unmodified | Host: zlib decoding of the game's resource blocks (`dm/host/hle_tact.c`). Only the five decompression-related source files are built; they are listed in `dm/host/Makefile` | `libdeflate/COPYING` (MIT) |

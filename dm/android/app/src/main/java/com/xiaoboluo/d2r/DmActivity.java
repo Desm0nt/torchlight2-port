@@ -59,6 +59,7 @@ public class DmActivity extends Activity implements SurfaceHolder.Callback, Disp
     static final String DATA_DIR = TL2 ? "Torchlight2Mobile" : D3 ? "Diablo3Mobile" : XC2 ? "Xenoblade2Mobile" : ETERNAL ? "DOOM Eternal Mobile" : "DOOM Mobile";   // [DOOM] Download/<DATA_DIR>/{romfs,dm,drivers}
     private DoomPadView doomPad;
     private D3PadView d3Pad;   // [D3] its own on-screen controls (touch / gamepad layouts) instead of doomPad
+    private Tl2Textures textures; private boolean texturesAsked;   // [TL2] the on-phone ASTC texture cache (docs/tl2/ASTC_CACHE.md)
     static native int nativeStart(String filesDir, String extDir, String romfsSrc, String lang);
     // [TL2 stutter] Pipeline warm-up seeds: APK assets warm-seed/<gpu family>.bin (dm/android/tl2/warm-seed, put in by tools/build_apk.ps1) are
     // copied to files/warm-seed before the native start, where the engine merges the one of this GPU family into the phone's own warm-up list
@@ -182,8 +183,16 @@ public class DmActivity extends Activity implements SurfaceHolder.Callback, Disp
     @Override public void hold(boolean on) { if (!libraryLoaded) return; try { nativeHold(on); } catch (UnsatisfiedLinkError e) { android.util.Log.e("dm", "nativeHold missing: the game is not paused (" + e.getMessage() + ")"); } }
     @Override public void gameSettings() { new GearSettings(this).show(); }   // [front] the shared gear (Tl2Gear.java)
     // [TL2] the mod manager as its own pause-menu row (FrontMenu.Host.portRows), right after "Game settings…"
-    @Override public String[] portRows() { return TL2 ? new String[]{ Ui.t(this, "Моды…", "Mods…") } : null; }
-    @Override public void portRow(int i) { if (TL2 && i == 0) runOnUiThread(() -> Tl2Gear.showMods(new GearSettings(this), null)); }
+    // [TL2] and, on GPUs without BC, "Prepare textures" (Tl2Textures: the ASTC texture cache made on the phone; its text shows its state)
+    @Override public String[] portRows() {
+        if (!TL2) return null;
+        String mods = Ui.t(this, "Моды…", "Mods…");
+        return textures != null && Tl2Textures.wanted(this) ? new String[]{ mods, textures.label() } : new String[]{ mods };
+    }
+    @Override public void portRow(int i) {
+        if (TL2 && i == 0) runOnUiThread(() -> Tl2Gear.showMods(new GearSettings(this), null));
+        if (TL2 && i == 1 && textures != null) runOnUiThread(() -> { if (front != null) front.close(); textures.fromMenu(); });
+    }
     @Override public FrontMenu.Saves saves() { if (saves == null) saves = SaveTransfer.forGame(this, DATA_DIR); return saves; }
     @Override public void quit() {
         android.util.Log.i("dm", "[java] quit from the pause menu");
@@ -581,6 +590,13 @@ public class DmActivity extends Activity implements SurfaceHolder.Callback, Disp
             gameFrame.addView(touchOverlay, new FrameLayout.LayoutParams(-1, -1));
             touchOverlay.requestApplyInsets();
         }
+        if (TL2 && textures == null) textures = new Tl2Textures(this, gameFrame, new Tl2Textures.Game() {
+            @Override public boolean running() { return started; }
+            @Override public void hold(boolean on) { DmActivity.this.hold(on); }
+            @Override public void log(String line) { crumb(line); } });
+        // [TL2] GPUs without BC: offer the ASTC texture cache before the game starts; while it is made (up front only) the game waits
+        if (TL2 && !started && textures.holdingStart()) return;
+        if (TL2 && !started && !texturesAsked) { texturesAsked = true; if (textures.askAtStart(this::startHost)) return; }
         if (!view.getHolder().getSurface().isValid() || view.getWidth() <= 0 || view.getHeight() <= 0) return;
         File ext = getExternalFilesDir(null);
         if (ext == null) { showStartError(getString(R.string.dmAndroidStorage)); return; }

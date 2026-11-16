@@ -206,6 +206,15 @@ else()
 add_library(dm SHARED $<TARGET_OBJECTS:dm_app_main> ${CMAKE_CURRENT_SOURCE_DIR}/jni_android.c ${CMAKE_CURRENT_SOURCE_DIR}/text_input_jni.c ${CMAKE_CURRENT_SOURCE_DIR}/touch_android_jni.c ${CMAKE_CURRENT_SOURCE_DIR}/overlay_validate.c ${DM_OVERLAY_HEADER})
 endif()
 target_include_directories(dm PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+# [TL2] On-phone ASTC texture cache builder (astc_convert.cpp + tl2_pak.h, Tl2Textures.java; docs/tl2/ASTC_CACHE.md): the D3 port's builder
+# with the TL2 pack reader; ARM astc-encoder 5.7.0 is the library the engine's lazy cache builds (dm/gfx/vulkan/CMakeLists.txt).
+if(DM_GAME STREQUAL "tl2")
+  target_sources(dm PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/astc_convert.cpp)
+  set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/astc_convert.cpp PROPERTIES COMPILE_OPTIONS "-O2;-std=c++17")
+  target_include_directories(dm PRIVATE ${DM}/third_party/astcenc ${DM}/gfx/tex ${DM}/gfx/nvn ${DM}/gfx/vulkan/engine)
+  target_compile_definitions(dm PRIVATE DM_ASTC_CONVERT=1)
+  target_link_libraries(dm PRIVATE astcenc z)
+endif()
 target_compile_definitions(dm PRIVATE $<$<CONFIG:Debug>:DM_ANDROID_DEBUG_ENV=1>)
 target_link_libraries(dm PRIVATE -Wl,--whole-archive dmcore -Wl,--no-whole-archive android)
 target_link_options(dm PRIVATE -Wl,--no-undefined -Wl,-z,nostart-stop-gc -Wl,-Bsymbolic)   # 汇编按页寻址宿主全局（adrp + :lo12:）：库内符号就地绑定，不许被抢占 | assembly addresses host globals by page (adrp + :lo12:): symbols bind locally inside the library and cannot be preempted
