@@ -628,6 +628,7 @@ public class DmActivity extends Activity implements SurfaceHolder.Callback, Disp
             showStartError(resource == 0 ? getString(R.string.dmAndroidStartFailed, result) : (D3 ? d3Ui() : this).getString(resource)); return;
         }
         started = true;
+        GameStateHint.install(this, resumed);   // [game-state] GameManager.setGameState from the native loading / scene state (API 33)
         if (touchOverlay != null) touchOverlay.setInputEnabled(true);
         drivers.gameStarted(view);   // [front] VkDrivers: the notice from this launch's driver check, then the crash guard / fallback watch
         nativeFocus(3);

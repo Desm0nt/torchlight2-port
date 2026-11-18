@@ -12,6 +12,10 @@
 #include <unistd.h>
 #include <sys/resource.h>
 #include <sys/syscall.h>
+#if defined(__linux__)
+#include <pthread.h>
+#include <sched.h>
+#endif
 #include <atomic>
 #include <algorithm>
 #include <chrono>
@@ -124,6 +128,20 @@ void note_progress() {
 
 void worker() {
     setpriority(PRIO_PROCESS, (id_t)syscall(SYS_gettid), 10);
+#if defined(__linux__)
+    // [issue #4 review] Started from the translation thread (the first BC texture): a name of its own, so perf_android.c keeps it
+    // out of the ADPF session (its CPU is not frame work), and not the translator's inherited one / two core pin (cpu7).
+    pthread_setname_np(pthread_self(), "dm-astc");
+    {
+        cpu_set_t s; CPU_ZERO(&s);
+        const long n = sysconf(_SC_NPROCESSORS_CONF);
+        if (!sched_getaffinity(0, sizeof s, &s) && CPU_COUNT(&s) >= 1 && CPU_COUNT(&s) <= 2 && n > CPU_COUNT(&s) + 1) {
+            cpu_set_t w; CPU_ZERO(&w);
+            for (long c = 0; c < n && c < CPU_SETSIZE; c++) if (!CPU_ISSET(c, &s)) CPU_SET(c, &w);
+            sched_setaffinity(0, sizeof w, &w);
+        }
+    }
+#endif
     Coder cd; Result r;
     for (;;) {
         XbgAlJob j;

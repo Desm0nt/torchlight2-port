@@ -9,7 +9,11 @@ merges the seed of the phone's family behind the phone's own `dm/vk-pipeline-lis
 pipelines during the boot, so a first launch and places the player has not visited yet do not compile them inside frames.
 Records a phone cannot build fail in the warm-up (`warm_failed`) and are otherwise harmless.
 
-No seed is committed yet: we have no list from a real Mali phone.
+`mali.bin` (293 records) is `work/warm-mali/vk-pipeline-list-mali-sim.bin` from the Mi 14 Ultra run with `DM_GFX_SIM_GPU=mali`
+(16.11, Temple Steppes + inventory, no fights): source 2 below. Its keys have not been compared with a real Mali's list yet.
+Every record uses only state a Mali reports (vertex formats R8G8B8A8_UNORM / R32G32(B32(A32))_SFLOAT, attachments RGBA8 / D16 / D32,
+fill mode, no depth bounds / logic op / dual-source blend, dynamic viewport + scissor), so a non-matching record costs a background
+build, not invalid API use.
 
 ## Making a seed
 

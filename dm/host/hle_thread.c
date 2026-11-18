@@ -83,6 +83,7 @@ typedef struct thr {
     uint64_t nspin, srun_svc, srun_t0, spin_ret;   // spin-wait passes and the current spin wait (dm_spin_wait)
     uint64_t prun_svc, prun_t0, prun_ns, prun_ret;   // current run of idle timed polls (poll_sleep_ns)
     uint64_t ss_n[5], ss_host, ss_t0, ss_last, ss_chain[4];   // DM_SLEEPSTAT: SleepThread calls by length, host time in them, the last one
+    int tid;                   // [cpu-place] host thread id (Android; 0 elsewhere): hle_cpu_place.c places the guest threads by it
 } thr_t;
 static thr_t *g_all;
 
@@ -332,6 +333,9 @@ static void *thread_main(void *p) {
     t->mport = pthread_mach_thread_np(pthread_self());
     crash_thread_init();
     guest_thread_init();
+#ifdef __ANDROID__
+    pthread_mutex_lock(&G); t->tid = (int)gettid(); pthread_mutex_unlock(&G);   // [cpu-place]
+#endif
     pthread_mutex_lock(&G); while (!t->started) pthread_cond_wait(&t->cv, &G); pthread_mutex_unlock(&G);
 #if defined(__aarch64__)
     // [DOOM] issues #12/#20: remember where this pthread's own 1 MiB stack stands before leaving it for the guest stack. Nothing
@@ -396,6 +400,9 @@ uint32_t svc_thread_main_init(void) {
     pthread_setspecific(g_keythr, t);
     qos_class_t qc = QOS_CLASS_UNSPECIFIED; int rp = 0;
     pthread_get_qos_class_np(pthread_self(), &qc, &rp); t->qos = (uint32_t)qc;
+#ifdef __ANDROID__
+    pthread_mutex_lock(&G); t->tid = (int)gettid(); pthread_mutex_unlock(&G);   // [cpu-place] the main thread never runs thread_main: without this "main" is never placed
+#endif
     return t->handle;
 }
 
@@ -468,6 +475,19 @@ int thr_limit_used(void) {
     int n = 0;
     pthread_mutex_lock(&G);
     for (thr_t *t = g_all; t; t = t->all) n += !t->exited && !t->host_owned;
+    pthread_mutex_unlock(&G);
+    return n;
+}
+// [cpu-place] Live guest threads for the thread placement (hle_cpu_place.c): host tid, kind (1 = the main thread registered by
+// svc_thread_main_init), the guest's own name (SDK ThreadType, "" when it has none); returns the count. Android only (tid 0 elsewhere).
+int thr_guest_threads(int32_t *tid, uint8_t *kind, char (*name)[32], int max) {
+    int n = 0; char nb[64];
+    pthread_mutex_lock(&G);
+    for (thr_t *t = g_all; t && n < max; t = t->all) {
+        if (!t->started || t->exited || !t->tid) continue;
+        tid[n] = t->tid; kind[n] = !t->entry && !t->arg;   // the main thread has no guest entry / argument (0x1001)
+        const char *nm = t->arg ? thr_name(t, nb, sizeof nb) : ""; snprintf(name[n], 32, "%s", strcmp(nm, "?") ? nm : ""); n++;
+    }
     pthread_mutex_unlock(&G);
     return n;
 }
