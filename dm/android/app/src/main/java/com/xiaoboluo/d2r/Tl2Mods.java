@@ -29,7 +29,7 @@ import java.util.Set;
 final class Tl2Mods {
     private Tl2Mods() {}
     static final String PREF = "tl2_mods";
-    static final int CONVERTER_VERSION = 1;   // bump when Tl2ModConv's output changes: every pack is converted again
+    static final int CONVERTER_VERSION = 3;   // 2: + MEDIA/PORT/SKILLTREES.TXT (issue #6); 3: + skill icon atlases ZMODICONS_*. Bump when Tl2ModConv's output changes: every pack is converted again
 
     static File modsDir() { return new File(android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS), DmActivity.DATA_DIR + "/mods"); }
     static File workDir(android.content.Context c) { return new File(c.getFilesDir(), "tl2mods"); }
@@ -107,8 +107,8 @@ final class Tl2Mods {
             try {
                 Tl2ModConv.Result r = Tl2ModConv.convert(m.file, overlay, i, BITMAPS);
                 next.put(m.file.getName(), new String[] {r.pack, stamp(m.file)}); out.packs++;
-                out.log.add(String.format(Locale.ROOT, "converted %s -> %s: %d files, %d textures (%d converted), %d deleted, %d failed, %.1f s",
-                    m.file.getName(), r.pack, r.files, r.textures, r.converted, r.deleted, r.failed.size(), (System.nanoTime() - t0) / 1e9));
+                out.log.add(String.format(Locale.ROOT, "converted %s -> %s: %d files, %d textures (%d converted), %d deleted, %d failed, %d skill-tree classes, %d skill icons, %.1f s",
+                    m.file.getName(), r.pack, r.files, r.textures, r.converted, r.deleted, r.failed.size(), r.skilltrees, r.icons, (System.nanoTime() - t0) / 1e9));
                 for (int k = 0; k < Math.min(20, r.failed.size()); k++) out.log.add("  texture kept as PC bytes: " + r.failed.get(k));
             } catch (IOException | RuntimeException | OutOfMemoryError e) {
                 out.failed.add(m.file.getName() + ": " + e.getMessage()); out.log.add("FAILED " + m.file.getName() + ": " + e);

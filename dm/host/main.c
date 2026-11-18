@@ -172,6 +172,7 @@ static void host_preload(int argc, char **argv) {
 #endif
 #ifdef DM_GAME_TL2
     { void dm_tl2_wide_install(void); dm_tl2_wide_install(); }   // [TL2] DM_TL2_WIDE: the window / video settings at the screen's aspect before the guest runs (hle_tl2_wide.c)
+    { void dm_tl2_skilltree_install(void); dm_tl2_skilltree_install(); }   // [TL2] PC-mod classes' skill trees into the console's skill screen (hle_tl2_skilltree.c, issue #6)
 #endif
     uint64_t ta = now_ns();
 #ifndef DM_GAME_DOOM   // [DOOM] D2R-only: probes / tick hash (diag.c), target ranking (hle_target.c)

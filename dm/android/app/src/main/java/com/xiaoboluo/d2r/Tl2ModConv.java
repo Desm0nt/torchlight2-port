@@ -35,7 +35,7 @@ final class Tl2ModConv {
         long offData, offMan;
     }
     static final class Entry { String dir, name; int type; long off, size; int crc; long ft; Entry(String d, String n, int t, long o, long s, int c, long f) { dir = d; name = n; type = t; off = o; size = s; crc = c; ft = f; } }
-    static final class Result { String pack; int files, textures, converted, deleted; final List<String> failed = new ArrayList<>(); }
+    static final class Result { String pack; int files, textures, converted, deleted, skilltrees, icons; final List<String> failed = new ArrayList<>(), iconNotes = new ArrayList<>(); }
 
     // ------------------------------------------------------------ little-endian reader over a byte[]
     private static final class Rd {
@@ -253,6 +253,332 @@ final class Tl2ModConv {
         return String.format(Locale.ROOT, "ZMOD_%02d_%s", slot, slug(t));
     }
 
+    // ------------------------------------------------------------ skill trees of PC-mod classes (tools/tl2_mod.py skilltrees_text)
+    // The console never reads a class's PC skill tree layout (UISKILLTREE); its trees go into the pack as MEDIA/PORT/SKILLTREES.TXT for
+    // dm/host/hle_tl2_skilltree.c. Same rules and bytes as the Python reference (docs/tl2/TL2_PORT.md "Дерево навыков классов из модов").
+    static long tl2Hash(String s) { long h = s.length(); for (int i = 0; i < s.length(); i++) h = ((h >>> 27) ^ (h << 5) ^ s.charAt(i)) & 0xffffffffL; return h; }
+    static final long K_NAME = tl2Hash("NAME"), K_BASEFILE = tl2Hash("BASEFILE"), K_UISKILLTREE = tl2Hash("UISKILLTREE");
+    static final int ST_TREES = 12;   // the console skill table: 120 rows = 12 trees x 10 (tools/tl2_mod.py ST_TREES)
+    static final String[][] ST_STOCK = {   // the stock classes' UISKILLTREE
+        {"HUM_BERSERKER_BASE", "MEDIA/UI/MENUS/SKILLTREEOVERRIDES/SKILL_TREE_BERSERKER.LAYOUT"}, {"HUM_ARBITER_BASE", "MEDIA/UI/MENUS/SKILLTREEOVERRIDES/SKILL_TREE_ARBITER.LAYOUT"},
+        {"HUM_ENGINEER_BASE", "MEDIA/UI/MENUS/SKILLTREEOVERRIDES/SKILL_TREE_RAILMAN.LAYOUT"}, {"HUM_WANDERER_BASE", "MEDIA/UI/MENUS/SKILLTREEOVERRIDES/SKILL_TREE_OUTLANDER.LAYOUT"}};
+    static String up(String s) { StringBuilder b = new StringBuilder(s.length()); for (int i = 0; i < s.length(); i++) { char c = s.charAt(i); b.append(c >= 'a' && c <= 'z' ? (char) (c - 32) : c); } return b.toString(); }
+    static String lo(String s) { StringBuilder b = new StringBuilder(s.length()); for (int i = 0; i < s.length(); i++) { char c = s.charAt(i); b.append(c >= 'A' && c <= 'Z' ? (char) (c + 32) : c); } return b.toString(); }
+    static String clean(String s) {   // tabs / line breaks -> spaces, ASCII spaces trimmed
+        String t = s.replace('\t', ' ').replace('\r', ' ').replace('\n', ' '); int a = 0, e = t.length();
+        while (a < e && t.charAt(a) == ' ') a++; while (e > a && t.charAt(e - 1) == ' ') e--; return t.substring(a, e);
+    }
+
+    /** TL2 binary DAT v2 -> string values of the root block by key hash, or null */
+    static Map<Long, String> datTop(byte[] b) {
+        try {
+            Rd r = new Rd(b, 0); if (r.u32() != 2) return null; long n = r.u32(); Map<Long, String> st = new java.util.HashMap<>();
+            for (long i = 0; i < n; i++) {
+                long h = r.u32(); int ln = r.u16(); if (r.o + 2L * ln > b.length) return null;
+                st.put(h, new String(b, r.o, 2 * ln, StandardCharsets.UTF_16LE)); r.o += 2 * ln;
+            }
+            r.u32(); long np = r.u32(); Map<Long, String> out = new java.util.HashMap<>();
+            for (long i = 0; i < np; i++) {
+                long k = r.u32(), t = r.u32();
+                if (t == 5 || t == 8) { String v = st.get(r.u32()); out.put(k, v == null ? "" : v); }
+                else if (t == 1 || t == 2 || t == 4 || t == 6) r.u32();
+                else if (t == 3 || t == 7) r.u64();
+                else return null;
+            }
+            return out;
+        } catch (ArrayIndexOutOfBoundsException e) { return null; }
+    }
+
+    static final class LObj { final int type, parent; final String name; final Map<Integer, byte[]> props; LObj(int t, String n, Map<Integer, byte[]> p, int par) { type = t; name = n; props = p; parent = par; } }
+    /** TL2 binary LAYOUT (version 0x0b) -> objects in file order (parent = index, -1 for roots), or null */
+    static List<LObj> layoutObjects(byte[] b) {
+        if (b.length < 8 || (b[0] & 0xff) != 0x0b) return null;
+        List<LObj> objs = new ArrayList<>();
+        try { Rd r = new Rd(b, 6); int n = r.u16(); for (int i = 0; i < n; i++) layoutObj(b, r, -1, objs); }
+        catch (ArrayIndexOutOfBoundsException | IOException e) { return null; }
+        return objs;
+    }
+    private static void layoutObj(byte[] b, Rd r, int parent, List<LObj> objs) throws IOException {
+        long st = r.o, size = r.u32(); int type = r.u8(); r.o += 8;
+        int n = r.u16(); if (r.o + 2L * n > b.length) throw new IOException("string past the end");
+        String name = new String(b, r.o, 2 * n, StandardCharsets.UTF_16LE); r.o += 2 * n;
+        int np = r.u8(); Map<Integer, byte[]> props = new java.util.HashMap<>();
+        for (int i = 0; i < np; i++) {
+            int sz = r.u16(), pid = r.u8(); if (sz < 1 || r.o - 3 + 2L + sz > b.length) throw new IOException("bad property");
+            props.put(pid, java.util.Arrays.copyOfRange(b, r.o, r.o + sz - 1)); r.o += sz - 1;
+        }
+        long ex = r.u32(); if (r.o + ex > b.length) throw new IOException("extra block past the end"); r.o += (int) ex;
+        int me = objs.size(); objs.add(new LObj(type, name, props, parent));
+        int nc = r.u16(); for (int i = 0; i < nc; i++) layoutObj(b, r, me, objs);
+        if (r.o != st + size) throw new IOException("object size mismatch");
+    }
+    private static String pws(byte[] v) {
+        if (v == null || v.length < 2) return null; int n = (v[0] & 0xff) | (v[1] & 0xff) << 8;
+        return 2 + 2 * n == v.length ? new String(v, 2, 2 * n, StandardCharsets.UTF_16LE) : null;
+    }
+    private static double pf(byte[] v) { return v != null && v.length == 4 ? Float.intBitsToFloat(le32(v, 0)) : 0.0; }
+    private static int num(String name, String pre) {
+        String u = up(name); if (!u.startsWith(pre)) return 0; String r = u.substring(pre.length());
+        if (r.length() < 1 || r.length() > 3) return 0; for (int i = 0; i < r.length(); i++) if (r.charAt(i) < '0' || r.charAt(i) > '9') return 0;
+        return Integer.parseInt(r);
+    }
+    private static final java.util.regex.Pattern TAB_ICON = java.util.regex.Pattern.compile("IG_SKILLTABS_(.+?)_(OFF|ON|ROLLOVER)");
+    private static final class Row { final double y, x; final int idx; final String name; Row(double y, double x, int i, String n) { this.y = y; this.x = x; idx = i; name = n; } }
+    static final class Trees { final List<String> lines = new ArrayList<>(); int nskills; }
+    /** -> T / S / X lines (without the layout index) or null; tools/tl2_mod.py layout_trees */
+    static Trees layoutTrees(byte[] b) {
+        List<LObj> objs = layoutObjects(b); if (objs == null) return null;
+        java.util.TreeMap<Integer, String[]> tabs = new java.util.TreeMap<>(); java.util.TreeMap<Integer, List<Row>> panes = new java.util.TreeMap<>();
+        for (LObj o : objs) {
+            int n = num(o.name, "TAB");
+            if (o.type == 0x58 && n != 0 && !tabs.containsKey(n)) {
+                String icon = pws(o.props.getOrDefault(0x41, new byte[0])); if (icon == null) icon = "";
+                java.util.regex.Matcher m = TAB_ICON.matcher(up(icon)); String lb = pws(o.props.getOrDefault(0x23, new byte[0]));
+                tabs.put(n, new String[] {clean(lb == null ? "" : lb), m.matches() ? lo(m.group(1)) : "-"});
+            }
+            if (o.type == 0x3d && o.props.containsKey(0x40) && o.props.containsKey(0x7b)) {
+                String sk = pws(o.props.get(0x40)); int p = o.parent, pane = 0; boolean inside = false;
+                while (p >= 0) {
+                    LObj q = objs.get(p);
+                    if (q.type == 0x3d && q.props.containsKey(0x40) && q.props.containsKey(0x7b)) { inside = true; break; }
+                    pane = num(q.name, "SKILLPANE"); if (pane != 0) break;
+                    p = q.parent;
+                }
+                if (sk != null && !sk.isEmpty() && pane != 0 && !inside) {
+                    List<Row> l = panes.computeIfAbsent(pane, k -> new ArrayList<>());
+                    l.add(new Row(pf(o.props.get(0x22)), pf(o.props.get(0x3f)), l.size(), clean(sk)));
+                }
+            }
+        }
+        Trees t = new Trees(); java.util.TreeSet<Integer> all = new java.util.TreeSet<>(tabs.keySet()); all.addAll(panes.keySet());
+        List<String> notes = new ArrayList<>(), sl = new ArrayList<>(); List<String[]> over = new ArrayList<>(); int nt = 0;   // over: {tree, label, icon, skill}
+        for (int n : all) {
+            List<Row> rows = new ArrayList<>(panes.getOrDefault(n, new ArrayList<>()));
+            if (nt >= ST_TREES) { String[] tb = tabs.get(n); notes.add("X\t%\ttree " + n + " (" + (tb == null || tb[0].isEmpty() ? "no tab" : tb[0]) + ", " + rows.size() + " skills) dropped: no free tree slot"); continue; }
+            String[] tb = tabs.getOrDefault(n, new String[] {"", "-"}); int tr = nt++;
+            String label = tb[0].isEmpty() ? "Skills " + n : tb[0], icon = tb[1].isEmpty() ? "-" : tb[1];
+            t.lines.add("T\t%\t" + tr + "\t" + label + "\t" + icon);
+            if (rows.isEmpty()) continue;
+            rows.sort((a, c) -> a.y < c.y ? -1 : a.y > c.y ? 1 : a.x < c.x ? -1 : a.x > c.x ? 1 : Integer.compare(a.idx, c.idx));
+            double ymax = rows.get(rows.size() - 1).y; boolean multi = false; for (Row r : rows) if (r.y != ymax) multi = true;
+            List<Row> pas = new ArrayList<>(), act = new ArrayList<>();
+            if (multi) for (Row r : rows) if (r.y == ymax) pas.add(r);
+            if (pas.size() > 3) pas.clear();
+            for (Row r : rows) if (!pas.contains(r)) act.add(r);
+            if (act.size() + pas.size() > 10) { for (int i = 7; i < act.size(); i++) over.add(new String[] {Integer.toString(tr), label, icon, act.get(i).name}); act = new ArrayList<>(act.subList(0, 7)); }
+            for (int s = 0; s < act.size(); s++) sl.add("S\t%\t" + tr + "\t" + s + "\t" + act.get(s).name);
+            for (int s = 0; s < pas.size(); s++) sl.add("S\t%\t" + tr + "\t" + (10 - pas.size() + s) + "\t" + pas.get(s).name);
+        }
+        for (int o = 0; o < over.size(); o += 10) {   // overflow trees: "<tree> II" from one tree, else "More Skills"; 10 each
+            if (nt >= ST_TREES) { for (int i = o; i < over.size(); i++) notes.add("X\t%\t" + over.get(i)[3] + " (tree " + over.get(i)[0] + ") dropped: no free tree slot"); break; }
+            List<String[]> chunk = over.subList(o, Math.min(over.size(), o + 10)); boolean one = true;
+            for (String[] c : chunk) if (!c[0].equals(chunk.get(0)[0])) one = false;
+            int tr = nt++;
+            t.lines.add("T\t%\t" + tr + "\t" + (one ? chunk.get(0)[1] + " II" : "More Skills") + "\t" + (one ? chunk.get(0)[2] : "-"));
+            for (int s = 0; s < chunk.size(); s++) sl.add("S\t%\t" + tr + "\t" + s + "\t" + chunk.get(s)[3]);
+        }
+        t.nskills = sl.size(); t.lines.addAll(sl); t.lines.addAll(notes); return t;
+    }
+    private static String norm(String s) { String u = up(s.replace('\\', '/')); int i = 0; while (i < u.length() && u.charAt(i) == '/') i++; return u.substring(i); }
+    /** files: UPPER path -> bytes (player DATs, UI layouts) -> MEDIA/PORT/SKILLTREES.TXT, or null */
+    static byte[] skilltreesText(Map<String, byte[]> files) {
+        java.util.TreeMap<String, Map<Long, String>> dats = new java.util.TreeMap<>();
+        for (Map.Entry<String, byte[]> f : files.entrySet())
+            if (f.getKey().startsWith("MEDIA/UNITS/PLAYERS/") && f.getKey().endsWith(".DAT")) { Map<Long, String> t = datTop(f.getValue()); if (t != null) dats.put(f.getKey(), t); }
+        Map<String, Trees> lays = new java.util.HashMap<>(); List<String[]> units = new ArrayList<>();
+        for (Map.Entry<String, Map<Long, String>> d : dats.entrySet()) {
+            Map<Long, String> t = d.getValue(); String name = t.getOrDefault(K_NAME, ""), tree = ""; int seen = 0;
+            while (t != null && seen < 8) {
+                String v = t.get(K_UISKILLTREE); if (v != null && !v.isEmpty()) { tree = norm(v); break; }
+                t = dats.get(norm(t.getOrDefault(K_BASEFILE, ""))); seen++;
+            }
+            if (!name.isEmpty() && !tree.isEmpty() && files.containsKey(tree)) {
+                if (!lays.containsKey(tree)) lays.put(tree, layoutTrees(files.get(tree)));
+                Trees tr = lays.get(tree); if (tr != null && tr.nskills > 0) units.add(new String[] {up(clean(name)), tree});
+            }
+        }
+        // a mod that replaces a stock class's layout but not its DAT (TL2 ACE: SKILL_TREE_RAILMAN): the stock base unit uses that layout
+        java.util.HashSet<String> mine = new java.util.HashSet<>(); for (Map<Long, String> t : dats.values()) mine.add(up(clean(t.getOrDefault(K_NAME, ""))));
+        for (String[] s : ST_STOCK) {
+            if (mine.contains(s[0]) || !files.containsKey(s[1])) continue;
+            if (!lays.containsKey(s[1])) lays.put(s[1], layoutTrees(files.get(s[1])));
+            Trees tr = lays.get(s[1]); if (tr != null && tr.nskills > 0) units.add(new String[] {s[0], s[1]});
+        }
+        java.util.TreeSet<String> usedSet = new java.util.TreeSet<>(); for (String[] u : units) usedSet.add(u[1]);
+        if (usedSet.isEmpty()) return null;
+        List<String> used = new ArrayList<>(usedSet); StringBuilder sb = new StringBuilder("TL2SKILLTREES\t2\n");
+        for (int i = 0; i < used.size(); i++) {
+            sb.append("L\t").append(i).append('\t').append(used.get(i)).append('\n');
+            for (String l : lays.get(used.get(i)).lines) sb.append(l.replaceFirst("%", Integer.toString(i))).append('\n');
+        }
+        units.sort((a, c) -> { int k = a[0].compareTo(c[0]); return k != 0 ? k : a[1].compareTo(c[1]); });
+        java.util.HashSet<String> done = new java.util.HashSet<>();
+        for (String[] u : units) if (done.add(u[0])) sb.append("C\t").append(u[0]).append('\t').append(used.indexOf(u[1])).append('\n');
+        return sb.toString().getBytes(StandardCharsets.UTF_8);
+    }
+
+    // ------------------------------------------------------------ skill icons of PC mods -> a console UI atlas (tools/tl2_mod.py icon_atlases)
+    // The console UI loads every .ATLAS (MAN type 26) under MEDIA/UICONSOLE/ATLASES/ at boot (main+0x141040 / 0x1a00360) and draws a skill's
+    // SKILL_ICON / SKILL_ICON_INACTIVE from them; PC mods ship CEGUI imagesets instead. Every icon a mod skill names and a mod imageset
+    // defines goes into ZMODICONS_<mod id>_<k>.ATLAS + .DDS (RGBA8 XTX, shelf-packed, padding 2) in the mod's pack.
+    static final long[] K_ICONS = {tl2Hash("SKILL_ICON"), tl2Hash("SKILL_ICON_INACTIVE")};
+    static final String ATLAS_DIR = "MEDIA/UICONSOLE/ATLASES/"; static final int ATLAS_MAX = 2048;
+    interface TexSource { byte[] get(String upperPath) throws IOException; }
+    static final class Gen { final String dir, name; final int type; final byte[] data; Gen(String d, String n, int t, byte[] b) { dir = d; name = n; type = t; data = b; } }
+
+    private static String text(byte[] b) {
+        if (b.length >= 2 && (b[0] & 0xff) == 0xff && (b[1] & 0xff) == 0xfe) return new String(b, 2, b.length - 2, StandardCharsets.UTF_16LE);
+        int o = b.length >= 3 && (b[0] & 0xff) == 0xef && (b[1] & 0xff) == 0xbb && (b[2] & 0xff) == 0xbf ? 3 : 0;
+        return new String(b, o, b.length - o, StandardCharsets.UTF_8);
+    }
+    private static final java.util.regex.Pattern P_SET = java.util.regex.Pattern.compile("<Imageset\\b([^>]*)>", java.util.regex.Pattern.CASE_INSENSITIVE),
+        P_IMG = java.util.regex.Pattern.compile("<Image\\b([^>]*)>", java.util.regex.Pattern.CASE_INSENSITIVE),
+        P_ATTR = java.util.regex.Pattern.compile("([A-Za-z0-9_]+)\\s*=\\s*\"([^\"]*)\""), P_INT = java.util.regex.Pattern.compile("-?[0-9]{1,6}");
+    private static Map<String, String> attrs(String s) {
+        Map<String, String> m = new java.util.HashMap<>(); java.util.regex.Matcher a = P_ATTR.matcher(s);
+        while (a.find()) m.put(up(a.group(1)), a.group(2));   // a repeated attribute: the last one (as the Python dict)
+        return m;
+    }
+    static final class Img { final String name; final int x, y, w, h; Img(String n, int x, int y, int w, int h) { name = n; this.x = x; this.y = y; this.w = w; this.h = h; } }
+    /** -> {Imagefile} + images, or null; tools/tl2_mod.py imageset_parse */
+    static Object[] imagesetParse(byte[] b) {
+        String t = text(b); java.util.regex.Matcher m = P_SET.matcher(t); if (!m.find()) return null;
+        String file = attrs(m.group(1)).getOrDefault("IMAGEFILE", ""); List<Img> out = new ArrayList<>();
+        java.util.regex.Matcher im = P_IMG.matcher(t);
+        while (im.find()) {
+            Map<String, String> a = attrs(im.group(1));
+            String xs = a.get("XPOS"), ys = a.get("YPOS"), ws = a.get("WIDTH"), hs = a.get("HEIGHT"), nm = a.get("NAME");
+            if (xs == null || ys == null || ws == null || hs == null) continue;
+            if (!P_INT.matcher(xs).matches() || !P_INT.matcher(ys).matches() || !P_INT.matcher(ws).matches() || !P_INT.matcher(hs).matches() || nm == null || nm.isEmpty()) continue;
+            int w = Integer.parseInt(ws), h = Integer.parseInt(hs);
+            if (w >= 1 && w <= 512 && h >= 1 && h <= 512) out.add(new Img(nm, Integer.parseInt(xs), Integer.parseInt(ys), w, h));
+        }
+        return new Object[] {file, out};
+    }
+
+    private static int[][] bcColors(byte[] b, int o, boolean four) {
+        int c0 = (b[o] & 0xff) | (b[o + 1] & 0xff) << 8, c1 = (b[o + 2] & 0xff) | (b[o + 3] & 0xff) << 8;
+        int[] p0 = rgb565(c0), p1 = rgb565(c1);
+        if (four || c0 > c1) return new int[][] {p0, p1, {(2 * p0[0] + p1[0]) / 3, (2 * p0[1] + p1[1]) / 3, (2 * p0[2] + p1[2]) / 3, 255}, {(p0[0] + 2 * p1[0]) / 3, (p0[1] + 2 * p1[1]) / 3, (p0[2] + 2 * p1[2]) / 3, 255}};
+        return new int[][] {p0, p1, {(p0[0] + p1[0]) / 2, (p0[1] + p1[1]) / 2, (p0[2] + p1[2]) / 2, 255}, {0, 0, 0, 0}};
+    }
+    private static int[] rgb565(int c) { int r = c >> 11, g = (c >> 5) & 63, bl = c & 31; return new int[] {(r << 3) | (r >> 2), (g << 2) | (g >> 4), (bl << 3) | (bl >> 2), 255}; }
+    /** 16 RGBA pixels (row-major) of the 4x4 block at o; fmt BC1 / BC2 / BC3 (tools/tl2_mod.py bc_block) */
+    static int[][] bcBlock(byte[] b, int o, int fmt) {
+        int co = o + (fmt == BC1 ? 0 : 8); int[][] cols = bcColors(b, co, fmt != BC1); long idx = le32(b, co + 4) & 0xffffffffL;
+        int[][] px = new int[16][];
+        for (int i = 0; i < 16; i++) px[i] = cols[(int) ((idx >> (2 * i)) & 3)].clone();
+        if (fmt == BC2) {
+            long a = (le32(b, o) & 0xffffffffL) | (le32(b, o + 4) & 0xffffffffL) << 32;
+            for (int i = 0; i < 16; i++) px[i][3] = (int) ((a >>> (4 * i)) & 15) * 17;
+        } else if (fmt == BC3) {
+            int a0 = b[o] & 0xff, a1 = b[o + 1] & 0xff; long bits = 0; for (int i = 0; i < 6; i++) bits |= (b[o + 2 + i] & 0xffL) << (8 * i);
+            int[] al = new int[8]; al[0] = a0; al[1] = a1;
+            if (a0 > a1) for (int k = 1; k <= 6; k++) al[k + 1] = ((7 - k) * a0 + k * a1) / 7;
+            else { for (int k = 1; k <= 4; k++) al[k + 1] = ((5 - k) * a0 + k * a1) / 5; al[6] = 0; al[7] = 255; }
+            for (int i = 0; i < 16; i++) px[i][3] = al[(int) ((bits >> (3 * i)) & 7)];
+        }
+        return px;
+    }
+    /** level 0 of a PC texture read pixel by pixel (tools/tl2_mod.py _Tex) */
+    static final class Tex {
+        int w, h, bc, bpp; int[] idx; byte[] d, rgba; final Map<Long, int[][]> cache = new java.util.HashMap<>();
+        Tex(String name, byte[] d, ImageDecoder img) throws IOException {
+            if (d.length >= 4 && le32(d, 0) == 0x20534444) {
+                if (d.length < 128) throw new IOException("DDS truncated");
+                h = le32(d, 12); w = le32(d, 16); int pff = le32(d, 80), fourcc = le32(d, 84), bits = le32(d, 88); this.d = d;
+                if ((pff & 4) != 0) {
+                    String fc = new String(new byte[] {(byte) fourcc, (byte) (fourcc >> 8), (byte) (fourcc >> 16), (byte) (fourcc >> 24)}, StandardCharsets.ISO_8859_1);
+                    switch (fc) { case "DXT1": bc = BC1; break; case "DXT2": case "DXT3": bc = BC2; break; case "DXT4": case "DXT5": bc = BC3; break; default: throw new IOException("DDS fourcc not supported"); }
+                } else if ((pff & 0x40) != 0 && (bits == 24 || bits == 32)) {
+                    bpp = bits / 8; int ri = mbyte(le32(d, 92)), gi = mbyte(le32(d, 96)), bi = mbyte(le32(d, 100)), am = le32(d, 104), ai = mbyte(am);
+                    if (ri < 0 || gi < 0 || bi < 0 || ri >= bpp || gi >= bpp || bi >= bpp) throw new IOException("DDS masks not supported");
+                    idx = new int[] {ri, gi, bi, (pff & 1) != 0 && ai >= 0 && ai < bpp ? ai : -1};
+                } else throw new IOException("DDS format not supported");
+            } else {
+                boolean png = d.length >= 8 && (d[0] & 0xff) == 0x89 && d[1] == 'P' && d[2] == 'N' && d[3] == 'G', jpg = d.length >= 3 && (d[0] & 0xff) == 0xff && (d[1] & 0xff) == 0xd8 && (d[2] & 0xff) == 0xff;
+                if (name.toUpperCase(Locale.ROOT).endsWith(".TGA") && !png && !jpg) { int[] wh = new int[2]; rgba = tgaDecode(d, wh); w = wh[0]; h = wh[1]; }
+                else {
+                    int[] p = img == null ? null : img.decode(d); if (p == null) throw new IOException("image not decodable");
+                    w = p[0]; h = p[1]; rgba = new byte[w * h * 4];
+                    for (int i = 0; i < w * h; i++) { int c = p[2 + i]; rgba[i * 4] = (byte) (c >> 16); rgba[i * 4 + 1] = (byte) (c >> 8); rgba[i * 4 + 2] = (byte) c; rgba[i * 4 + 3] = (byte) (c >>> 24); }
+                }
+            }
+        }
+        void px(int x, int y, byte[] dst, int o) {
+            if (x < 0 || y < 0 || x >= w || y >= h) { dst[o] = dst[o + 1] = dst[o + 2] = dst[o + 3] = 0; return; }
+            if (rgba != null) { System.arraycopy(rgba, 4 * (y * w + x), dst, o, 4); return; }
+            if (bc == 0) {
+                long s = 128L + (long) bpp * ((long) y * w + x);
+                if (s + bpp > d.length) { dst[o] = dst[o + 1] = dst[o + 2] = dst[o + 3] = 0; return; }
+                int q = (int) s; dst[o] = d[q + idx[0]]; dst[o + 1] = d[q + idx[1]]; dst[o + 2] = d[q + idx[2]]; dst[o + 3] = idx[3] >= 0 ? d[q + idx[3]] : (byte) 255; return;
+            }
+            int bx = x >> 2, by = y >> 2; long k = (long) by << 32 | bx; int[][] blk = cache.get(k);
+            if (blk == null) {
+                int bs = bc == BC1 ? 8 : 16; long s = 128L + ((long) by * ((w + 3) >> 2) + bx) * bs;
+                if (s + bs <= d.length) blk = bcBlock(d, (int) s, bc);
+                else { blk = new int[16][]; for (int i = 0; i < 16; i++) blk[i] = new int[4]; }
+                cache.put(k, blk);
+            }
+            int[] p = blk[(y & 3) * 4 + (x & 3)]; dst[o] = (byte) p[0]; dst[o + 1] = (byte) p[1]; dst[o + 2] = (byte) p[2]; dst[o + 3] = (byte) p[3];
+        }
+    }
+    private static final class Def { final String name, tex; final int x, y, w, h; Def(String n, String t, int x, int y, int w, int h) { name = n; tex = t; this.x = x; this.y = y; this.w = w; this.h = h; } }
+    /** files: UPPER path -> bytes (skill DATs, imagesets); -> generated files (atlas + texture per page); counts icons in n[0] */
+    static List<Gen> iconAtlases(Map<String, byte[]> files, TexSource src, long modid, ImageDecoder img, int[] n, List<String> notes) throws IOException {
+        java.util.TreeMap<String, java.util.TreeSet<String>> want = new java.util.TreeMap<>();
+        for (String p : new java.util.TreeSet<>(files.keySet())) {
+            if (!p.startsWith("MEDIA/SKILLS/") || !p.endsWith(".DAT")) continue;
+            Map<Long, String> t = datTop(files.get(p)); if (t == null) continue;
+            for (long k : K_ICONS) { String v = t.get(k); if (v != null && !v.isEmpty()) want.computeIfAbsent(up(v), q -> new java.util.TreeSet<>()).add(v); }
+        }
+        Map<String, Def> defs = new java.util.HashMap<>();
+        for (String p : new java.util.TreeSet<>(files.keySet())) {
+            if (!p.endsWith(".IMAGESET")) continue;
+            Object[] r = imagesetParse(files.get(p)); if (r == null || ((String) r[0]).isEmpty()) continue;
+            String tp = norm((String) r[0]);
+            @SuppressWarnings("unchecked") List<Img> ims = (List<Img>) r[1];
+            for (Img i : ims) { String u = up(i.name); if (want.containsKey(u) && !defs.containsKey(u)) defs.put(u, new Def(i.name, tp, i.x, i.y, i.w, i.h)); }
+        }
+        List<Def> items = new ArrayList<>(defs.values());
+        items.sort((a, c) -> a.h != c.h ? Integer.compare(c.h, a.h) : up(a.name).compareTo(up(c.name)));
+        List<Gen> out = new ArrayList<>(); if (items.isEmpty()) return out;
+        List<List<int[]>> pages = new ArrayList<>(); List<int[]> cur = new ArrayList<>(); int x = 0, y = 0, rowh = 0;   // {item, x, y}
+        for (int i = 0; i < items.size(); i++) {
+            Def e = items.get(i); int cw = e.w + 4, ch = e.h + 4;
+            if (x + cw > ATLAS_MAX) { x = 0; y += rowh; rowh = 0; }
+            if (y + ch > ATLAS_MAX) { pages.add(cur); cur = new ArrayList<>(); x = 0; y = 0; rowh = 0; }
+            cur.add(new int[] {i, x + 2, y + 2}); x += cw; rowh = Math.max(rowh, ch);
+        }
+        pages.add(cur);
+        Map<String, Tex> texs = new java.util.HashMap<>(); java.util.HashSet<String> bad = new java.util.HashSet<>();
+        for (int k = 0; k < pages.size(); k++) {
+            int W = 64, H = 64;
+            for (int[] c : pages.get(k)) { Def e = items.get(c[0]); W = Math.max(W, c[1] + e.w + 2); H = Math.max(H, c[2] + e.h + 2); }
+            W = Integer.highestOneBit(W - 1) << 1; H = Integer.highestOneBit(H - 1) << 1;
+            byte[] page = new byte[4 * W * H]; StringBuilder ents = new StringBuilder();
+            for (int[] c : pages.get(k)) {
+                Def e = items.get(c[0]);
+                if (!texs.containsKey(e.tex) && !bad.contains(e.tex)) {
+                    byte[] d = src.get(e.tex);
+                    try { if (d != null) texs.put(e.tex, new Tex(e.tex, d, img)); else bad.add(e.tex); } catch (IOException | RuntimeException ex) { bad.add(e.tex); notes.add(e.tex + ": " + ex.getMessage()); }
+                }
+                Tex t = texs.get(e.tex);
+                if (t == null) { notes.add(e.name + ": texture " + e.tex + " not in the mod"); continue; }
+                for (int yy = 0; yy < e.h; yy++) for (int xx = 0; xx < e.w; xx++) t.px(e.x + xx, e.y + yy, page, 4 * ((c[2] + yy) * W + c[1] + xx));
+                java.util.TreeSet<String> sp = new java.util.TreeSet<>(want.get(up(e.name))); sp.add(e.name);
+                for (String s : sp) ents.append("        <entry name=\"").append(s.replace("&", "&amp;").replace("\"", "&quot;").replace("<", "&lt;").replace(">", "&gt;"))
+                    .append("\" x=\"").append(c[1]).append("\" y=\"").append(c[2]).append("\" w=\"").append(e.w).append("\" h=\"").append(e.h).append("\" />\r\n");
+                n[0]++;
+            }
+            String base = String.format(Locale.ROOT, "ZMODICONS_%016X_%d", modid, k);
+            String xml = "\ufeff<?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n<atlas texture=\"" + base + ".DDS\" padding=\"2\">\r\n    <entries>\r\n" + ents + "    </entries>\r\n</atlas>";
+            out.add(new Gen(ATLAS_DIR, base + ".ATLAS", 26, xml.getBytes(StandardCharsets.UTF_8)));
+            out.add(new Gen(ATLAS_DIR, base + ".DDS", 4, xtxBuild(new byte[][] {page}, W, H, RGBA8, -1)));
+        }
+        return out;
+    }
+
     /** Converts one .MOD into <outDir>/PAKS/<pack>.PAK(.MAN); writes to temporary names and renames at the end. */
     static Result convert(File mod, File outDir, int slot, ImageDecoder img) throws IOException {
         Result res = new Result();
@@ -265,7 +591,7 @@ final class Tl2ModConv {
             File pdir = new File(outDir, "PAKS"); if (!pdir.isDirectory() && !pdir.mkdirs()) throw new IOException("cannot create " + pdir);
             res.pack = packName(slot, info, mod);
             File pak = new File(pdir, res.pack + ".PAK.tmp"), manf = new File(pdir, res.pack + ".PAK.MAN.tmp");
-            List<Entry> out = new ArrayList<>(); long pos = 8, largest = 0;
+            List<Entry> out = new ArrayList<>(); long pos = 8, largest = 0; Map<String, byte[]> stf = new java.util.HashMap<>();
             try (OutputStream os = new BufferedOutputStream(new FileOutputStream(pak), 1 << 16)) {
                 os.write(new byte[8]);
                 byte[] hdr = new byte[8]; int[] kind = new int[1];
@@ -274,6 +600,11 @@ final class Tl2ModConv {
                     in.seek(info.offData + e.off); in.readFully(hdr);
                     long dl = le32(hdr, 0) & 0xffffffffL, cl = le32(hdr, 4) & 0xffffffffL; int crc = e.crc;
                     byte[] raw = new byte[(int) (cl != 0 ? cl : dl)]; in.readFully(raw); byte[] full = null;
+                    String up = up(e.dir + e.name);
+                    if ((up.startsWith("MEDIA/UNITS/PLAYERS/") && up.endsWith(".DAT")) || (up.startsWith("MEDIA/UI/") && up.endsWith(".LAYOUT")) ||
+                        (up.startsWith("MEDIA/SKILLS/") && up.endsWith(".DAT")) || up.endsWith(".IMAGESET")) {
+                        try { stf.put(up, cl != 0 && cl != dl ? inflate(raw, (int) dl) : raw); } catch (IOException x) { /* not for the skill-tree table */ }
+                    }
                     if (isTexture(e.name)) {
                         byte[] plain = cl != 0 && cl != dl ? inflate(raw, (int) dl) : raw;
                         try {
@@ -285,6 +616,32 @@ final class Tl2ModConv {
                     out.add(new Entry(e.dir, e.name, e.type, pos, dl, crc, e.ft));
                     os.write(new Wr().u32(dl).u32(cl).bytes()); os.write(raw); pos += 8 + raw.length;
                     largest = Math.max(largest, cl != 0 ? cl : dl); res.files++;
+                }
+                byte[] st = skilltreesText(stf);
+                if (st != null) {   // stored; a directory record for MEDIA/PORT/ in MEDIA/, then the file (as tools/tl2_mod.py convert)
+                    for (String l : new String(st, StandardCharsets.UTF_8).split("\n")) if (l.startsWith("C\t")) res.skilltrees++;
+                    CRC32 c = new CRC32(); c.update(st);
+                    out.add(new Entry("MEDIA/", "PORT/", 7, 0, 0, 0, 0)); out.add(new Entry("MEDIA/PORT/", "SKILLTREES.TXT", 0, pos, st.length, (int) c.getValue(), 0));
+                    os.write(new Wr().u32(st.length).u32(st.length).bytes()); os.write(st); pos += 8 + st.length; largest = Math.max(largest, st.length);
+                }
+                Map<String, Long> texoff = new java.util.HashMap<>();
+                for (Entry e : ents) if (e.type != 7 && e.size != 0 && isTexture(e.name)) texoff.put(up(e.dir + e.name), e.off);
+                TexSource srcTex = pth -> {
+                    Long off = texoff.get(pth); if (off == null) return null;
+                    in.seek(info.offData + off); byte[] h8 = new byte[8]; in.readFully(h8);
+                    long dl = le32(h8, 0) & 0xffffffffL, cl = le32(h8, 4) & 0xffffffffL; byte[] raw = new byte[(int) (cl != 0 ? cl : dl)]; in.readFully(raw);
+                    return cl != 0 && cl != dl ? inflate(raw, (int) dl) : raw;
+                };
+                int[] nic = new int[1]; List<Gen> ic = iconAtlases(stf, srcTex, info.modid, img, nic, res.iconNotes); res.icons = nic[0];
+                if (!ic.isEmpty()) {   // directory records MEDIA/UICONSOLE/ and its ATLASES/ unless the mod has them, then the atlas pages (stored)
+                    java.util.HashSet<String> have = new java.util.HashSet<>(); for (Entry e : ents) if (e.type == 7) have.add(e.dir + e.name);
+                    if (!have.contains("MEDIA/UICONSOLE/")) out.add(new Entry("MEDIA/", "UICONSOLE/", 7, 0, 0, 0, 0));
+                    if (!have.contains("MEDIA/UICONSOLE/ATLASES/")) out.add(new Entry("MEDIA/UICONSOLE/", "ATLASES/", 7, 0, 0, 0, 0));
+                    for (Gen g : ic) {
+                        CRC32 c = new CRC32(); c.update(g.data);
+                        out.add(new Entry(g.dir, g.name, g.type, pos, g.data.length, (int) c.getValue(), 0));
+                        os.write(new Wr().u32(g.data.length).u32(g.data.length).bytes()); os.write(g.data); pos += 8 + g.data.length; largest = Math.max(largest, g.data.length);
+                    }
                 }
             }
             for (String p : info.deletes) {

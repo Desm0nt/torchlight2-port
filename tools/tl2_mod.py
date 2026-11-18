@@ -10,6 +10,8 @@ Formats (docs/tl2/TL2_PORT.md, "Моды PC" has the evidence):
   Textures  = on the Switch every .DDS/.PNG/.JPG/.TGA inside the packs is an XTX container ('DFvN' / 'HBvN' blocks, NVN format
               0x42 BC1, 0x43 BC2, 0x44 BC3, 0x25 RGBA8, block-linear GOB layout). PC mods carry real DDS / PNG / JPG / TGA, so they
               are converted here (DXT1/3/5 and 32-bit uncompressed DDS; PNG/JPG/TGA through Pillow to RGBA8).
+  Skill trees = the console never reads a class's PC skill tree layout; its trees become MEDIA/PORT/SKILLTREES.TXT in the pack
+              (skilltrees_text below; read by dm/host/hle_tl2_skilltree.c).
 
 Device port: dm/android/.../Tl2ModConv.java (the app's mod manager, Tl2Mods.java) writes the same bytes; tools/tl2_mod_java_test.py checks.
 
@@ -17,6 +19,7 @@ Usage:
   tl2_mod.py info    <mod>                         header, file counts, texture kinds
   tl2_mod.py convert <mod> <out_overlay> [--slot N] [--no-tex]   write <out_overlay>/PAKS/ZMOD_<NN>_<name>.PAK(.MAN) + .json
   tl2_mod.py unpack  <mod|pak> <dest>              extract files (as stored, decompressed)
+  tl2_mod.py skilltrees <mod>                      the console skill-tree table the converter stores (MEDIA/PORT/SKILLTREES.TXT)
   tl2_mod.py rawsim  <romfs> [mod ...] [--out dir] [-v]   the game's own merge of MEDIA/*.RAW over the base packs + mods in load
                                                    order: per pack entries kept / shadowed (dup) / dropped (no DAT); --out
                                                    writes the merged RAWs (inspection only); --selftest: RAW round trip
@@ -270,6 +273,317 @@ def to_switch_texture(name, d):
 
 def _slug(s): return re.sub(r'[^A-Z0-9]+', '_', s.upper()).strip('_')[:40] or 'MOD'
 
+# ---------------------------------------------------------------- skill trees of PC-mod classes (issue #6)
+# The console skill screen has no layout of its own: CConsoleUIRadialMenu::Create (main+0x134ec0) picks one of four static rings by a
+# substring of the player unit's NAME (HUM_BERSERKER / HUM_ARBITER / HUM_ENGINEER / HUM_WANDERER, 0x136740..0x1369ec), each ring = 3
+# segments (tree ids 0x65..0x70), and PanelSkillList (vt main+0x23031d0) fills a tree from a hard-coded table of 120 skill names
+# (main+0x23022c0, 10 per tree: 7 active + 3 passive). The PC skill tree layout (UISKILLTREE of the class DAT) is never read. So the
+# converter turns each class's PC layout into a small text table, stored in the pack as MEDIA/PORT/SKILLTREES.TXT (a path the game never
+# opens), and dm/host/hle_tl2_skilltree.c puts it into the console ring / table while the radial menu is built. Format (UTF-8, tabs):
+#   TL2SKILLTREES 2 | L i <layout path> | T i <tree 0..11> <label> <icon key> | S i <tree> <slot 0..9> <skill name> | X i <note> |
+#   C <unit NAME> i      (upper-case ASCII where noted; Tl2ModConv.java writes the same bytes)
+ST_PATH = ('MEDIA/PORT/', 'SKILLTREES.TXT')
+ST_TREES = 12   # tree slots: the console's skill table has 120 rows = 12 x 10 (borrowed per class by hle_tl2_skilltree.c)
+ST_STOCK = tuple((f'HUM_{c}_BASE', f'MEDIA/UI/MENUS/SKILLTREEOVERRIDES/SKILL_TREE_{t}.LAYOUT') for c, t in
+                 (('BERSERKER', 'BERSERKER'), ('ARBITER', 'ARBITER'), ('ENGINEER', 'RAILMAN'), ('WANDERER', 'OUTLANDER')))   # the game's UISKILLTREE
+
+def tl2_hash(s):   # the key hash of TL2 binary DATs (UNITTYPE 0x176b64fe, NAME 0x660de5, UISKILLTREE 0xd83631af, ...)
+    h = len(s)
+    for c in s: h = ((h >> 27) ^ (h << 5) ^ ord(c)) & 0xffffffff
+    return h
+K_NAME, K_BASEFILE, K_UISKILLTREE = tl2_hash('NAME'), tl2_hash('BASEFILE'), tl2_hash('UISKILLTREE')
+
+def _up(s): return ''.join(chr(ord(c) - 32) if 'a' <= c <= 'z' else c for c in s)   # ASCII only (same in Java)
+def _lo(s): return ''.join(chr(ord(c) + 32) if 'A' <= c <= 'Z' else c for c in s)
+def _clean(s): return ''.join(' ' if c in '\t\r\n' else c for c in s).strip(' ')   # ASCII spaces only (same in Java)
+
+def dat_top(b):
+    """TL2 binary DAT v2 -> {key hash: value} of the root block (strings resolved), or None"""
+    try:
+        ver, n = struct.unpack_from('<II', b, 0); o = 8
+        if ver != 2: return None
+        st = {}
+        for _ in range(n):
+            h, ln = struct.unpack_from('<IH', b, o); o += 6
+            if o + 2 * ln > len(b): return None
+            st[h] = b[o:o + 2 * ln].decode('utf-16le', 'replace'); o += 2 * ln
+        _, np_ = struct.unpack_from('<II', b, o); o += 8
+        out = {}
+        for _ in range(np_):
+            k, t = struct.unpack_from('<II', b, o); o += 8
+            if t in (5, 8): out[k] = st.get(struct.unpack_from('<I', b, o)[0], ''); o += 4
+            elif t in (1, 2, 4, 6): o += 4
+            elif t in (3, 7): o += 8
+            else: return None
+        return out
+    except (struct.error, IndexError):
+        return None
+
+def layout_objects(b):
+    """TL2 binary LAYOUT (version 0x0b) -> flat list of (type, name, props {id: bytes}, parent index)"""
+    if len(b) < 8 or b[0] != 0x0b: return None
+    objs = []
+    def ws(o):
+        n = struct.unpack_from('<H', b, o)[0]
+        if o + 2 + 2 * n > len(b): raise ValueError('string past the end')
+        return b[o + 2:o + 2 + 2 * n].decode('utf-16le', 'replace'), o + 2 + 2 * n
+    def obj(o, parent):
+        st = o; size, typ = struct.unpack_from('<IB', b, o); o += 13   # u32 size, u8 type, u64 guid
+        name, o = ws(o); np_ = b[o]; o += 1; props = {}
+        for _ in range(np_):
+            sz, pid = struct.unpack_from('<HB', b, o)
+            if sz < 1 or o + 2 + sz > len(b): raise ValueError('bad property')
+            props[pid] = bytes(b[o + 3:o + 2 + sz]); o += 2 + sz
+        o += 4 + struct.unpack_from('<I', b, o)[0]
+        me = len(objs); objs.append((typ, name, props, parent))
+        nc = struct.unpack_from('<H', b, o)[0]; o += 2
+        for _ in range(nc): o = obj(o, me)
+        if o != st + size: raise ValueError('object size mismatch')
+        return o
+    try:
+        o = 8
+        for _ in range(struct.unpack_from('<H', b, 6)[0]): o = obj(o, -1)
+    except (struct.error, IndexError, ValueError):
+        return None
+    return objs
+
+def _pws(v):
+    if len(v) < 2: return None
+    n = struct.unpack_from('<H', v, 0)[0]
+    return v[2:2 + 2 * n].decode('utf-16le', 'replace') if 2 + 2 * n == len(v) else None
+def _pf(v): return struct.unpack('<f', v)[0] if v is not None and len(v) == 4 else 0.0
+
+def layout_trees(b):
+    """-> ([(tree, label, icon key)], [(tree, slot, skill)], [notes]) or None. Trees = TabN / SkillPaneN in N order (tree 0, 1, ...). A
+    skill is a window (type 0x3d) with a skill name (prop 0x40) and prop 0x7b inside SkillPaneN; order = rows (y, prop 0x22) then x
+    (0x3f), as the console table orders the stock trees; the lowest row (<= 3 skills) is the passive row -> the last slots of 7..9. A tree
+    holds 10 (the console panel's slots): actives past the 7th go to overflow trees after the layout's own ("<tree> II" when they come
+    from one tree, else "More Skills"), 10 each; at most ST_TREES trees in all (the console table's 120 rows / 10)."""
+    objs = layout_objects(b)
+    if objs is None: return None
+    def num(name, pre):
+        u = _up(name); r = u[len(pre):]
+        return int(r) if u.startswith(pre) and 1 <= len(r) <= 3 and all('0' <= c <= '9' for c in r) else 0
+    tabs, panes, notes = {}, {}, []
+    for i, (typ, name, props, parent) in enumerate(objs):
+        n = num(name, 'TAB')
+        if typ == 0x58 and n and n not in tabs:
+            icon = _pws(props.get(0x41, b'')) or ''
+            m = re.match(r'IG_SKILLTABS_(.+?)_(OFF|ON|ROLLOVER)$', _up(icon))
+            tabs[n] = (_clean(_pws(props.get(0x23, b'')) or ''), _lo(m.group(1)) if m else '-')
+        if typ == 0x3d and 0x40 in props and 0x7b in props:
+            sk = _pws(props[0x40])
+            p, pane, inside = parent, 0, False
+            while p >= 0:
+                if objs[p][0] == 0x3d and 0x40 in objs[p][2] and 0x7b in objs[p][2]: inside = True; break
+                pane = num(objs[p][1], 'SKILLPANE')
+                if pane: break
+                p = objs[p][3]
+            if sk and pane and not inside:
+                panes.setdefault(pane, []).append((_pf(props.get(0x22)), _pf(props.get(0x3f)), len(panes.get(pane, [])), _clean(sk)))
+    trees, skills, over = [], [], []
+    for n in sorted(set(tabs) | set(panes)):
+        if len(trees) >= ST_TREES:
+            notes.append(f'tree {n} ({tabs.get(n, ("", ""))[0] or "no tab"}, {len(panes.get(n, []))} skills) dropped: no free tree slot'); continue
+        t = len(trees); label, icon = tabs.get(n, ('', '-')); label = label or f'Skills {n}'; icon = icon or '-'
+        trees.append((t, label, icon))
+        rows = sorted(panes.get(n, []))
+        if not rows: continue
+        ymax = rows[-1][0]
+        pas = [r for r in rows if r[0] == ymax] if any(r[0] != ymax for r in rows) else []
+        if len(pas) > 3: pas = []
+        act = [r for r in rows if r not in pas]
+        if len(act) + len(pas) > 10:
+            over += [(t, label, icon, r[3]) for r in act[7:]]; act = act[:7]
+        for s, r in enumerate(act): skills.append((t, s, r[3]))
+        for s, r in enumerate(pas): skills.append((t, 10 - len(pas) + s, r[3]))
+    while over:
+        if len(trees) >= ST_TREES:
+            notes += [f'{o[3]} (tree {o[0]}) dropped: no free tree slot' for o in over]; break
+        chunk, over = over[:10], over[10:]; t = len(trees)
+        one = all(o[0] == chunk[0][0] for o in chunk)
+        trees.append((t, chunk[0][1] + ' II' if one else 'More Skills', chunk[0][2] if one else '-'))
+        skills += [(t, s, o[3]) for s, o in enumerate(chunk)]
+    return trees, skills, notes
+
+def skilltrees_text(files):
+    """files: {UPPER path: bytes} of the mod (decompressed) -> MEDIA/PORT/SKILLTREES.TXT bytes, or None (no class with a tree)"""
+    dats = {}
+    for p, d in files.items():
+        if p.startswith('MEDIA/UNITS/PLAYERS/') and p.endswith('.DAT'):
+            t = dat_top(d)
+            if t is not None: dats[p] = t
+    def norm(s): return _up(s.replace('\\', '/')).lstrip('/')
+    units, lays = [], {}
+    for p in sorted(dats):
+        t, name, tree, seen = dats[p], dats[p].get(K_NAME, ''), '', 0
+        while t is not None and seen < 8:
+            if t.get(K_UISKILLTREE): tree = norm(t[K_UISKILLTREE]); break
+            t = dats.get(norm(t.get(K_BASEFILE, ''))); seen += 1
+        if name and tree and tree in files:
+            if tree not in lays: lays[tree] = layout_trees(files[tree])
+            if lays[tree] and lays[tree][1]: units.append((_up(_clean(name)), tree))
+    # a mod that replaces a stock class's layout but not its DAT (TL2 ACE: SKILL_TREE_RAILMAN): the stock base unit uses that layout
+    mine = {_up(_clean(t.get(K_NAME, ''))) for t in dats.values()}
+    for name, tree in ST_STOCK:
+        if name not in mine and tree in files:
+            if tree not in lays: lays[tree] = layout_trees(files[tree])
+            if lays[tree] and lays[tree][1]: units.append((name, tree))
+    used = sorted({t for _, t in units})
+    if not used: return None
+    out = ['TL2SKILLTREES\t2']
+    for i, t in enumerate(used):
+        trees, skills, notes = lays[t]
+        out.append(f'L\t{i}\t{t}')
+        out += [f'T\t{i}\t{n}\t{lb}\t{ic}' for n, lb, ic in trees]
+        out += [f'S\t{i}\t{n}\t{s}\t{sk}' for n, s, sk in skills]
+        out += [f'X\t{i}\t{x}' for x in notes]
+    done = set()
+    for name, t in sorted(units):
+        if name not in done: done.add(name); out.append(f'C\t{name}\t{used.index(t)}')
+    return ('\n'.join(out) + '\n').encode('utf-8')
+
+# ---------------------------------------------------------------- skill icons of PC mods -> a console UI atlas
+# The console UI draws a skill's icon (DAT SKILL_ICON / SKILL_ICON_INACTIVE, e.g. "skillicon_eviscerate") from its texture atlases:
+# at boot main+0x141040 lists every file of type 26 (.ATLAS) under MEDIA/UICONSOLE/ATLASES/ in all packs (0x141e90) and loads each
+# (0x1a00360: XML <atlas texture="X.DDS"><entries><entry name x y w h/>, the texture from the same folder). PC mods ship their icons as
+# CEGUI imagesets (<Imageset Imagefile="media/ui/icons/skills/x.dds"><Image Name XPos YPos Width Height/>), which the console never
+# reads. So every icon a mod skill names and a mod imageset defines is copied into extra atlas pages ZMODICONS_<mod id>_<k>.ATLAS / .DDS
+# (RGBA8 XTX, shelf-packed, padding 2 like the game's) in the mod's pack. Tl2ModConv.java writes the same bytes.
+K_ICONS = (tl2_hash('SKILL_ICON'), tl2_hash('SKILL_ICON_INACTIVE'))
+ATLAS_DIR, ATLAS_MAX = 'MEDIA/UICONSOLE/ATLASES/', 2048
+
+def _text(b):   # imageset bytes -> str (UTF-8 / UTF-16 with BOM)
+    if b[:2] == b'\xff\xfe': return b[2:].decode('utf-16le', 'replace')
+    if b[:3] == b'\xef\xbb\xbf': b = b[3:]
+    return b.decode('utf-8', 'replace')
+
+def imageset_parse(b):
+    """-> (Imagefile, [(name, x, y, w, h)]); attributes in any order, case-insensitive; bad images skipped"""
+    t = _text(b); out = []
+    m = re.search(r'<Imageset\b([^>]*)>', t, re.I)
+    if not m: return None
+    head = {_up(k): v for k, v in re.findall(r'([A-Za-z0-9_]+)\s*=\s*"([^"]*)"', m.group(1))}
+    for im in re.finditer(r'<Image\b([^>]*)>', t, re.I):
+        a = {_up(k): v for k, v in re.findall(r'([A-Za-z0-9_]+)\s*=\s*"([^"]*)"', im.group(1))}
+        try:
+            v = [a['XPOS'], a['YPOS'], a['WIDTH'], a['HEIGHT']]
+            if not all(re.fullmatch(r'-?[0-9]{1,6}', s) for s in v) or not a.get('NAME'): continue
+            x, y, w, h = map(int, v)
+        except KeyError: continue
+        if 1 <= w <= 512 and 1 <= h <= 512: out.append((a['NAME'], x, y, w, h))
+    return head.get('IMAGEFILE', ''), out
+
+def _bc_colors(b, o, four):   # 4 RGBA colours of a BC1-style colour block (integer rules, the same in Java)
+    c0, c1 = struct.unpack_from('<HH', b, o)
+    def rgb(c): r, g, bl = c >> 11, (c >> 5) & 63, c & 31; return [(r << 3) | (r >> 2), (g << 2) | (g >> 4), (bl << 3) | (bl >> 2), 255]
+    p0, p1 = rgb(c0), rgb(c1)
+    if four or c0 > c1: return [p0, p1, [(2 * p0[i] + p1[i]) // 3 for i in range(3)] + [255], [(p0[i] + 2 * p1[i]) // 3 for i in range(3)] + [255]]
+    return [p0, p1, [(p0[i] + p1[i]) // 2 for i in range(3)] + [255], [0, 0, 0, 0]]
+
+def bc_block(b, o, fmt):   # -> 16 RGBA lists (row-major) of the 4x4 block at offset o; fmt 0x42 BC1, 0x43 BC2, 0x44 BC3
+    co = o + (0 if fmt == 0x42 else 8); cols = _bc_colors(b, co, fmt != 0x42)
+    idx = struct.unpack_from('<I', b, co + 4)[0]
+    px = [list(cols[(idx >> (2 * i)) & 3]) for i in range(16)]
+    if fmt == 0x43:
+        a = struct.unpack_from('<Q', b, o)[0]
+        for i in range(16): px[i][3] = ((a >> (4 * i)) & 15) * 17
+    elif fmt == 0x44:
+        a0, a1 = b[o], b[o + 1]; bits = int.from_bytes(b[o + 2:o + 8], 'little')
+        if a0 > a1: al = [a0, a1] + [((7 - k) * a0 + k * a1) // 7 for k in range(1, 7)]
+        else: al = [a0, a1] + [((5 - k) * a0 + k * a1) // 5 for k in range(1, 5)] + [0, 255]
+        for i in range(16): px[i][3] = al[(bits >> (3 * i)) & 7]
+    return px
+
+class _Tex:
+    """level 0 of a PC texture, read pixel by pixel: DDS (DXT1/3/5, 24/32-bit with byte masks) or PNG / JPG / TGA (RGBA rows)"""
+    def __init__(s, name, d):
+        s.rgba = None; s.bc = None
+        if d[:4] == b'DDS ':
+            _, flags, s.h, s.w = struct.unpack_from('<4I', d, 4)
+            pff, fourcc, bits, rm, gm, bm, am = struct.unpack_from('<II5I', d, 80); s.d = d
+            if pff & 4:
+                s.bc = {b'DXT1': 0x42, b'DXT2': 0x43, b'DXT3': 0x43, b'DXT4': 0x44, b'DXT5': 0x44}.get(struct.pack('<I', fourcc))
+                if s.bc is None: raise ValueError('DDS fourcc not supported')
+                s.cache = {}
+            elif pff & 0x40 and bits in (24, 32):
+                byte = {0xff: 0, 0xff00: 1, 0xff0000: 2, 0xff000000: 3}; s.bpp = bits // 8
+                if any(m not in byte or byte[m] >= s.bpp for m in (rm, gm, bm)): raise ValueError('DDS masks not supported')
+                s.idx = [byte[rm], byte[gm], byte[bm], byte[am] if pff & 1 and am in byte and byte[am] < s.bpp else -1]
+            else: raise ValueError('DDS format not supported')
+        elif name.upper().endswith('.TGA') and d[:8] != PNG_MAGIC and d[:3] != JPG_MAGIC:
+            s.w, s.h, s.rgba = tga_decode(d)
+        else:
+            from io import BytesIO
+            from PIL import Image
+            im = Image.open(BytesIO(d)).convert('RGBA'); s.w, s.h = im.size; s.rgba = im.tobytes()
+    def px(s, x, y):
+        if not (0 <= x < s.w and 0 <= y < s.h): return (0, 0, 0, 0)
+        if s.rgba is not None: o = 4 * (y * s.w + x); return tuple(s.rgba[o:o + 4])
+        if s.bc is None:
+            o = 128 + s.bpp * (y * s.w + x)
+            if o + s.bpp > len(s.d): return (0, 0, 0, 0)
+            i = s.idx; return (s.d[o + i[0]], s.d[o + i[1]], s.d[o + i[2]], s.d[o + i[3]] if i[3] >= 0 else 255)
+        bx, by = x >> 2, y >> 2; k = (bx, by)
+        if k not in s.cache:
+            o = 128 + (by * ((s.w + 3) >> 2) + bx) * (8 if s.bc == 0x42 else 16)
+            s.cache[k] = bc_block(s.d, o, s.bc) if o + (8 if s.bc == 0x42 else 16) <= len(s.d) else [[0, 0, 0, 0]] * 16
+        return tuple(s.cache[k][(y & 3) * 4 + (x & 3)])
+
+def icon_atlases(files, tex_get, modid):
+    """files: {UPPER path: bytes} (skill DATs, imagesets); tex_get(UPPER path) -> texture bytes or None.
+    -> ([(dir, name, MAN type, bytes)], number of icons, [notes])"""
+    want = {}
+    for p in sorted(files):
+        if p.startswith('MEDIA/SKILLS/') and p.endswith('.DAT'):
+            t = dat_top(files[p])
+            for k in K_ICONS:
+                v = (t or {}).get(k, '')
+                if v: want.setdefault(_up(v), set()).add(v)
+    defs = {}
+    for p in sorted(files):
+        if not p.endswith('.IMAGESET'): continue
+        r = imageset_parse(files[p])
+        if not r or not r[0]: continue
+        for nm, x, y, w, h in r[1]:
+            u = _up(nm)
+            if u in want and u not in defs: defs[u] = (nm, _up(r[0].replace('\\', '/')).lstrip('/'), x, y, w, h)
+    items = sorted(defs.values(), key=lambda e: (-e[5], _up(e[0])))
+    if not items: return [], 0, []
+    pages, cur, x, y, rowh, notes = [], [], 0, 0, 0, []
+    for e in items:   # shelf packing, cell = image + 2 on every side
+        cw, ch = e[4] + 4, e[5] + 4
+        if x + cw > ATLAS_MAX: x, y, rowh = 0, y + rowh, 0
+        if y + ch > ATLAS_MAX: pages.append(cur); cur, x, y, rowh = [], 0, 0, 0
+        cur.append((e, x + 2, y + 2)); x += cw; rowh = max(rowh, ch)
+    pages.append(cur)
+    texs, out, n = {}, [], 0
+    for k, pg in enumerate(pages):
+        W = H = 64
+        for e, px, py in pg: W, H = max(W, px + e[4] + 2), max(H, py + e[5] + 2)
+        W, H = 1 << (W - 1).bit_length(), 1 << (H - 1).bit_length()
+        img = bytearray(4 * W * H); ents = []
+        for e, px, py in pg:
+            nm, tp, sx, sy, w, h = e
+            if tp not in texs:
+                d = tex_get(tp)
+                try: texs[tp] = _Tex(tp, d) if d is not None else None
+                except Exception as ex: texs[tp] = None; notes.append(f'{tp}: {ex}')
+            t = texs[tp]
+            if t is None: notes.append(f'{nm}: texture {tp} not in the mod'); continue
+            for yy in range(h):
+                row = 4 * ((py + yy) * W + px)
+                for xx in range(w): img[row + 4 * xx:row + 4 * xx + 4] = bytes(t.px(sx + xx, sy + yy))
+            for sp in sorted({nm} | want[_up(nm)]): ents.append((sp, px, py, w, h))   # the imageset's spelling + every DAT spelling
+            n += 1
+        base = f'ZMODICONS_{modid & 0xffffffffffffffff:016X}_{k}'
+        esc = lambda s: s.replace('&', '&amp;').replace('"', '&quot;').replace('<', '&lt;').replace('>', '&gt;')
+        xml = '\ufeff<?xml version="1.0" encoding="utf-8"?>\r\n<atlas texture="' + base + '.DDS" padding="2">\r\n    <entries>\r\n' + ''.join(
+            f'        <entry name="{esc(nm)}" x="{px}" y="{py}" w="{w}" h="{h}" />\r\n' for nm, px, py, w, h in ents) + '    </entries>\r\n</atlas>'
+        out.append((ATLAS_DIR, base + '.ATLAS', 26, xml.encode('utf-8')))
+        out.append((ATLAS_DIR, base + '.DDS', 4, xtx_build([bytes(img)], W, H, 0x25)))
+    return out, n, notes
+
 def convert(mod_path, out_dir, slot=None, tex=True, log=print):
     info, pak, root, ents = mod_read(mod_path)
     pdir = os.path.join(out_dir, 'PAKS'); os.makedirs(pdir, exist_ok=True)
@@ -277,12 +591,17 @@ def convert(mod_path, out_dir, slot=None, tex=True, log=print):
         used = [int(m.group(1)) for f in os.listdir(pdir) for m in [re.match(r'ZMOD_(\d\d)_', f)] if m]
         slot = max(used, default=-1) + 1
     base = f'ZMOD_{slot:02d}_{_slug(info["title"] or os.path.splitext(os.path.basename(mod_path))[0])}'
-    body = bytearray(8); out = []; stats = {'files': 0, 'textures': {}, 'failed': [], 'deleted': 0}; largest = 0
+    body = bytearray(8); out = []; stats = {'files': 0, 'textures': {}, 'failed': [], 'deleted': 0, 'skilltrees': 0, 'icons': 0}; largest = 0
+    stf = {}   # player DATs + UI layouts for the console skill-tree table
     for d, n, typ, off, size, crc, ft in ents:
         if typ == 7 or (off == 0 and size == 0):
             out.append((d, n, typ, 0, 0, crc if typ == 7 else 0, ft)); continue
         dl, cl = struct.unpack_from('<II', pak, off)
         raw = bytes(pak[off + 8:off + 8 + (cl or dl)]); full = None
+        up = _up(d + n)
+        if (up.startswith('MEDIA/UNITS/PLAYERS/') and up.endswith('.DAT')) or (up.startswith('MEDIA/UI/') and up.endswith('.LAYOUT')) or                 (up.startswith('MEDIA/SKILLS/') and up.endswith('.DAT')) or up.endswith('.IMAGESET'):
+            try: stf[up] = zlib.decompress(raw) if cl and cl != dl else raw
+            except zlib.error: pass
         if tex and n.upper().endswith(TEX_EXT):
             full = zlib.decompress(raw) if cl and cl != dl else raw
             try:
@@ -296,6 +615,21 @@ def convert(mod_path, out_dir, slot=None, tex=True, log=print):
             raw = full; dl = cl = len(full); crc = zlib.crc32(full)   # this tool and the device converter (Tl2ModConv.java) write the same bytes
         out.append((d, n, typ, len(body), dl, crc, ft))
         body += struct.pack('<II', dl, cl) + raw; largest = max(largest, cl or dl); stats['files'] += 1
+    st = skilltrees_text(stf)
+    if st is not None:   # stored (packed size = size), a directory record for MEDIA/PORT/ in MEDIA/, then the file
+        stats['skilltrees'] = sum(l.startswith('C\t') for l in st.decode('utf-8').split('\n'))
+        out.append(('MEDIA/', 'PORT/', 7, 0, 0, 0, 0)); out.append((ST_PATH[0], ST_PATH[1], 0, len(body), len(st), zlib.crc32(st), 0))
+        body += struct.pack('<II', len(st), len(st)) + st; largest = max(largest, len(st))
+    texoff = {_up(d + n): off for d, n, typ, off, size, *_ in ents if typ != 7 and size and n.upper().endswith(TEX_EXT)}
+    ic, stats['icons'], inotes = icon_atlases(stf, lambda pth: pak_get(pak, texoff[pth]) if pth in texoff else None, info['modid'])
+    if ic:   # directory records MEDIA/UICONSOLE/ and its ATLASES/ unless the mod has them, then the atlas pages (stored)
+        have = {e[0] + e[1] for e in ents if e[2] == 7}
+        for dd, nn in (('MEDIA/', 'UICONSOLE/'), ('MEDIA/UICONSOLE/', 'ATLASES/')):
+            if dd + nn not in have: out.append((dd, nn, 7, 0, 0, 0, 0))
+        for dd, nn, typ, data in ic:
+            out.append((dd, nn, typ, len(body), len(data), zlib.crc32(data), 0))
+            body += struct.pack('<II', len(data), len(data)) + data; largest = max(largest, len(data))
+    stats['icon_notes'] = inotes
     for p in info['deletes']:   # deleted files: a zero entry, as the game's own patch packs do (DATA3 deletes a DATA file this way)
         p = p.replace('\\', '/').upper(); d, _, n = p.rpartition('/')
         out.append((d + '/', n, 0, 0, 0, 0, 0)); stats['deleted'] += 1
@@ -306,7 +640,9 @@ def convert(mod_path, out_dir, slot=None, tex=True, log=print):
     meta = dict(info, source=os.path.basename(mod_path), pack=base, **stats)
     os.makedirs(os.path.join(out_dir, 'meta'), exist_ok=True)   # outside PAKS: the game lists PAKS
     json.dump(meta, open(os.path.join(out_dir, 'meta', base + '.json'), 'w', encoding='utf-8'), ensure_ascii=False, indent=1)
-    log(f'{base}: {stats["files"]} files, textures {stats["textures"]}, deleted {stats["deleted"]}, failed {len(stats["failed"])}')
+    log(f'{base}: {stats["files"]} files, textures {stats["textures"]}, deleted {stats["deleted"]}, failed {len(stats["failed"])}, '
+        f'skill-tree classes {stats["skilltrees"]}, skill icons {stats["icons"]}')
+    for x in inotes[:20]: log('  icon:', x)
     for f in stats['failed'][:20]: log('  texture kept as PC bytes:', f)
     return meta
 
@@ -466,6 +802,13 @@ def main(a):
     elif len(a) >= 3 and a[0] == 'convert':
         slot = int(a[a.index('--slot') + 1]) if '--slot' in a else None
         convert(a[1], a[2], slot, '--no-tex' not in a)
+    elif len(a) >= 2 and a[0] == 'skilltrees':
+        info, pak, root, ents = mod_read(a[1]); files = {}
+        for d, n, typ, off, size, *_ in ents:
+            up = _up(d + n)
+            if typ != 7 and size and ((up.startswith('MEDIA/UNITS/PLAYERS/') and up.endswith('.DAT')) or (up.startswith('MEDIA/UI/') and up.endswith('.LAYOUT'))):
+                files[up] = pak_get(pak, off)
+        t = skilltrees_text(files); sys.stdout.reconfigure(encoding='utf-8'); print(t.decode('utf-8') if t else '(no class with a skill tree layout)', end='')
     elif len(a) >= 3 and a[0] == 'unpack':
         src = open(a[1], 'rb').read()
         if a[1].upper().endswith('.MOD'): _, pak, root, ents = mod_read(a[1])
