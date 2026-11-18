@@ -68,40 +68,10 @@ final class Tl2Touch {
     static final int KIND_MAIN = 0, KIND_SKILL = 1, KIND_PLAIN = 2, KIND_SWAP = 3, KIND_GEAR = 4, KIND_COMBO = 5,
         KIND_PANEL = 6, KIND_TAB = 7;   // [TL2] pointer on (DM_TL2_POINTER): D2R-style panel buttons (key = panel type) and radial tab arrows (key = -1 / +1)
     // panel types = RadialMenu CreatePanel 0x13dfa0 numbering (hle_tl2_ui.c): 0 inventory / equipment, 7 skills, 9 character stats, 12 quests
-    // [TL2] icons of the skills / items bound to the buttons (hle_tl2_icons.c: the HUD action bar's slots as the game drew them; pref "tl2_icons",
-    // default on). Slot button codes: 1 A, 3 B, 2 X, 0 Y, 8 R, 9 ZR, 10 L, 11 ZL.
+    // [TL2] icons of the skills / items bound to the buttons: Tl2Icons (shared with the gamepad layout); the natives keep their JNI names here
     static native int nativeTl2IconSerial();
     static native int nativeTl2Icons(int[] argb, int[] meta);
-    private static final int ICON = 64, NSLOT = 8;
-    private final int[] iconPx = new int[NSLOT * ICON * ICON], iconMeta = new int[NSLOT * 4];
-    private final android.graphics.Bitmap[] iconOf = new android.graphics.Bitmap[16];
-    private final int[] iconState = new int[16];
-    private int iconSerial = -2; private long iconPoll; private boolean icons = true;
-    private final RectF iconDst = new RectF(), iconSrc = new RectF(0, 0, ICON, ICON);
-    private final android.graphics.BitmapShader[] iconSh = new android.graphics.BitmapShader[16];
-    private final android.graphics.Matrix iconM = new android.graphics.Matrix();
-    private final Paint iconPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
-    private static int codeOf(int key) {
-        switch (key) { case K_A: return 1; case K_B: return 3; case K_X: return 2; case K_Y: return 0; case K_R: return 8; case K_ZR: return 9; case K_L: return 10; case K_ZL: return 11; default: return -1; }
-    }
-    // the icon serial is polled twice a second on its own timer; a redraw only when the game's icons changed
-    private final Runnable iconTick = new Runnable() { public void run() { if (!icons || editMode) return; if (pollIcons()) view.invalidate(); view.postDelayed(this, 500); } };
-    private boolean pollIcons() {
-        long t = now(); if (!icons || t < iconPoll) return false; iconPoll = t + 450;
-        int s; try { s = nativeTl2IconSerial(); } catch (UnsatisfiedLinkError e) { icons = false; return false; }
-        if (s < 0 || s == iconSerial) return false;
-        iconSerial = nativeTl2Icons(iconPx, iconMeta);
-        java.util.Arrays.fill(iconState, 0);
-        for (int i = 0; i < NSLOT; i++) {
-            int code = iconMeta[i * 4], st = iconMeta[i * 4 + 1];
-            if (code < 0 || code >= 16) continue;
-            iconState[code] = st;
-            iconOf[code] = st == 1 ? android.graphics.Bitmap.createBitmap(iconPx, i * ICON * ICON, ICON, ICON, ICON, android.graphics.Bitmap.Config.ARGB_8888) : null;
-            // drawn as a shader-filled circle / rounded square: no clip path per button per frame
-            iconSh[code] = iconOf[code] == null ? null : new android.graphics.BitmapShader(iconOf[code], android.graphics.Shader.TileMode.CLAMP, android.graphics.Shader.TileMode.CLAMP);
-        }
-        return true;
-    }
+    private final Tl2Icons icons;
     private static final String[] PANEL_LABELS = {"INV", "SKL", "CHR", "QST"};
     private static final int[] PANEL_TYPES = {0, 7, 9, 12};
     // where a button's (bx, by) is measured from (k units = dp x size); "belt" x is in D2R belt cell pitches (40 k) from the centre
@@ -143,8 +113,8 @@ final class Tl2Touch {
     private float sLx, sLy, sRx, sRy; private boolean axesSent;
     private long faceUntil; private float faceX, faceY;
 
-    Tl2Touch(View v, Runnable openSettings) {
-        view = v; this.openSettings = openSettings; dp = v.getResources().getDisplayMetrics().density;
+    Tl2Touch(View v, Runnable openSettings, Tl2Icons icons) {
+        view = v; this.openSettings = openSettings; this.icons = icons; dp = v.getResources().getDisplayMetrics().density;
         line.setStyle(Paint.Style.STROKE); line.setStrokeWidth(2 * dp); text.setTextAlign(Paint.Align.CENTER);
     }
     // name: the button's own prefs id ("tl2_btn_[side_]<name>"), stable across the modifier choice and the label
@@ -207,7 +177,7 @@ final class Tl2Touch {
         int m = clamp(p.getInt("tl2_mod", 0), 0, MOD_KEYS.length - 1); modKey = MOD_KEYS[m]; modName = MOD_NAMES[m];
         holdWalk = p.getBoolean("tl2_hold_walk", false);
         pointer = true;   // [TL2] menu taps are always on (the owner: convenient and works); the gear option was removed
-        icons = p.getBoolean("tl2_icons", true); iconSerial = -2; iconPoll = 0;
+        icons.reset(p.getBoolean("tl2_icons", true));
         build();
         loadPlaces(p);
         view.invalidate();
@@ -446,9 +416,8 @@ final class Tl2Touch {
     }
     // [TL2] map tap (hle_tl2_map.c): a finger that lands on the shown minimap / big map waits like a menu tap (T_MENU above); a short still
     // tap then goes to nativeTl2UiTap, which with no menu up switches minimap <-> big map; moved, it becomes the stick / world finger as usual
-    private boolean mapHit(float x, float y) { int w = view.getWidth(), h = view.getHeight(); return w > 0 && h > 0 && DmActivity.nativeTl2MapHit(x / w, y / h); }
-    private boolean listHit(float x, float y) { int w = view.getWidth(), h = view.getHeight(); return w > 0 && h > 0 && DmActivity.nativeTl2UiListHit(x / w, y / h); }
-    private void drag(Finger f, int phase) { int w = view.getWidth(), h = view.getHeight(); if (w > 0 && h > 0) DmActivity.nativeTl2UiDrag(f.x0 / w, f.y0 / h, (f.y - f.y0) / h, phase); }
+    // (Tl2Pointer: the same calls for the gamepad layout)
+    private void drag(Finger f, int phase) { Tl2Pointer.drag(view, f.x0, f.y0, f.y, phase); }
     private void begin(int id, float x, float y) {
         if (fingers.containsKey(id)) return;
         Finger f = new Finger(); f.x = f.x0 = x; f.y = f.y0 = y; f.t0 = now();
@@ -461,7 +430,7 @@ final class Tl2Touch {
         else if (zoomPtr < 0 && zoomHit(x, y)) { f.target = T_ZOOM; zoomPtr = id; zoomY0 = y; }
         // [TL2] pointer (hle_tl2_ui.c, gear "tap on menu items", DM_TL2_POINTER): while a console menu is up a finger off the overlay buttons
         // waits: a short still tap goes to the menu item under it; moving it first makes it the stick / world finger it would have been
-        else if (DmActivity.nativeTl2MenuOpen() || mapHit(x, y)) { f.target = T_MENU; f.zone = move.ptr < 0 && moveZone(x, y) ? T_JOY
+        else if (Tl2Pointer.waits(view, x, y)) { f.target = T_MENU; f.zone = move.ptr < 0 && moveZone(x, y) ? T_JOY
                                                   : y > 60 * k && !moveZone(x, y) ? T_WORLD : T_NONE; }
         else if (move.ptr < 0 && moveZone(x, y)) { f.target = T_JOY; grab(move, id, x, y); }
         else if (y > 60 * k && !moveZone(x, y)) f.target = T_WORLD;
@@ -472,7 +441,7 @@ final class Tl2Touch {
         f.x = x; f.y = y;
         if (dist(f) > MOVE_DP * dp) f.moved = true;
         // [TL2] hle_tl2_ui.c list scroll: a mostly vertical move from a scrollable list scrolls it (rows follow the finger); release = no tap
-        if (f.target == T_MENU && f.moved && Math.abs(f.y - f.y0) > Math.abs(f.x - f.x0) && listHit(f.x0, f.y0)) { f.target = T_DRAG; drag(f, 0); }
+        if (f.target == T_MENU && f.moved && Tl2Pointer.startsDrag(view, f.x0, f.y0, f.x, f.y)) { f.target = T_DRAG; drag(f, 0); }
         if (f.target == T_DRAG) { drag(f, 1); return; }
         if (f.target == T_MENU && f.moved) {   // not a tap: the finger becomes what it would have been without the menu, from where it went down
             if (f.zone == T_JOY && move.ptr < 0) { f.target = T_JOY; grab(move, id, f.x0, f.y0); }
@@ -503,9 +472,7 @@ final class Tl2Touch {
         }
         if (f.target == T_WORLD && held < TAP_MS && dist(f) <= MOVE_DP * dp) worldTap(f.x0, f.y0);
         if (f.target == T_MENU && held < TAP_MS && dist(f) <= MOVE_DP * dp) {
-            // the view is the whole game picture (TL2 widescreen and 16:9 both fill it; menus are never on the pillarboxed loading screen)
-            int w = view.getWidth(), h = view.getHeight();
-            boolean took = w > 0 && h > 0 && DmActivity.nativeTl2UiTap(f.x0 / w, f.y0 / h);
+            boolean took = Tl2Pointer.tap(view, f.x0, f.y0);   // the view is the whole game picture
             if (!took && f.zone == T_WORLD) worldTap(f.x0, f.y0);
         }
     }
@@ -653,8 +620,8 @@ final class Tl2Touch {
     // ---------------- drawing ----------------
     void draw(Canvas c) {
         layout();
-        pollIcons();
-        if (icons && !editMode) { view.removeCallbacks(iconTick); view.postDelayed(iconTick, 500); }
+        icons.poll();
+        icons.drawn(!editMode);
         drawnSig = shownSig();
         if (editMode) c.drawColor(0x50000000);
         if (!controllerMode) {
@@ -711,15 +678,10 @@ final class Tl2Touch {
         line.setColor(editMode ? 0xffffd040 : tint); line.setAlpha(editMode ? 0xe0 : Math.round(0x90 * kk));
         if (b.square) { cell.set(b.x - b.r, b.y - b.r, b.x + b.r, b.y + b.r); c.drawRoundRect(cell, 8 * dp, 8 * dp, fill); c.drawRoundRect(cell, 8 * dp, 8 * dp, line); }
         else { c.drawCircle(b.x, b.y, b.r, fill); c.drawCircle(b.x, b.y, b.r, line); }
-        int code = icons && b.kind != KIND_PANEL && b.kind != KIND_TAB && b.kind != KIND_GEAR && b.kind != KIND_SWAP ? codeOf(b.key) : -1;
-        android.graphics.Bitmap ic = code >= 0 ? iconOf[code] : null;
-        boolean empty = code >= 0 && iconState[code] == 2;
-        if (ic != null) {   // the game's own icon inside the button, the button letter as a small badge
-            float ir = b.r * 0.86f;
-            iconDst.set(b.x - ir, b.y - ir, b.x + ir, b.y + ir);
-            iconM.setRectToRect(iconSrc, iconDst, android.graphics.Matrix.ScaleToFit.FILL); iconSh[code].setLocalMatrix(iconM);
-            iconPaint.setShader(iconSh[code]); iconPaint.setAlpha(on ? 0xff : Math.round(0xff * Math.max(kk, 0.85f)));   // the icon stays readable at low overlay opacity
-            if (b.square) c.drawRoundRect(iconDst, 6 * dp, 6 * dp, iconPaint); else c.drawCircle(b.x, b.y, ir, iconPaint);
+        int code = icons.on() && b.kind != KIND_PANEL && b.kind != KIND_TAB && b.kind != KIND_GEAR && b.kind != KIND_SWAP ? Tl2Icons.codeOf(b.key) : -1;
+        boolean empty = icons.state(code) == Tl2Icons.EMPTY;
+        // the game's own icon inside the button (it stays readable at low overlay opacity), the button letter as a small badge
+        if (icons.draw(c, code, b.x, b.y, b.r * 0.86f, b.square, 6 * dp, on ? 0xff : Math.round(0xff * Math.max(kk, 0.85f)))) {
             float bs = Math.max(9 * dp, 0.32f * b.r); text.setTextSize(bs); text.setColor(0xffffffff); text.setAlpha(Math.round(0xe0 * kk));
             float bx = b.x + b.r * 0.55f, by = b.y + b.r * 0.62f;
             fill.setColor(0xa0000000); c.drawCircle(bx, by - bs * 0.35f, bs * 0.85f, fill);

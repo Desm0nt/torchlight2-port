@@ -125,6 +125,8 @@ public class D3PadView extends View implements FrontMenu.Pad {
     private final Paint iconPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
     private final Path clip = new Path(); private final RectF iconDst = new RectF();
     private Tl2Touch tl2;   // [TL2] the "tl2" layout: touches and drawing are Tl2Touch's
+    private final Tl2Icons tl2Icons;   // [TL2] the HUD slot icons (hle_tl2_icons.c), for Tl2Touch and the gamepad layout
+    private boolean tl2Pad() { return DmActivity.TL2 && !tl2(); }   // [TL2] the gamepad layout in TL2
     private boolean tl2() { return tl2 != null && (LAYOUT_TL2.equals(layout) || LAYOUT_TL2_SIDE.equals(layout)); }
 
     public D3PadView(Context c) {
@@ -133,6 +135,7 @@ public class D3PadView extends View implements FrontMenu.Pad {
         line.setStyle(Paint.Style.STROKE); line.setStrokeWidth(2 * dp);
         text.setTextAlign(Paint.Align.CENTER);
         icons = c instanceof DmActivity && !DmActivity.TL2 ? new D3SkillIcons((DmActivity) c, this::invalidate) : null;   // [TL2] D3SkillIcons reads D3's HUD slots: not TL2's
+        tl2Icons = DmActivity.TL2 ? new Tl2Icons(this) : null;
         reloadSettings();
     }
 
@@ -178,7 +181,7 @@ public class D3PadView extends View implements FrontMenu.Pad {
     private boolean touch() { return LAYOUT_TOUCH.equals(layout); }
     private void buildTl2() {   // [TL2] D3PadView only keeps a placeholder stick; Tl2Touch has the controls
         left = new Stick("lstick", 0.12f, 0.68f, 64, K_L3, 1.4f, 0.18f, 0.30f); right = null;
-        if (tl2 == null) tl2 = new Tl2Touch(this, this::openSettings);
+        if (tl2 == null) tl2 = new Tl2Touch(this, this::openSettings, tl2Icons);
     }
     private List<Ctl> all() { List<Ctl> a = new ArrayList<>(btns); a.add(left); if (right != null) a.add(right); return a; }
     private String posKey(String group) { return "d3_pos_" + layout + "_" + group; }
@@ -210,6 +213,7 @@ public class D3PadView extends View implements FrontMenu.Pad {
             releaseAll(); menuMode = false; layout = want; btns.clear();
             if (LAYOUT_TL2.equals(layout) || LAYOUT_TL2_SIDE.equals(layout)) buildTl2(); else if (touch()) buildTouch(); else buildGamepad();
         }
+        if (tl2Icons != null) tl2Icons.reset(p.getBoolean("tl2_icons", true));   // [TL2] the gamepad layout draws them too (issue #2)
         if (tl2()) tl2.reload(ui, p, op, scale, LAYOUT_TL2_SIDE.equals(layout));
         pos.clear();
         for (Ctl k : all()) {
@@ -278,7 +282,9 @@ public class D3PadView extends View implements FrontMenu.Pad {
         if (d > r) { dx *= r / d; dy *= r / d; }
         s.x = dx; s.y = dy; s.travel = Math.max(s.travel, d);
     }
-    private void grab(Stick s, int id, float x, float y) { s.onKnob = near(s, x, y, 1.0f); s.pointer = id; s.down = SystemClock.uptimeMillis(); moveStick(s, x, y); s.travel = 0; }
+    // A touch near the home also puts the base under the finger: tilting from the home centre made a touch beside the knob start at
+    // full tilt in a "random" direction (D3 738d12e, TL2 issue #2). onKnob still tells a tap on the knob (L3 / R3) from a drag.
+    private void grab(Stick s, int id, float x, float y) { boolean knob = near(s, x, y, 1.0f); grabFloating(s, id, x, y); s.onKnob = knob; }
     private void grabFloating(Stick s, int id, float x, float y) { s.baseX = x; s.baseY = y; s.onKnob = false; s.pointer = id; s.down = SystemClock.uptimeMillis(); s.x = s.y = 0; s.travel = 0; }
     private void release(Stick s, boolean click) {   // a short tap on a stick's home knob presses L3 / R3
         if (click && s.onKnob && s.travel < 0.5f * rad(s) && SystemClock.uptimeMillis() - s.down < 300) pulse(s.clickKey);
@@ -395,6 +401,7 @@ public class D3PadView extends View implements FrontMenu.Pad {
         if (right != null && right.pointer >= 0) { release(right, false); any = true; }
         if (worldPtr >= 0) { worldPtr = -1; any = true; }
         if (menuPtr >= 0) { menuEnd(true); any = true; }
+        if (uiPtr >= 0) { if (uiDrag) Tl2Pointer.drag(this, uiX0, uiY0, uiY, 2); uiPtr = -1; uiDrag = false; }
         if (swipeKey != 0 || swipeStick) { finishSwipe(); any = true; }
         if (evadeUntil > SystemClock.uptimeMillis()) any = true;
         evadeUntil = 0;
@@ -480,15 +487,14 @@ public class D3PadView extends View implements FrontMenu.Pad {
             else if (b != null && b.key == MENU_TOGGLE) setMenuMode(!menuMode);
             else if (b != null) { if (b.pointer < 0) { b.pointer = id; key(b.key, true); } }
             else if (menuMode) { if (menuPtr < 0) menuStart(id, x, y); }
-            else if (left.pointer < 0 && near(left, x, y, left.grab)) grab(left, id, x, y);   // the stick takes touches around its home
-            else if (left.pointer < 0 && floatZone(left, x, y)) grabFloating(left, id, x, y);
-            else if (right != null) { if (right.pointer < 0 && near(right, x, y, right.grab)) grab(right, id, x, y); else if (right.pointer < 0 && floatZone(right, x, y)) grabFloating(right, id, x, y); }   // gamepad: other free taps do nothing
-            else if (worldPtr < 0 && y > TOP_STRIP_F * getHeight()) worldStart(id, x, y);
+            else if (tl2Pad() && uiPtr < 0 && Tl2Pointer.waits(this, x, y)) { uiPtr = id; uiX0 = x; uiY0 = y; uiT0 = SystemClock.uptimeMillis(); uiDrag = false; }   // [TL2] menu / map finger
+            else freeDown(id, x, y);
             break;
         }
         case MotionEvent.ACTION_MOVE:
             for (int k = 0; k < e.getPointerCount(); k++) {
                 int pid = e.getPointerId(k); float px = e.getX(k), py = e.getY(k);
+                if (pid == uiPtr) uiMove(pid, px, py);   // first: a finger that stops waiting becomes a stick below
                 if (pid == left.pointer) moveStick(left, px, py);
                 if (right != null && pid == right.pointer) moveStick(right, px, py);
                 if (pid == worldPtr) worldMove(px, py);
@@ -502,11 +508,36 @@ public class D3PadView extends View implements FrontMenu.Pad {
             if (right != null && right.pointer >= 0 && (id == right.pointer || all)) release(right, !cancel);
             if (worldPtr >= 0 && (id == worldPtr || all)) worldEnd(cancel);
             if (menuPtr >= 0 && (id == menuPtr || all)) menuEnd(cancel);
+            if (uiPtr >= 0 && (id == uiPtr || all)) uiEnd(cancel);
             break;
         }
         }
         axes(); invalidate();
         return true;
+    }
+    // A free finger (no button): a stick takes it around its home or in its floating zone; [TL2 / D3 touch] else the world.
+    private void freeDown(int id, float x, float y) {
+        if (left.pointer < 0 && near(left, x, y, left.grab)) grab(left, id, x, y);   // the stick takes touches around its home
+        else if (left.pointer < 0 && floatZone(left, x, y)) grabFloating(left, id, x, y);
+        else if (right != null) { if (right.pointer < 0 && near(right, x, y, right.grab)) grab(right, id, x, y); else if (right.pointer < 0 && floatZone(right, x, y)) grabFloating(right, id, x, y); }   // gamepad: other free taps do nothing
+        else if (worldPtr < 0 && y > TOP_STRIP_F * getHeight()) worldStart(id, x, y);
+    }
+
+    // ---------------- [TL2] touch on the game's own menus and map (gamepad layout, issue #2) ----------------
+    // As Tl2Touch (Tl2Pointer): while a console menu is up, or on the shown minimap / big map, a finger off the pad buttons waits; a short
+    // still tap goes to the item under it (nativeTl2UiTap); a mostly vertical move from a scrollable list drags it; any other move makes it
+    // the stick it would have been, its base where the finger went down.
+    private int uiPtr = -1; private float uiX0, uiY0, uiY; private long uiT0; private boolean uiDrag;   // uiY: the drag's last y
+    private void uiMove(int id, float x, float y) {
+        if (uiDrag) { uiY = y; Tl2Pointer.drag(this, uiX0, uiY0, y, 1); return; }
+        if (Math.hypot(x - uiX0, y - uiY0) <= Tl2Pointer.MOVE_DP * dp) return;
+        if (Tl2Pointer.startsDrag(this, uiX0, uiY0, x, y)) { uiDrag = true; uiY = y; Tl2Pointer.drag(this, uiX0, uiY0, y, 0); Tl2Pointer.drag(this, uiX0, uiY0, y, 1); return; }
+        uiPtr = -1; freeDown(id, uiX0, uiY0);
+    }
+    private void uiEnd(boolean cancel) {
+        if (uiDrag) Tl2Pointer.drag(this, uiX0, uiY0, uiY, 2);
+        else if (!cancel && SystemClock.uptimeMillis() - uiT0 < Tl2Pointer.TAP_MS) Tl2Pointer.tap(this, uiX0, uiY0);   // still: uiMove keeps it within MOVE_DP
+        uiPtr = -1; uiDrag = false;
     }
 
     // ---------------- drawing ----------------
@@ -526,6 +557,7 @@ public class D3PadView extends View implements FrontMenu.Pad {
         super.onDraw(c);
         drawFps(c);
         if (tl2()) { tl2.draw(c); return; }   // [TL2]
+        if (tl2Icons != null) { tl2Icons.poll(); tl2Icons.drawn(!editMode && !controllerMode); }   // [TL2] gamepad layout: the HUD slot icons
         if (editMode) {
             c.drawColor(0x50000000);
             drawStick(c, left); if (right != null) drawStick(c, right);
@@ -560,13 +592,29 @@ public class D3PadView extends View implements FrontMenu.Pad {
         line.setColor(editMode ? 0xffffd040 : 0xffffffff); line.setAlpha(editMode ? 0xe0 : Math.round(0x90 * k));
         Bitmap ic = iconsOn && icons != null && b.key >= 0 ? icons.icon(b.key) : null;
         if (ic != null) { drawIconBtn(c, b, ic, x, y, r, k, on); return; }
-        if (drawSkinned(c, b, x, y, r, k, on)) return;   // [front] the pad's skin
+        int code = tl2Pad() && b.key >= 0 ? Tl2Icons.codeOf(b.key) : -1;   // [TL2] the HUD slot of this button (Tl2Touch's mapping)
+        if (drawSkinned(c, b, x, y, r, k, on)) { drawTl2Icon(c, b, code, x, y, r, k, on); return; }   // [front] the pad's skin
         c.drawCircle(x, y, r, fill); c.drawCircle(x, y, r, line);
+        if (drawTl2Icon(c, b, code, x, y, r, k, on)) return;
+        boolean empty = code >= 0 && tl2Icons.state(code) == Tl2Icons.EMPTY;   // [TL2] nothing bound to that button in the game: dim
         float ts = touch() ? Math.max(12 * u(), 0.55f * r) : 15 * u();   // gamepad: the labels of DoomPadView's D3 pad
         text.setTextSize(ts); float w = text.measureText(b.label);
         if (w > 1.7f * r) { ts *= 1.7f * r / w; text.setTextSize(ts); }   // long labels (MENU / МЕНЮ) fit the circle
-        text.setColor(0xffffffff); text.setAlpha(Math.round(0xd0 * k));
+        text.setColor(0xffffffff); text.setAlpha(Math.round((empty ? 0x70 : 0xd0) * k));
         c.drawText(b.label, x, y + ts * 0.35f, text);
+    }
+    // [TL2] the game's icon of the button's HUD slot (Tl2Icons, pref "tl2_icons") over the plain or skinned button, at the pad opacity
+    // (pressed = a light veil), the button's label as a small badge in its lower right; false = no icon for that slot.
+    private boolean drawTl2Icon(Canvas c, Btn b, int code, float x, float y, float r, float k, boolean on) {
+        if (code < 0 || tl2Icons == null) return false;
+        float ir = r * 0.86f;
+        if (!tl2Icons.draw(c, code, x, y, ir, false, 0, Math.round(0xff * k))) return false;
+        if (on) { fill.setColor(0xffffffff); fill.setAlpha(Math.round(0x60 * k)); c.drawCircle(x, y, ir, fill); }
+        float ts = Math.max(9 * dp, 0.34f * r); text.setTextSize(ts);
+        float bx = x + r * 0.70f, by = y + r * 0.70f, br = Math.max(ts * 0.72f, text.measureText(b.label) * 0.62f);
+        fill.setColor(0xff000000); fill.setAlpha(Math.round(0xb0 * k)); c.drawCircle(bx, by, br, fill);
+        text.setColor(0xffffffff); text.setAlpha(Math.round(0xe0 * k)); c.drawText(b.label, bx, by + ts * 0.35f, text);
+        return true;
     }
     // A button with the HUD's icon of its skill: the icon fills the circle (at the layout opacity), pressed = lighter, the button's
     // label as a small badge in the lower right.
