@@ -875,3 +875,8 @@ tree layout(s), 22 class name(s)`.
 | E | без SIM (Adreno, zero-copy) | регрессии Adreno | 60 fps, нет вспышек |
 
   Если `DM_GAME_RES` не меняет окно игры (строка `[nvn] WindowInitialize … 3200x1440`), брать C. Окончательно — APK игроку #4.
+
+## 18.11 Релиз v0.1.5
+- Вошли: #4 (cpu-place + ADPF, сид Mali, overlap PERF-X16), #12 (`DM_NVN_SYNC_XWAIT`), #6 (деревья навыков и иконки классов из модов).
+- Проверка перед релизом: сессия хозяина на Mi 14 Ultra с TL2-ACE (War Bot 5 вкладок с иконками, Assassin 3 вкладки), без падений,
+  60 fps медиана. #4 и #12 у игроков не подтверждены — ждём ответов в issues.
