@@ -658,3 +658,220 @@ Draw пропускается, пока его пайплайн строится
 - Шаг setup для ASTC-кэша, бывший отдельным патчем, вошёл в `tools/setup_tl2.py`, `setup.sh`, `tools/bootstrap.ps1`.
 - Хеши коммитов в записях выше — хеши старого дерева; соответствие: present-thread ce6300c = d3d3a1c, fmark de8efcc = d7b7eef,
   загрузка ASTC 4958f2d = 1f3ef76, zlib 2a2cc57 = 60b907a.
+
+## 18.11 Issue #12: падение на Mali-G925 при открытии меню паузы (команды переписаны до трансляции)
+- Логи игрока (MT6991, r49p1, 0.1.4): `FATAL: NVN command size outside pool` / `NVN opcode 4288771072 ... not implemented` в
+  `xbg_game.cpp execute()`, поток трансляции (`bt: ... mtl_sub_commit+0x84`), в ту же миллисекунду игра строит RadialMenu.
+- Причина (по коду): `nvnSyncWait` на Android → `mtl_wait` → `xbg_legacy_wait`, а тот на fence ещё не транслированного сабмита
+  (`fence > submitted`) сразу отвечает «не готово» при любом timeout. TL2 ждёт свои sync с `timeout 18446744073709551615`
+  (строка `SyncWait on never-fenced sync` в boot.log, 2 вызова на кадр) и дальше считает GPU прошедшим: пишет новый кадр в ту же
+  командную память / UI-данные. Игра может уйти на 3 кадра вперёд (swapchain 3), и когда трансляция отстаёт на 2+ сабмита (Mali: GPU
+  ~11 мс, новые UI-текстуры/пайплайны меню) — переписывает то, что транслятор ещё читает. На Switch вызов блокирует; у нас блокировал
+  только путь HarmonyOS (`x_wait_sub`). DOOM Eternal чинил то же (`DM_NVN_SYNC_XWAIT`, KB PERF-E01).
+- Фикс (`dm/gfx/nvn/hle_nvn.c` `nvnSyncWait`): `DM_NVN_SYNC_XWAIT` (по умолчанию 1 для TL2, иначе 0): timed-ожидание на
+  нетранслированном fence сначала ждёт трансляцию (`x_wait_sub`), потом GPU остатком timeout. `DM_NVN_SYNC_XWAIT_MS` — потолок, для TL2
+  0 = timeout игры. Цена: один lock `g_xmu` на timed SyncWait; ожидание — только когда цель реально не транслирована.
+- Диагностика: всегда — `[nvn] SyncWait on an untranslated fence (#n) ...` (первые 4 и каждый 512-й, с цепочкой вызова игры) и
+  `[nvn] SyncWait translation wait ... after N ms` (>250 мс). Dev: `DM_NVN_CMDGUARD=1` хеширует записи сабмита при submit и сверяет
+  перед/после трансляции: `【红】[nvn] command memory changed before translation`.
+- Проверка на телефоне (не делалась): Mi 14 `DM_GFX_SIM_GPU=mali DM_NVN_SYNC_XWAIT=0 DM_NVN_CMDGUARD=1`, в бою открывать/закрывать меню
+  «+» 20 раз → ждём `untranslated fence ... answered TIMEOUT` и/или `command memory changed before translation`; затем то же с
+  `DM_NVN_SYNC_XWAIT=1` (дефолт) → строк `changed` нет, падений нет. Окончательно — APK игроку #12.
+- Общий хазард: D3 и XC2 тоже зовут SyncWait(UINT64_MAX); заметка `port-common/migration/sync-xwait.md`.
+
+## Дерево навыков классов из модов (issue #6, 18.11.2026; статика + проверка конвертеров на PC, на телефоне не проверено)
+Жалоба: с модом TL2 ACE у нового класса пустое дерево навыков. Гипотеза хозяина: «панель одна на все классы, игра просто заполняет её
+навыками класса, PC-layout `skill_tree_<class>.layout` можно перегнать в данные консоли + HLE-вставка». **Вердикт: наполовину.**
+Панель действительно общая (`PanelSkillList`, ничего классового в ней нет), но наполняет её не «навыками класса», а **зашитая таблица
+4 классов**, а класс выбирается **подстрокой имени юнита**. Данных «на класс» в паках консоли нет вовсе: `MEDIA/UI/MENUS/SKILLTREEOVERRIDES/
+SKILL_TREE_*.LAYOUT` в DATA..DATA5 лежат, но это обрезки PC-файла (4.7–5 КБ: только логика SkillSlideIn / SkillTabsLogic, ни одной кнопки
+навыка); поле класса `UISKILLTREE` (хэш `0xd83631af`; ключи DAT — хэш TL2 `h = len; h = (h>>27) ^ (h<<5) ^ c`, сверено на NAME / UNITTYPE /
+LEVEL / LEVEL_REQUIRED) в main не встречается ни строкой (ASCII / UTF-16 / UTF-32), ни константой — консоль его не читает.
+
+| Что | Где (main v5 `a0c6c2d2`, смещения main.raw; относительные релокации применены — `main.rel.bin` в скретчпаде) |
+|---|---|
+| Кольцо «Навыки» на класс | `CConsoleUIRadialMenu::Create` (vt слот 4 = `0x134ec0`, зовётся при **каждом** push `0x111f40` вместе с Show слот 6) для меню типа `+0x2c` = 0: игрок = `0x6c9270()` `+0x58`, имя юнита `0x458f10` (std::wstring через x8: кэш `+0x10b8`, иначе свойство `NAME` данных `+0x1f8`, по умолчанию `NOT SPECIFIED`), поиск подстрок `HUM_BERSERKER` / `HUM_ARBITER` / `HUM_ENGINEER` / `HUM_WANDERER` (`0x136740..0x1369ec`, wmemchr + wmemcmp, с учётом регистра). Совпало — в таблицу вкладок (GOT `0x23a3e68` → `0x230c140`, записи 0x18 {тип, подпись, узел}; вкладка 2 «Skills», узел `+0x40`) кладётся кольцо класса из GOT `0x23a3e70 + 8c` (заголовки `0x230b220` / `340` / `460` / `580`), потом `0x136c40` строит вкладки. **Не совпало — ничего не пишется**: остаётся кольцо последнего стокового класса (после запуска — берсерк). |
+| Кольцо | заголовок {записи, первый id, 1, 180.0}; 3 записи по 0x40 в обратном порядке id + нулевая: `+0` id `0x65 + 3c + дерево`, `+4` тип панели 8 (PanelSkillList), `+8` позиция 1..3, `+0x10` иконка ASCII `skill_tab_hunter`…, `+0x18` подпись `L"Hunter Skills"`. 12 иконок: hunter tundra shadow / Inferno frost storm / blitz construction aegis / warfare lore sigil |
+| Наполнение дерева | `PanelSkillList` (RTTI `14PanelSkillList`, vt `0x23031d0`): дерево k = id − 0x65 (0..11, иначе −1); `0x5a8f0` берёт 10 имён `10k .. 10k+9` из **таблицы `main+0x23022c0`** (GOT `0x23a36e8`; 120 × {u64 1000+i, `const wchar_t*` имя}; 7 активных + 3 пассивных, Berserker 0..29, Embermage 30..59, Engineer 60..89, Outlander 90..119) и ищет каждое в навыках игрока (`player +0x210`, `0x20dba0`, без учёта регистра) → указатели `+0xc8..+0x110`; нет такого навыка — пустая строка (null безопасен: деталь `0x5aeb0` выходит). Превью-ролики — вторая таблица `main+0x2302a40` (GOT `0x23a36f8`, {id, `"MOVIES/EVISCERATE.MP4"`}, пассивы `MOVIES/PASSIVE.MP4`). Обе таблицы читает только PanelSkillList (`0x5a964`, `0x5ae80`, `0x607d8`, `0x6086c`). |
+| Тупик | `PanelSkills` (тип 7, vt `0x2302200`) — не дерево: `0x4c04c` зовёт `0x13b800`, отбрасывает результат и строит имя из `wcslen(NULL)` — мёртвый остаток; дерево — тип 8. |
+
+⇒ причина бага: у модового класса (`WEREWOLFPLAYER`, `HUM_ASSASIN_M`, `HUM_CACKLESPIT_F`…) подстроки нет → кольцо берсерка (или прошлого
+класса) → 30 имён берсерка, которых у игрока нет → пустые ячейки. Порядок в таблице = PC-раскладка: ряды по y, в ряду по x, нижний ряд —
+3 пассива (сверено: дерево Construction из PC-layout оборотня даёт ровно строки 70..79 таблицы).
+
+**Формат PC-layout (TL2 binary 0x0b)**, разобран и проверен на 13 файлах (оборотень, Cacklespit, 9 у ACE): `u8 0x0b, u8, u32, u16 корней`;
+объект = `u32 размер (с детьми), u8 тип, u64 guid, wstr имя, u8 nprops, {u16 n, u8 id, n−1 байт}…, u32 длина доп. блока + блок, u16 детей,
+дети`. Вкладка — тип `0x58` `TabN` (`0x23` подпись, `0x41` иконка `IG_SKILLTABS_<X>_OFF`); дерево — окно `SkillPaneN`; навык — тип `0x3d`
+со свойствами `0x40` (имя навыка) и `0x7b`, `0x3f` x, `0x22` y.
+
+**Решение (сделано, по умолчанию вкл. при включённых модах):**
+- Конвертер (`tools/tl2_mod.py` `skilltrees_text` + `Tl2ModConv.java` `skilltreesText`, байт в байт): из player-DAT мода (`NAME`,
+  `UISKILLTREE` по цепочке `BASEFILE` внутри мода) и его layout строит таблицу и кладёт её **в сам пак** как `MEDIA/PORT/SKILLTREES.TXT`
+  (несжатая, + запись каталога `PORT/` в `MEDIA/`; путь игра не открывает) — таблица живёт и переименовывается вместе с паком, Tl2Mods
+  менять не пришлось, кроме `CONVERTER_VERSION = 2` (все паки перегонятся один раз). Формат UTF-8 с табами: `L i путь` / `T i дерево подпись
+  ключ-иконки` / `S i дерево слот имя` / `X i что выброшено` / `C ИМЯ_ЮНИТА i`. Форма консоли — 3 дерева × (7 активных + до 3 пассивов в
+  слотах 7..9); лишнее (4-я вкладка, 8-й активный в ряду из 4) выбрасывается с строкой X. Посмотреть: `tl2_mod.py skilltrees <mod>`.
+- HLE `dm/host/hle_tl2_skilltree.c` (`dm_tl2_skilltree_install` из `main.c` после `dm_tl2_wide_install`): только если `DM_TL2_MODS` вкл. и
+  хоть один `ZMOD_*.PAK` несёт таблицу; сверяет 5 мест кода и все 120+120 строк таблиц / 4 кольца; обёртка над `Create` (пролог 4 команды
+  в трамплин, как в hle_tl2_wide). Перед оригиналом: вернуть всё исходное → имя юнита (тот же `0x458f10`) → таблица по имени (точно, иначе
+  `<до последнего '_'>_BASE`, напр. `HUM_WANDERER_M` → `HUM_WANDERER_BASE` у ACE) →
+  модовый класс: строки 0..29 и кольцо **берсерка** (запасной блок) получают имена / подписи / иконки мода, узел вкладки = кольцо
+  берсерка (оригинал ничего не находит и оставляет его); стоковый класс с заменённым модом деревом (ACE Embermage / Engineer / Outlander):
+  свой блок, только если имена отличаются. Ролик у заменённой строки — `MOVIES/PASSIVE.MP4`. Пишутся только данные (сегмент data RW).
+  `DM_TL2_SKILLTREE=0` — внутренний выключатель. Строки лога: `[pc] tl2-skilltree: applied|skipped (…)`, `[tl2skill] ZMOD_…: N layout(s),
+  M class name(s)`, на каждое новое имя игрока одна строка: `player <ИМЯ>: skill tree from the mod (…) into the … ring / table rows a..b`
+  или `no mod skill tree` / `equals the console's … table: unchanged`.
+
+**ACE (основной тест, `TL2-ACE.mod` 41 МБ, 10064 файла):** 9 layout, 22 имени юнита: Assassin, Barbarian, Dark Sorceror, Soldier, Vampire,
+War Bot (новые) + Embermage / Outlander / Engineer с изменёнными деревьями (Embermage: Lightning blast вместо ShockingBurst и др.;
+Engineer: Overload / Tremor в Blitz). Engineer-DAT в ACE нет, только `SKILL_TREE_RAILMAN.LAYOUT` — поэтому конвертер знает UISKILLTREE
+четырёх стоковых классов (`ST_STOCK`) и для замещённого layout пишет `C HUM_<КЛАСС>_BASE`, если своего DAT с таким NAME в моде нет. Выброшено 8: 4-я вкладка у Soldier / Vampire / War Bot («Charge Bar Skills» 8, «Blood Lines» 12, «Thermal Distribution» 8 навыков)
+и 8-й активный в ряду из 4 (Mortor, Gargoyle Form, Sulphur Launcher, Destroyer Cannon, Weapons Platform). Оборотень: 1 настоящее дерево
+(8 навыков, слоты 0..4 + 7..9) и 2 остатка от Engineer-layout (их навыков у оборотня нет → пустые, как на PC). Cacklespit: 1 дерево из 10.
+У ACE-Берсерка своего layout нет → консольная таблица.
+
+**Проверено:** `python -I tools/tl2_mod_java_test.py work/Torchlight2Mobile/romfs <tmp> --mods <werewolf> <cacklespit> <TL2-ACE>` —
+PASS: синтетический мод (739 текстур, + синтетический класс с 4 вкладками / 12 навыками / вложенным навыком / BASEFILE) и три настоящих
+мода — PAK и MAN Python == Java байт в байт, таблица синтетики = ожидаемой. APK собирается (`tools/build_apk.ps1`).
+**Не проверено (телефон):** что `0x458f10` отдаёт то имя, что в таблице (лог `player …` покажет; поиск без учёта регистра + `_BASE`),
+что кольцо / список рисуют наши подписи и пустые слоты, что выучивание работает. Тест: ACE (или Playable Werewolf) включить в ⚙ →
+перегонка паков (CONVERTER_VERSION 2) → новый персонаж Assassin (ACE) → «+» → вкладка навыков: три сегмента «Combat / Cunning / Poison
+Skills», в первом Enchanted Blades, Blade Dash, Out For Blood … и 3 пассива внизу; вложить очко; затем сменить на стокового (Берсерк) —
+его родное дерево; boot.log: `[pc] tl2-skilltree: applied`, `[tl2skill] ZMOD_00_TL2_ACE.PAK: 9 skill tree layout(s), 22 class name(s)`,
+`player HUM_ASSASIN_…: skill tree from the mod`.
+**Дальше:** снято — см. «Без лимита «3 вкладки × 10»» ниже.
+
+### Без лимита «3 вкладки × 10» (18.11.2026, по просьбе хозяина; статика + конвертеры на PC, на телефоне не проверено)
+Заменяет «форму консоли 3 × 10» и «Дальше» выше. Что нашлось в коде (ничего не пришлось патчить в виджетах):
+- **Кольцо не ограничено тремя сегментами.** `PUI::Radial SetSegments 0x19fd7a0` считает записи до нулевой подписи `+0x18` (любое
+  число, вектор сегментов по 0x118) и при ненулевом байте заголовка `+0xc` (у колец навыков = 1) ставит их **равномерно** по кругу:
+  угол = 2π/N · i + `+0x10` (180°); поля записи `+8` (сторона 0..3) / `+0xc` (доля) нужны только кольцам с `+0xc` = 0. В игре уже есть
+  кольца на 5..12 записей (инвентарь `0x230bea0`, рецепты `0x230d1e8`). Выбор по умолчанию — `0x19fe8a0(radial, id)` по id из заголовка `+8`.
+- **Индекс дерева.** Все потребители `k = id − 0x65` — только PanelSkillList: имена `0x5a930` (таблица `0x23022c0`), ролики `0x5ae68` /
+  `0x607bc` / `0x60850` (таблица `0x2302a40`); везде `k < 12`, строки `10k .. 10k+9`. `0x128b14` (`cmp w0,#0x65`) — не то (текст «100+» HUD).
+  Значит, 12 деревьев помещаются в 120 строк: строки стоковых классов **занимаются на время** (их читает только этот игрок) и
+  возвращаются на следующем Create — переадресация индекса в коде не нужна.
+- **Тач и широкий экран.** `hle_tl2_ui.c` (`RA_SEG..RA_SEGEND`, `SEG_*`) и обёртка SetSegments в `hle_tl2_wide.c` (сдвиг центров на
+  полосу) ходят по вектору сегментов целиком — от числа сегментов не зависят, правок нет.
+- **11-й слот в PanelSkillList — дорого, не делалось:** объект 0x130 байт (`CreatePanel` `0x13e1cc`: `mov w0,#0x130` → ctor `0x59c10`),
+  указатели навыков ровно 10 на `+0xc8..+0x110`, за ними другие поля (`+0x126`, `+0x128`); поиск — 10 развёрнутых вызовов `0x5a9a0..0x5ad00`,
+  обход `cmp w28,#0xa` (`0x5d3c8`) и вёрстка списка из 10 строк. Нужны: больший объект, перенос полей, переписанный 0x5a8f0 и обходы.
+  С лишними вкладками не нужно.
+
+**Конвертер (таблица версии 2, `TL2SKILLTREES 2`; HLE читает 1 и 2):** деревья — все `TabN` / `SkillPaneN` по порядку N (индексы
+подряд с 0, не N−1); в дереве 7 активных + до 3 пассивов (нижний ряд ≤ 3) или до 10 подряд; активные сверх 7 (при > 10 всего) уходят в
+**дерево-перелив** после деревьев layout: 4-я вкладка, если у класса 3, иначе 5-я; по 10; подпись «<дерево> II» (+ его иконка), если все
+из одного дерева, иначе «More Skills». Всего до 12 деревьев (`ST_TREES`), сверх — строка X. ACE теперь без потерь (dropped 0):
+Soldier 4 + «Explosive Skills II» (Mortor), Vampire 4 + «More Skills» (Gargoyle Form, Blood Line T2 2, T2 3), War Bot 4 + «More Skills»
+(Sulphur Launcher, Destroyer Cannon, Weapons Platform).
+
+**HLE:** для любого класса с таблицей строится **своё кольцо** в памяти хоста (`g_myring`: заголовок — копия берсерка, `+8` = 0x65; N
+записей — копии записи 0x65 с id `0x65 + t`, подписью и иконкой мода, обратный порядок как у стоковых; нулевая запись), строки `0 .. 10N−1`
+получают имена мода. Модовый класс — узел вкладки = наше кольцо; стоковый с заменённым деревом — подменяется его запись GOT
+`0x23a3e70 + 8c`, и совпадение оригинала само кладёт наше кольцо (пропуск, если 3 дерева совпадают с консолью). Restore на каждом Create:
+строки, 4 записи GOT, узел вкладки (если там наше кольцо). Подписи стоковых колец больше не трогаются. Лог:
+`player <ИМЯ>: skill tree from the mod (S skills in N trees, ring of N segments, table rows 0..10N-1)[ for a stock class]`.
+
+**Проверено:** `tl2_mod_java_test.py … --mods <werewolf> <cacklespit> <TL2-ACE>` — PASS: синтетика (класс TEST: 4 полные вкладки по
+12 → 5-я «More Skills» с 8; класс TEST2: 3 вкладки, 8 активных + 3 пассива → 4-я «Alpha II»; вложенный навык, BASEFILE, табы / пробелы
+в подписи, ведущий `/` в UISKILLTREE; ожидание выписано руками) и три мода — PAK / MAN Python == Java. Собраны оба APK
+(`build_apk.ps1` и `-Android10`).
+
+**Тест на телефоне (обновлено):** ACE в ⚙ → перегонка → boot.log `[pc] tl2-skilltree: applied`, `[tl2skill] ZMOD_…TL2_ACE.PAK: 9 skill
+tree layout(s), 22 class name(s)`.
+1. Assassin: «+» → навыки: 3 сегмента Combat / Cunning / Poison, в Combat Enchanted Blades … + 3 пассива; вложить очко (уровень растёт,
+   очки убывают). Лог `player HUM_ASSASIN_…: … in 3 trees, ring of 3 segments`.
+2. Soldier: **5 сегментов** (Gun Powder, Explosive, Front Line, Charge Bar, Explosive Skills II); сегменты не налезают друг на друга и на
+   панель, тап по каждому открывает свой список; в «Explosive Skills II» — Mortor; L/R-вкладки и тап по сегменту (тач) работают.
+3. Vampire / War Bot: 5-я «More Skills» с 3 навыками.
+4. Embermage (ACE): Lightning blast на месте ShockingBurst (`… for a stock class`); затем стоковый Берсерк без мода в таблице — его
+   родное дерево (`no mod skill tree`), подписи Hunter / Tundra / Shadow.
+5. Широкий экран (по умолчанию): 5-сегментное кольцо в центральной полосе 1920, тап попадает в сегменты.
+Если кольцо из 5 выглядит плохо (подписи наезжают) — вариант: раскладка «по сторонам» (`+0xc` заголовка = 0 и поля `+8` / `+0xc`
+записей, как у колец инвентаря).
+
+
+### Иконки навыков модов (18.11.2026; конвертеры на PC, на телефоне не проверено)
+Телефон хозяина (Adreno, ACE, War Bot): деревья работают (`player HUM_WAR BOT_F: … 41 skills in 5 trees, ring of 5 segments, table rows
+0..49`), но у многих навыков нет иконок (`work/logs/r1118/owner1.log`).
+- **Откуда консоль берёт иконку.** Поле DAT навыка `SKILL_ICON` (хэш `tl2_hash`; у Eviscerate `skillicon_eviscerate`) и `SKILL_ICON_INACTIVE`
+  (`0x7385c06c`, `…_gray`) — имя элемента атласа консольного UI. Атласы: при загрузке UI `main+0x141040` берёт у менеджера паков **все файлы
+  типа 26 (.ATLAS) в `MEDIA/UICONSOLE/ATLASES/`** (`0x141e90`, строка UTF-32 `MEDIA/UICONSOLE/ATLASES/` `0x1fc82ac`) и грузит каждый
+  (`0x1a00360`): XML `<atlas texture="TextureAtlas_N.DDS" padding="2"><entries><entry name x y w h/>`, текстура из той же папки (DATA5:
+  XTX BC3 2048², `pf` 21). «contains only blacklisted elements for this platform» — атласы 12..18 с одним элементом `PS4` / `XB1`-заставкой
+  (фильтр по элементу, наши имена `skillicon_*` его не касаются). Списка-перечня нет — новый .ATLAS в паке мода подхватывается сам.
+- **Что у PC-модов.** Иконки — CEGUI-imageset (`MEDIA/UI/ICONS/SKILLS/*.IMAGESET`: `<Imageset Imagefile="media/ui/icons/skills/x.dds">
+  <Image Name XPos YPos Width Height/>`), консоль их не читает. ACE: из 521 имени иконок навыков 240 есть в стоковых атласах (их и было
+  видно), 275 определены только в imageset мода (`ASSASSIN_SKILLS_1..7`, `ITEMICONS14/15`), 8 нигде нет (в моде тоже). War Bot: 30 из
+  41 иконки — из imageset ACE.
+- **Решение (конвертер, без HLE):** `tools/tl2_mod.py icon_atlases` / `Tl2ModConv.iconAtlases` (байт в байт): имена из `SKILL_ICON` /
+  `SKILL_ICON_INACTIVE` всех DAT `MEDIA/SKILLS/**` мода, определённые в imageset мода, вырезаются из текстуры (DDS DXT1/3/5 — свой
+  BC-декодер с целыми формулами, 24/32-бит по маскам; PNG / JPG тем же декодером, что текстуры; TGA) и укладываются полками (ячейка +2 с
+  каждой стороны, как `padding="2"` у игры) в страницы до 2048² RGBA8 XTX → `MEDIA/UICONSOLE/ATLASES/ZMODICONS_<id мода hex>_<k>.ATLAS`
+  (тип 26) + `.DDS` (тип 4) в пак мода, + записи каталогов `UICONSOLE/` / `ATLASES/`. Имя — по id мода из заголовка (не по слоту:
+  Tl2Mods переименовывает паки без перегонки). Элемент пишется под написанием imageset и под каждым написанием из DAT (регистр).
+  `CONVERTER_VERSION = 3`. ACE: 275 иконок, одна страница 2048×1024 (8 МБ RGBA8). Оборотень / Cacklespit своих imageset не несут → 0.
+- **Проверено:** `tl2_mod_java_test.py … --mods <werewolf> <cacklespit> <TL2-ACE>` — PASS: синтетика (DAT с другим регистром и
+  неопределённым именем; imageset UTF-8 BOM / UTF-16, атрибуты в любом порядке, повтор атрибута, `\` в пути; 32-бит DDS, PNG, DXT1/3/5 со
+  случайными блоками, TGA, отсутствующая текстура) — XML, размер страницы и пиксели совпали с рукописным ожиданием (DXT — с декодером
+  Pillow, расхождение 0); три мода — PAK / MAN Python == Java. Оба APK собраны. Страница ACE отрендерена в PNG и просмотрена: иконки целые.
+- **Не проверено:** что поиск элемента игрой — без учёта регистра или с ним (пишем оба написания); что дубль имени со стоковым атласом
+  (у ACE 2 таких) не мешает; что HUD-панель действий и выбор навыка на кнопку берут иконку тем же путём (ожидаемо: тот же SKILL_ICON).
+- **Тест на телефоне:** включить ACE → перегонка (CONVERTER_VERSION 3) → War Bot: все 5 вкладок, у Fists of Steel, Reactive Armour,
+  Eye Laser, Fire Launcher, Summon Robots, Coolant, Sulphur Launcher и др. есть иконки (серые до изучения, цветные после); назначить навык на
+  кнопку — иконка в выборе и на HUD (и на тач-кнопке через hle_tl2_icons). Assassin: все 3 вкладки с иконками. Без иконок могут остаться
+  только 8 имён, которых нет и в моде (`skillicon_assassin_ambush`, `skill_blade`, `skill_blast`, `skill_skeleton` и серые).
+## 18.11 Issue #4: перекрытие трансляции и GPU (Mali 40–50 fps; собрано, на телефоне не проверено)
+- **Данные (boot.log игрока, v0.1.1, Dimensity 8300 / Mali-G615):** во всех игровых окнах кадр = GPU + ~4,4 мс (fps 48: gpu 16,4 / кадр
+  20,8; fps 42: gpu 19,5 / 23,8), `block_ms legacy_wait` 13–17 мс на поток игры, `submit_by present=1.00`, `submits` 1,28 (0,28 —
+  idle flush), `poolreset waits 0,85 wait_ms 4,0–5,4` (Mi 14: 0,1–0,2), «主线程 每帧 CPU» 4,7 мс, трансляция `[nvn] 翻译 CPU` 3,7 мс.
+  `legacy_waitall=0`, `completion_wait=0`, zero-copy 0 (Mali), present-поток 0.
+- **Где сериализация (разбор main, `work/exefs-update/main`, указатели NVN по строкам GetProcAddress: SyncWait `0x7702450`, FenceSync
+  `0x7702438`, Submit `0x7702430`, Present `0x7702440`, QueueFlush `0x7702448`):** функция конца кадра `0x1993fe0`: EndRecording
+  контекста кадра (2 контекста × 0x298 в `0x77011e0`, индекс `+0x530`) → Submit → **FenceSync(sync контекста, cond 0, flags 1 =
+  FLUSH_FOR_CPU)** → индекс := другой → `0x1995360`: **SyncWait(sync другого = кадр N−1, UINT64_MAX)** (перед переиспользованием его
+  командной памяти, AddCommandMemory / BeginRecording) → `0x1995520`, `0x1992720` → **Present N** → QueueFlush → SyncWait(sync acquire,
+  fenced 3 кадра назад — сразу готов) → acquire. У нас FenceSync был пустым, кадр N лежал в recording-слоте до задания present, которое
+  игра ставит только после ожидания N−1 → GPU простаивал от конца N−1 до: пробуждение игры, ретайр слота (на Mali + 4–5 мс ожидания
+  `vkResetCommandPool` потока сброса в `poolreset::finish`), код игры до Present, задание present (`submit_slots`). Трансляция N (3,7 мс)
+  успевала за время ожидания игры — на критическом пути не она, а момент сдачи.
+- **Как на Switch:** FenceSync с FLUSH_FOR_CPU сбрасывает очередь — N уже стоит на GPU за N−1, GPU идёт подряд, игра ждёт N−1 и пишет
+  N+1, пока GPU делает N (2 кадра в полёте, глубину держит сама игра своим ожиданием).
+- **Сделано (по умолчанию для TL2; выключатели только внутренние, игрокам не нужны):**
+  - `hle_nvn.c`: `DM_NVN_FENCE_FLUSH` (`fence_flush_mode`, по умолчанию 1 для `DM_GAME_TL2`, иначе 0): FenceSync с битом 1 ставит
+    `XJ_FLUSH` в очередь трансляции сразу за сабмитом (`x_flush_req`), задание зовёт `mtl_flush` (`nvn_vk.c`) → `xbg_game_flush`
+    (`xbg_game.cpp`, сайт `SITE_FLUSH`: `submit_slots(false)`, без ожиданий). Бит 2 — то же на `nvnQueueFlush` (выкл.). Слабое
+    `mtl_flush` в hle_nvn.c для бэкендов без него.
+  - `xbg_game.cpp` `pside` (`DM_GFX_PRESENT_SIDE`, 1 для TL2): если на present ни один слот не пишется, переход окна в TRANSFER_SRC (и
+    flip TAA_FIX) — в отдельный маленький CB (кольцо 4 с fence, `ptq::submit`), а не в новый слот: иначе present занимал позицию кольца
+    из 2 слотов и трансляция N+1 ждала в `recording_slot` конца GPU N (простой GPU = вся трансляция). Если flip пришлось бы пересоздать
+    (смена размера) — старый путь. `retire_object` без пишущегося слота кладёт объект в самый новый сабмит (`nvnTextureFinalize` с потока
+    игры не блокируется и не открывает слот).
+  - `poolreset` (`DM_GFX_POOLRESET_SPLIT`, 1 для TL2): ретайр ждёт у потока сброса только возврата его `vkWaitForFences`
+    (`finish_fence`, поле `Slot::wait_busy`), `vkResetCommandPool` ждёт только повторное использование слота (`recording_slot` → `finish`).
+  - Лог: раз в 300 кадров `NVN PERF overlap frames=300 fps=… translate_ms gpu_ms gpu_gap_ms gap_max_ms gaps=положит./пары submits
+    behind_gpu flush flush_behind flush_empty present_side game_wait_ms game_waits poolreset reset_ms fence_ms`; `block_ms … submit_by
+    flush=1.00`; `NVN PERF poolreset … fence_waits fence_wait_ms split=1`; при старте `[nvn] DM_NVN_FENCE_FLUSH=1: …`,
+    `NVN present side command buffer=1`, `NVN command pool reset split=1`.
+- **Корректность (#12):** память кадра N игра трогает только после SyncWait на его fence (кадр спустя), а тот по-прежнему ждёт трансляцию
+  (`SYNC_XWAIT`, `x_wait_sub`) и GPU; ничего не отвечает «готово» раньше. Сдача раньше = GPU читает раньше (как Switch). Кольцо, порядок
+  ретайров, writebacks / отчёты / отложенные события не менялись. Zero-copy (Adreno): GPU N идёт, пока игра готовит N+1, — так было и
+  раньше (N стартовал на present, тоже во время N+1), и так на Switch.
+- **Ожидание:** GPU-bound кадр ≈ gpu_ms + blit present: 48 → ~58–60 (vsync), 42 → ~50 fps у игрока #4. Условие: цепочка CPU после
+  пробуждения (логика+запись ~4,7 + трансляция ~3,7 + present ~1,1 мс) короче GPU-кадра. Риски: тепло (GPU без пауз), очередь GPU до
+  2 кадров (как Switch), Adreno — проверить мигания под zero-copy (SYNC-03).
+- **Проверено:** обе APK (`build_apk.ps1`, `-Android10`) собираются без новых предупреждений; python-тесты `dm/gfx/vulkan/engine/tests`
+  дают то же, что до правки (`source_structure`, `test_read_preflight_order`, `pipeline_memo_source` падали и до неё). Мак-тесты `dm/gfx/tests`
+  (Metal) здесь не собрать. **На телефоне не проверено.**
+- **Прогоны (Mi 14 Ultra, 60 с от загрузки уровня, одна сцена — Храмовые степи и бой; ABBA, 2 мин остывания после каждых 3):**
+
+| # | env | зачем | сравнить |
+|---|---|---|---|
+| A1 | `DM_GFX_SIM_GPU=mali DM_GAME_RES=3200x1440 DM_NVN_FENCE_FLUSH=0 DM_GFX_PRESENT_SIDE=0 DM_GFX_POOLRESET_SPLIT=0` | старое поведение, GPU нагружен (~15 мс) | `overlap fps`, `behind_gpu`≈0, `gpu_gap_ms`≈3–4, `submit_by present=1.00`, `计时` p50 |
+| B1 | `DM_GFX_SIM_GPU=mali DM_GAME_RES=3200x1440` | новое по умолчанию | `behind_gpu`≈1, `flush`≈1, `present_side`≈1, `gpu_gap_ms`<1, fps выше A на ~3–4 мс кадра |
+| B2, A2 | то же | повтор (ABBA) | медиана |
+| C | `DM_GFX_SIM_GPU=mali DM_PRESENT_MAX_HZ=120` (A/B по `DM_NVN_FENCE_FLUSH=0`) | без нагрузки GPU, без vsync 60 | fps ≈ 1000 / max(gpu, CPU-цепочка) |
+| D | B + `DM_NVN_CMDGUARD=1`, меню «+» 20 раз в бою | #12 не вернулся | нет `command memory changed`, нет падений |
+| E | без SIM (Adreno, zero-copy) | регрессии Adreno | 60 fps, нет вспышек |
+
+  Если `DM_GAME_RES` не меняет окно игры (строка `[nvn] WindowInitialize … 3200x1440`), брать C. Окончательно — APK игроку #4.
