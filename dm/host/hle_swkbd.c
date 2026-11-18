@@ -108,7 +108,26 @@ Result swkbd_show(void *out, const void *arg_, swkbd_input_fn input) {
     return RES_OK;
 }
 
+// [TL2] issue #15 (POCO MT6991, Android 16): SIGSEGV at swkbd_u16_to_u8+0x4, fault address just below sp, when the name field on the
+// character creation screen was tapped. swkbd_show's frame is ~8 KiB (x19 - sp = 0x2010 in the dump) and the game thread calling
+// ShowKeyboard had less than that left on its guest stack. The whole keyboard round trip now runs on a 256 KiB host stack of this
+// thread (mmap + guard page, made once per thread), same thread, so TSD / locks / the guest clock freeze behave exactly as before.
+#if defined(__aarch64__)
+#include <sys/mman.h>
+extern uint64_t dm_call_on_stack_ret(uint64_t sp, uint64_t (*fn)(void *), void *arg);   // entry.S
+#define SWKBD_STACK (256u << 10)
+static __thread uint8_t *t_swkbd_stack;
+typedef struct { void *out; const void *arg; } swkbd_call;
+static uint64_t swkbd_on_host_stack(void *p) { swkbd_call *c = p; return (uint64_t)swkbd_show(c->out, c->arg, front_text_input); }
+#endif
 HLE_FORCE("_ZN2nn5swkbd12ShowKeyboardEPNS0_6StringERKNS0_15ShowKeyboardArgE", "软键盘小程序 → 宿主原生输入框（DM_KBD 直给文本）",
           Result, h_swkbd_Show, void *out, const void *arg) {
+#if defined(__aarch64__)
+    if (!t_swkbd_stack) {
+        uint8_t *m = mmap(NULL, SWKBD_STACK + 0x4000, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+        if (m != MAP_FAILED) { mprotect(m, 0x4000, PROT_NONE); t_swkbd_stack = m + 0x4000; }   // guard page below the stack
+    }
+    if (t_swkbd_stack) { swkbd_call c = {out, arg}; return (Result)dm_call_on_stack_ret((uint64_t)(uintptr_t)(t_swkbd_stack + SWKBD_STACK), swkbd_on_host_stack, &c); }
+#endif
     return swkbd_show(out, arg, front_text_input);
 }

@@ -157,3 +157,24 @@ _dm_call_on_stack:
     mov x16, x1
     mov x0, x2
     br x16
+
+// 5) dm_call_on_stack_ret(sp, fn, arg) -> fn(arg): [TL2] issue #15. Like 4) but fn returns: run fn(arg) on stack sp (16-byte
+//    aligned down), switch back to the caller's stack and return fn's x0. For host code with big frames called from a guest
+//    thread (swkbd_show: ~8 KiB of locals; some guest stacks are only 16 KiB and the game calls it deep). 32 bytes on the old
+//    stack keep x29/x30/x19; x29 still points at the caller's frame, so dm_backtrace walks on into the guest frames.
+    .globl _dm_call_on_stack_ret
+    .p2align 2
+_dm_call_on_stack_ret:
+    stp x29, x30, [sp, #-32]!
+    mov x29, sp
+    str x19, [sp, #16]
+    mov x19, sp
+    and x0, x0, #0xfffffffffffffff0
+    mov sp, x0
+    mov x16, x1
+    mov x0, x2
+    blr x16
+    mov sp, x19
+    ldr x19, [sp, #16]
+    ldp x29, x30, [sp], #32
+    ret
