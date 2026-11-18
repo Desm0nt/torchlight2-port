@@ -26,6 +26,7 @@ import java.util.List;
 //   layout          D3PadView / Tl2Touch layouts tl2 / tl2_side / gamepad (pad d3_layout, applies when picked) + skill icons (tl2_icons)
 //   touch           Tl2Touch: diagonal correction, second-set modifier, the optional extras (pad tl2_iso / tl2_mod / tl2_tap / tl2_hold_walk /
 //                   tl2_hero_y / tl2_aim)
+//   updates         GearPages.updates: the app version + "Check for new versions at start" (UpdateNotice, front pref upd_check), the last row
 //   start env       no row: DM_TL2_POINTER=1 (always on), the DOOM cvars unset, the non-Adreno text diagnostics
 // A Diablo III build of this tree (DM_GAME=d3) gets D3's rows instead of the TL2 ones where they differ (touch / gamepad, D3 skill icons,
 // hide sticks, walking to the finger, menu swipes).
@@ -59,6 +60,7 @@ final class Tl2Gear {
         l.add(GearPages.deadzone());
         l.add(TL2 ? new TouchRows() : new D3Touch());
         l.add(GearPages.gearButton());
+        if (a.updateNotice() != null) l.add(GearPages.updates(a.updateNotice()));   // the app version + "Check for new versions at start" (UpdateNotice)
         return l;
     }
 

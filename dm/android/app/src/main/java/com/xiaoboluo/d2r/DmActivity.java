@@ -150,6 +150,7 @@ public class DmActivity extends Activity implements SurfaceHolder.Callback, Disp
         }
         current = new WeakReference<>(this);
         drivers = new VkDrivers(this);   // [front] the shared gear's driver choice (GearHost.drivers)
+        if (TL2) updates = new UpdateNotice(new Updates());   // [TL2] the GitHub update check as in D3 (started at the first frames, drivers.gameStarted)
         moveUiLang();
         if (DOOM) checkLastRun();   // [DOOM] crash report of the last run, before anything of this one is written
         displays = getSystemService(DisplayManager.class);
@@ -194,6 +195,8 @@ public class DmActivity extends Activity implements SurfaceHolder.Callback, Disp
         if (TL2 && i == 1 && textures != null) runOnUiThread(() -> { if (front != null) front.close(); textures.fromMenu(); });
     }
     @Override public FrontMenu.Saves saves() { if (saves == null) saves = SaveTransfer.forGame(this, DATA_DIR); return saves; }
+    @Override public boolean updates() { return updates != null; }   // [TL2] the pause menu's "Check for updates"
+    @Override public void checkUpdates() { if (updates != null) updates.checkNow(); }
     @Override public void quit() {
         android.util.Log.i("dm", "[java] quit from the pause menu");
         if (DOOM) CrashLog.sessionEnd(this);   // [DOOM] a clean end: no crash report at the next start
@@ -229,6 +232,39 @@ public class DmActivity extends Activity implements SurfaceHolder.Callback, Disp
         doomPrefs().edit().putBoolean("handheld", !on).apply(); startedHandheld = !on;
         android.util.Log.i("dm", "[java] Switch mode -> " + (on ? "docked" : "handheld"));
         return true;
+    }
+
+    // ---- [TL2] "a new version is out" (UpdateNotice.java, frontend-common; wired as in the D3 port): GitHub's releases/latest of
+    // Desm0nt/torchlight2-port (stable releases only: pre-releases such as "v0.1.6 - test issue #2" are never offered), once per start after
+    // the first frames, a one-time dialog with the release notes; "Check for updates" in the pause menu asks now; the gear's Updates section
+    // shows the version and "Check for new versions at start" (GearPages.updates). The running version is BuildConfig.VERSION_NAME
+    // (dm/android/tl2/VERSION). No game-files check (requiredGameFiles 0). Texts: GearText (the menu language). Switches (dm/env):
+    // DM_UPDATE_CHECK=0 / always, DM_UPDATE_AS=<version>; prefs "front" upd_*.
+    private UpdateNotice updates;
+    static final String UPDATE_REPO = "Desm0nt/torchlight2-port";
+    UpdateNotice updateNotice() { return updates; }   // Tl2Gear: the gear's Updates section (null = not this build)
+    private final class Updates implements UpdateNotice.Host {
+        @Override public Activity activity() { return DmActivity.this; }
+        @Override public String appName() { return "Torchlight II Mobile"; }
+        @Override public String repoSlug() { return UPDATE_REPO; }
+        @Override public String currentVersion() { return BuildConfig.VERSION_NAME; }
+        @Override public int requiredGameFiles() { return 0; }
+        @Override public File gameFilesStamp() { return null; }
+        @Override public int gameFilesBaseline() { return 0; }
+        @Override public String gameFilesFeatures(int have, int need) { return ""; }
+        @Override public SharedPreferences prefs() { return getSharedPreferences(Ui.PREFS, MODE_PRIVATE); }
+        @Override public String text(String key, Object... args) { return GearText.s(DmActivity.this, key, args); }
+        @Override public String language() { return GearText.code(DmActivity.this); }   // the changelog section follows the menu language
+        @Override public void crumb(String line) { DmActivity.this.crumb(line); }
+        @Override public void immersive() { immersiveBars(); }
+        @Override public boolean canShowNotice() {
+            return resumed && started && !isFinishing() && hasWindowFocus() && inputDialog == null
+                && (front == null || !front.isOpen()) && (d3Pad == null || !d3Pad.editing());
+        }
+        @Override public boolean holdGame(boolean on) {
+            if (on) { if (front != null && front.isOpen()) return false; if (d3Pad != null) d3Pad.releaseAll(); }
+            hold(on); return true;
+        }
     }
 
     // ---- [D3] (from the DOOM 2016 port, its BUGS_AND_FIXES 2.22) crash logs and breadcrumbs (CrashLog.java)
@@ -630,7 +666,7 @@ public class DmActivity extends Activity implements SurfaceHolder.Callback, Disp
         started = true;
         GameStateHint.install(this, resumed);   // [game-state] GameManager.setGameState from the native loading / scene state (API 33)
         if (touchOverlay != null) touchOverlay.setInputEnabled(true);
-        drivers.gameStarted(view);   // [front] VkDrivers: the notice from this launch's driver check, then the crash guard / fallback watch
+        drivers.gameStarted(view, () -> { if (updates != null) updates.start(); });   // [front] VkDrivers: the notice from this launch's driver check, then the crash guard / fallback watch; [TL2] the update check after the first frames
         nativeFocus(3);
     }
 
@@ -842,7 +878,7 @@ public class DmActivity extends Activity implements SurfaceHolder.Callback, Disp
     @Override protected void onStop() { if (started) { nativeFocus(1); if (DOOM && bootFailure == 0) CrashLog.session(this, "bg"); }
         if (DOOM && libraryLoaded) { android.content.Context app = getApplicationContext(); new Thread(() -> CrashLog.mirrorBootLogs(app), "dm-logcopy").start(); }   // [DOOM] boot.log next to crash.txt
         com.xiaoboluo.d2r.widget.HeroWidgetProvider.requestUpdate(this); super.onStop(); }
-    @Override protected void onDestroy() { if (DOOM && isFinishing()) { crumb("activity finishing"); CrashLog.sessionEnd(this); } if (displays != null) displays.unregisterDisplayListener(this); if (inputs != null) inputs.unregisterInputDeviceListener(this); if (inputDialog != null) inputDialog.dismiss(); if (current.get() == this) current.clear(); super.onDestroy(); }
+    @Override protected void onDestroy() { if (updates != null) updates.dismiss(); if (DOOM && isFinishing()) { crumb("activity finishing"); CrashLog.sessionEnd(this); } if (displays != null) displays.unregisterDisplayListener(this); if (inputs != null) inputs.unregisterInputDeviceListener(this); if (inputDialog != null) inputDialog.dismiss(); if (current.get() == this) current.clear(); super.onDestroy(); }
     @Override public void onWindowFocusChanged(boolean f) { super.onWindowFocusChanged(f); if (f) immersiveBars(); else releaseTouches(); }
 
     @Override public void surfaceCreated(SurfaceHolder h) {}

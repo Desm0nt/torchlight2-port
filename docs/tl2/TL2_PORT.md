@@ -910,3 +910,17 @@ tree layout(s), 22 class name(s)`.
   5. раскладки `tl2` / `tl2_side`: иконки, тап по меню, скролл списков, тап по карте — без изменений.
 - Риски: в открытом меню палец в зоне стика ждёт до сдвига 10 dp (как в Tl2Touch), поэтому стик в меню «трогается» чуть позже; иконки
   поверх скинов с нестандартной формой кнопок (широкие L/R/ZL/ZR) — круг 0.86 r по центру, может выглядеть мельче спрайта.
+
+## 18.11 Проверка обновлений на GitHub (как в D3; собрано, на телефоне не проверено)
+- Подключён общий `UpdateNotice.java` (совпадает с `frontend-common/java/UpdateNotice.java` с точностью до CRLF): `DmActivity` создаёт его
+  в `onCreate` (только `TL2`, D3-сборка этого дерева его не получает), `Updates implements UpdateNotice.Host` — репозиторий
+  `Desm0nt/torchlight2-port`, версия `BuildConfig.VERSION_NAME` (= `dm/android/tl2/VERSION`), `requiredGameFiles 0`, тексты `GearText`
+  (язык меню, 13 языков; раздел changelog тоже по языку меню). `start()` — после первых кадров (`drivers.gameStarted(view, …)`),
+  `dismiss()` в `onDestroy`; строка «Проверить обновления» в меню паузы (`FrontMenu.Host.updates/checkUpdates`); в ⚙ последний раздел
+  `GearPages.updates` (версия + «Проверять новые версии при запуске», pref `front` `upd_check`).
+- Пре-релизы («v0.1.6 - test issue #2») не предлагаются: запрос `releases/latest` их не возвращает, и ответ с `prerelease` отбрасывается —
+  как в D3.
+- Ключи (`dm/env`, их читает нативная загрузка до старта игры): `DM_UPDATE_CHECK=0` / `always`, `DM_UPDATE_AS=<версия>`.
+- Проверка на телефоне: `DM_UPDATE_AS=0.1.0` в `dm/env` → через несколько секунд после первых кадров диалог с заметками Latest; второй
+  запуск — уже не показывает (announced); с `DM_UPDATE_CHECK=always` — каждый раз; «Проверить обновления» в меню паузы без ключей →
+  «у вас последняя версия».
