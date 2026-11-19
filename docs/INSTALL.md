@@ -129,7 +129,18 @@ The finished folder is **`work/Torchlight2Mobile`** inside the setup folder.
   ```
 
 - **adb (USB debugging):** `setup.bat push` / `bash setup.sh push` copies only what is missing and resumes after an
-  interruption; setup also prints the plain `adb push` commands.
+  interruption; setup also prints the plain `adb push` commands. `setup.bat push --dest <dir>` copies to another place
+  on the phone, e.g. a `Download` folder on an SD card.
+
+**On an SD card or a USB drive instead.** The folder does not have to be on internal storage. At every launch the app
+searches each storage volume for `Download/Torchlight2Mobile` (and `Torchlight2Mobile` at the volume's root), internal
+storage first, so a card needs no setting: copy the folder to `Download/Torchlight2Mobile` on the card and start the
+game. You can also name the folder yourself in the gear dialog under **Game folder**, or on the start error screen when
+the app finds nothing. Both places accept the system folder picker or a typed path. `boot.log` lists every folder that
+was searched and the one in use.
+
+A card reads more slowly than internal storage, so expect longer level loads. Use internal storage when it has the
+room; the card is for when it does not.
 
 ## Step 6. Install the app
 

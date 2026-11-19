@@ -6,4 +6,14 @@
     <string name="d3_start_missing_data">Oyun dosyaları Download/Torchlight2Mobile içinde bulunamadı. Bilgisayarda kendi oyun dosyalarınızla setup\'ı çalıştırın ve oluşturduğu \"Torchlight2Mobile\" klasörünü telefonun Download klasörüne kopyalayın.</string>
     <string name="d3_start_missing_modules">Yamalı oyun modülleri eksik (Download/Torchlight2Mobile/dm/out). Bilgisayarda setup\'ı yeniden çalıştırın ve \"Torchlight2Mobile\" klasörünün tamamını telefonun Download klasörüne yeniden kopyalayın.</string>
     <string name="d3_start_missing_shaders">Gölgelendiriciler eksik (Download/Torchlight2Mobile/dm/shaders). Bilgisayarda setup\'ı yeniden çalıştırın ve \"Torchlight2Mobile\" klasörünün tamamını telefonun Download klasörüne yeniden kopyalayın.</string>
+
+    <!-- [TL2] the game folder (GameFolder.java): ported from DOOM Mobile commit 148f1d2e -->
+    <string name="folder_choose_start">Oyun klasörünü seç…</string>
+    <string name="folder_searched">Aranan yerler:</string>
+    <string name="folder_why_ok">eksiksiz</string>
+    <string name="folder_why_missing">bulunamadı</string>
+    <string name="folder_why_unreadable">okunamıyor (Android 10, SD kartları ve USB sürücüleri uygulamalara kapatabilir)</string>
+    <string name="folder_why_romfs">romfs klasörü yok</string>
+    <string name="folder_why_modules">yamalı oyun modülleri eksik (dm/out)</string>
+    <string name="folder_why_shaders">gölgelendiriciler eksik (dm/shaders)</string>
 </resources>

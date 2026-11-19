@@ -738,19 +738,19 @@ def pick_device(adb, serial):
     raise Fail('several phones are connected; name one: setup push <serial> (' + ', '.join(ready) + ')')
 
 
-def push_commands(L):
+def push_commands(L, dest=PHONE_DIR):
     """The adb commands that copy the prepared folder by hand (also printed at the end of setup)."""
     w = lambda p: f'"{p}"'
-    return [f'adb shell mkdir -p {PHONE_DIR}/dm',
-            f'adb push {w(L.romfs)} {PHONE_DIR}/',
-            f'adb push {w(L.out)} {PHONE_DIR}/dm/',
-            f'adb push {w(L.shaders)} {PHONE_DIR}/dm/',
-            f'adb push {w(L.mods)} {PHONE_DIR}/',
-            f'adb push {w(L.astc)} {PHONE_DIR}/   (only on phones without BC textures: Mali, PowerVR, Xclipse; ~0.8 GB)',
+    return [f'adb shell mkdir -p {dest}/dm',
+            f'adb push {w(L.romfs)} {dest}/',
+            f'adb push {w(L.out)} {dest}/dm/',
+            f'adb push {w(L.shaders)} {dest}/dm/',
+            f'adb push {w(L.mods)} {dest}/',
+            f'adb push {w(L.astc)} {dest}/   (only on phones without BC textures: Mali, PowerVR, Xclipse; ~0.8 GB)',
             f'adb shell appops set {APP_ID} MANAGE_EXTERNAL_STORAGE allow   (after installing the APK)']
 
 
-def push(L, serial):
+def push(L, serial, dest=PHONE_DIR):
     if not L.complete():
         raise Fail(f'{L.phone} is not complete yet; run the preparation first (setup check shows what is missing)')
     adb = adb_exe()
@@ -762,7 +762,7 @@ def push(L, serial):
     make_mods_folder(L)
     for local in (L.out, L.shaders, L.mods, L.romfs) + ((L.astc,) if L.astc_ok() else ()):
         rel = local.relative_to(L.phone).as_posix()
-        remote = f'{PHONE_DIR}/{rel}'
+        remote = f'{dest}/{rel}'
         listing = subprocess.run(adb + ['shell', f"cd '{remote}' 2>/dev/null && find . -type f -exec stat -c '%s %n' {{}} +"],
                                  capture_output=True, text=True).stdout
         have = {}
@@ -964,14 +964,18 @@ def main(argv=None):
         print(__doc__); return 0
     if argv and argv[0] in ('check', 'push'):
         ap = argparse.ArgumentParser(prog=f'setup {argv[0]}')
-        if argv[0] == 'push': ap.add_argument('serial', nargs='?')
+        if argv[0] == 'push':
+            ap.add_argument('serial', nargs='?')
+            ap.add_argument('--dest', default=PHONE_DIR, metavar='DIR',
+                            help=f'where the folder goes on the phone (default: {PHONE_DIR}); an SD card is '
+                                 f'/storage/<card-uuid>/Download/{DATA_NAME}, and the app finds the folder on any volume')
         else: ap.add_argument('files', nargs='*')
         ap.add_argument('--work', default=default_work)
         ap.add_argument('--yes', '-y', action='store_true')
         a = ap.parse_args(argv[1:])
         L = Layout(a.work)
         if argv[0] == 'check': return check(L, a.files)
-        push(L, a.serial); return 0
+        push(L, a.serial, a.dest); return 0
     ap = argparse.ArgumentParser(prog='setup', description=f'Prepare {GAME} Mobile game files from your own dumps.')
     ap.add_argument('files', nargs='*', help=f'base game, update v{UPDATE_VERSION} and prod.keys in any order (or folders to '
                                              'search); none: put-game-files-here/ and the current folder')

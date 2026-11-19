@@ -53,14 +53,14 @@ final class Tl2Textures {
 
     Tl2Textures(Activity a, FrameLayout f, Game g) {
         act = a; frame = f; game = g;
-        data = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), DmActivity.DATA_DIR);
+        data = GameFolder.dir(a);   // [TL2] the game folder of this run (GameFolder): the ASTC pack directory and dm/env follow it
     }
     private String t(String ru, String en) { return Ui.t(act, ru, en); }
 
     // No BC textures on this GPU: no KGSL (Mali, PowerVR, Xclipse; the app's own detection), or a simulated family in dm/env.
     static boolean wanted(Context c) {
         if (!VkDrivers.kgsl()) return true;
-        File env = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), DmActivity.DATA_DIR + "/dm/env");
+        File env = new File(GameFolder.dir(c), "dm/env");
         try {
             for (String l : new String(Files.readAllBytes(env.toPath()), StandardCharsets.UTF_8).split("\n")) {
                 l = l.trim(); if (!l.startsWith("DM_GFX_SIM_GPU=")) continue;

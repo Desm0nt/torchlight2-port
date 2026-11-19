@@ -194,7 +194,16 @@ public class DmActivity extends Activity implements SurfaceHolder.Callback, Disp
         if (TL2 && i == 0) runOnUiThread(() -> Tl2Gear.showMods(new GearSettings(this), null));
         if (TL2 && i == 1 && textures != null) runOnUiThread(() -> { if (front != null) front.close(); textures.fromMenu(); });
     }
-    @Override public FrontMenu.Saves saves() { if (saves == null) saves = SaveTransfer.forGame(this, DATA_DIR); return saves; }
+    @Override public FrontMenu.Saves saves() {
+        if (saves == null && DOOM) {   // [TL2] exports go to <game folder>/saves (GameFolder), with SaveTransfer.forGame's fallback
+            File pub = GameFolder.writable(this, "saves"), ext = getExternalFilesDir(null);
+            saves = new SaveTransfer(this, new File(getFilesDir(), "save"), pub != null ? pub : ext != null ? new File(ext, "saves") : new File(GameFolder.defaultDir(), "saves"));
+        }
+        if (saves == null) saves = SaveTransfer.forGame(this, DATA_DIR);
+        return saves;
+    }
+    // [TL2] driver packages are imported from <game folder>/drivers, overriding GearHost's Download/<data folder>/drivers default
+    @Override public File driverImportDir() { return new File(GameFolder.dir(this), "drivers"); }
     @Override public boolean updates() { return updates != null; }   // [TL2] the pause menu's "Check for updates"
     @Override public void checkUpdates() { if (updates != null) updates.checkNow(); }
     @Override public void quit() {
@@ -490,6 +499,14 @@ public class DmActivity extends Activity implements SurfaceHolder.Callback, Disp
     @Override protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
         if (request == DriverManager.REQ_ZIP) DriverManager.picked(this, result == RESULT_OK && data != null ? data.getData() : null);   // the driver manager's "Install from a file"
+        if (request != REQ_FOLDER) return;
+        // [TL2] the system folder picker's answer: a tree URI turned back into a plain path (all files access reads paths, GameFolder.fromTreeUri)
+        Uri u = result == RESULT_OK && data != null ? data.getData() : null;
+        if (u == null) { crumb("game folder picker: cancelled"); return; }
+        File f = GameFolder.fromTreeUri(this, u);
+        crumb("game folder picker: " + u + " -> " + (f != null ? f.getAbsolutePath() : "not a storage path"));
+        if (f == null) { new AlertDialog.Builder(this).setTitle(d3Ui().getString(R.string.folder_title)).setMessage(d3Ui().getString(R.string.folder_not_path)).setPositiveButton(android.R.string.ok, null).show(); return; }
+        applyFolderChoice(f);
     }
     // [D3] the menu language was the gear's own pref (doom_graphics ui_lang); the shared one is the pause menu's (front ui_lang, Ui.PREFS): moved once
     private void moveUiLang() {
@@ -584,6 +601,18 @@ public class DmActivity extends Activity implements SurfaceHolder.Callback, Disp
         if (started || importing || !resumed || !ensureFileAccess()) return;
         File downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
         if (!DOOM && !libraryLoaded && !ensureImported(new File(downloads, "S2X/D2R Mobile/android"))) return;
+        // [TL2] find the game folder (GameFolder: the internal storage, SD cards, USB drives, the player's choice) before anything of this
+        // launch is set up, so the mod preparation below already sees it; none usable = the start error with the searched paths and
+        // "Choose the game folder...". The library is not loaded then, so a folder chosen there simply runs this again.
+        if (DOOM && !libraryLoaded) {
+            GameFolder.Result r = GameFolder.resolve(this);
+            logFolder(r);
+            if (r.dir == null) { showFolderError(r.best() == GameFolder.NO_MODULES ? -3 : r.best() == GameFolder.NO_SHADERS ? -4 : -2, r); return; }
+            if (!r.saved.isEmpty() && !GameFolder.usable(r.savedState) && !folderNoticeShown) {
+                folderNoticeShown = true;
+                android.widget.Toast.makeText(this, d3Ui().getString(R.string.folder_unavailable, r.saved, folderWhy(r.savedState), r.dir.getAbsolutePath()), android.widget.Toast.LENGTH_LONG).show();
+            }
+        }
         if (gameFrame.getParent() == null) setContentView(gameFrame);
         if (TL2 && !libraryLoaded && tl2ModsState != 2) { if (tl2ModsState == 0) prepareTl2Mods(); return; }   // [TL2] mods first (Tl2Mods)
         if (!libraryLoaded) {
@@ -645,7 +674,7 @@ public class DmActivity extends Activity implements SurfaceHolder.Callback, Disp
         // not .build.config: the imported overlay can provide that file, and then the resource directory has none.
         File data = new File(downloads, "S2X/D2R Mobile/data"), earlier = new File(downloads, "data");
         if (!data.isDirectory() && earlier.isDirectory()) data = earlier;
-        String src = DOOM ? new File(downloads, DATA_DIR).getAbsolutePath() : data.getAbsolutePath();   // [DOOM] Download/DOOM Mobile/{romfs,dm}
+        String src = DOOM ? GameFolder.dir(this).getAbsolutePath() : data.getAbsolutePath();   // [TL2] <game folder>/{romfs,dm} (GameFolder)
         if (DOOM) CrashLog.session(this, "fg");   // [DOOM] the game runs from here: a leftover marker at the next start = it did not end cleanly
         unpackWarmSeeds();
         int result = nativeStart(getFilesDir().getAbsolutePath(), ext.getAbsolutePath(), src, Locale.getDefault().toLanguageTag());
@@ -661,6 +690,8 @@ public class DmActivity extends Activity implements SurfaceHolder.Callback, Disp
                 case -10 -> R.string.dmAndroidInvalidOverlay;
                 default -> 0;
             };
+            // [TL2] the Java check passed but the native one did not: the same screen with the searched paths and the folder button
+            if (DOOM && result >= -4 && result <= -2) { showFolderError(result, GameFolder.resolve(this)); return; }
             showStartError(resource == 0 ? getString(R.string.dmAndroidStartFailed, result) : (D3 ? d3Ui() : this).getString(resource)); return;
         }
         started = true;
@@ -670,12 +701,136 @@ public class DmActivity extends Activity implements SurfaceHolder.Callback, Disp
         nativeFocus(3);
     }
 
-    private void showStartError(String message) {
+    private void showStartError(String message) { showStartError(message, false); }
+    private void showStartError(String message, boolean folderButton) {
         // [DOOM] every error screen writes a report at once and names it (CrashLog.java)
         if (DOOM) message += "\n\n" + d3Ui().getString(R.string.d3_start_report) + startErrorReport(message).getAbsolutePath();
         TextView t = new TextView(this);
         t.setText(message); t.setTextSize(20); t.setPadding(64, 64, 64, 64);
-        setContentView(t);
+        if (!folderButton) { setContentView(t); return; }
+        // [TL2] the game files are missing or incomplete: "Choose the game folder..." under the text. The gear menu only exists once the
+        // native library loads, so a picker reachable only from the gear would be useless on a fresh install.
+        LinearLayout box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL); box.addView(t);
+        android.widget.Button b = new android.widget.Button(this); b.setText(d3Ui().getString(R.string.folder_choose_start));
+        b.setOnClickListener(v -> showFolderDialog(null));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2); lp.setMargins(64, 0, 64, 64); box.addView(b, lp);
+        android.widget.ScrollView scroll = new android.widget.ScrollView(this); scroll.addView(box);
+        setContentView(scroll);
+    }
+
+    // ---- [TL2] the game folder (GameFolder.java, ported from DOOM Mobile commit 148f1d2e, its GitHub issue #11)
+    private static final int REQ_FOLDER = 4711;
+    private static String folderLogged;      // the last resolution written to the log (once per change; startHost runs often)
+    private boolean folderNoticeShown;
+    private AlertDialog folderDialog;
+    private Runnable folderRowUpdate;        // the gear dialog's "Game folder" line, refreshed after a choice
+    private void logFolder(GameFolder.Result r) {
+        String s = r.log();
+        if (s.equals(folderLogged)) return;
+        folderLogged = s;
+        for (String l : s.split("\n")) crumb(l);
+    }
+    String folderWhy(int state) {
+        android.content.Context ui = d3Ui();
+        switch (state) {
+            case GameFolder.OK: return ui.getString(R.string.folder_why_ok);
+            case GameFolder.MISSING: return ui.getString(R.string.folder_why_missing);
+            case GameFolder.UNREADABLE: return ui.getString(R.string.folder_why_unreadable);
+            case GameFolder.NO_ROMFS: return ui.getString(R.string.folder_why_romfs);
+            case GameFolder.NO_MODULES: return ui.getString(R.string.folder_why_modules);
+            default: return ui.getString(R.string.folder_why_shaders);
+        }
+    }
+    // The start error for -2 / -3 / -4 with the folders that were searched and what each lacks
+    private void showFolderError(int code, GameFolder.Result r) {
+        android.content.Context ui = d3Ui();
+        StringBuilder sb = new StringBuilder(ui.getString(code == -4 ? R.string.d3_start_missing_shaders : code == -3 ? R.string.d3_start_missing_modules : R.string.d3_start_missing_data));
+        sb.append("\n\n").append(ui.getString(R.string.folder_searched));
+        for (GameFolder.Candidate c : r.all) sb.append("\n\u2022 ").append(c.dir.getAbsolutePath()).append(" \u2014 ").append(folderWhy(c.state));
+        showStartError(sb.toString(), true);
+    }
+    // "<path> (found automatically / your choice)" and, when another folder was chosen for the next launch, a second line
+    String folderLine() {   // package-private: the gear section reads it (Tl2Gear.folder)
+        android.content.Context ui = d3Ui();
+        GameFolder.Result r = GameFolder.last(); String saved = GameFolder.saved(this);
+        String line = r == null || r.dir == null ? ui.getString(R.string.folder_none)
+            : ui.getString(r.how.equals("saved choice") ? R.string.folder_custom_fmt : R.string.folder_auto_fmt, r.dir.getAbsolutePath());
+        String used = r == null ? "" : r.saved;
+        if (started && !saved.equals(used)) line += "\n" + ui.getString(R.string.folder_next_fmt, saved.isEmpty() ? ui.getString(R.string.folder_next_auto) : saved);
+        return line;
+    }
+    // The chooser: the system folder picker, a typed path, or back to the automatic search. onDone refreshes the gear row (or null).
+    void showFolderDialog(Runnable onDone) {
+        android.content.Context ui = d3Ui();
+        folderRowUpdate = onDone;
+        LinearLayout box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL); box.setPadding(48, 24, 48, 0);
+        TextView info = new TextView(this);
+        info.setText(folderLine() + "\n\n" + ui.getString(R.string.folder_help) + "\n\n" + ui.getString(R.string.folder_sd_warning));
+        box.addView(info);
+        android.widget.Button browse = new android.widget.Button(this); browse.setText(ui.getString(R.string.folder_browse)); box.addView(browse);
+        EditText path = new EditText(this); path.setSingleLine(true); path.setHint(ui.getString(R.string.folder_path_hint));
+        path.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS | InputType.TYPE_TEXT_VARIATION_URI);
+        String saved = GameFolder.saved(this); GameFolder.Result r = GameFolder.last();
+        path.setText(!saved.isEmpty() ? saved : r != null && r.dir != null ? r.dir.getAbsolutePath() : GameFolder.defaultDir().getAbsolutePath());
+        box.addView(path);
+        android.widget.Button use = new android.widget.Button(this); use.setText(ui.getString(R.string.folder_use_path)); box.addView(use);
+        android.widget.Button reset = new android.widget.Button(this); reset.setText(ui.getString(R.string.folder_reset)); box.addView(reset);
+        reset.setEnabled(!saved.isEmpty());
+        android.widget.ScrollView scroll = new android.widget.ScrollView(this); scroll.addView(box);
+        AlertDialog d = new AlertDialog.Builder(this).setTitle(ui.getString(R.string.folder_title)).setView(scroll).setNegativeButton(android.R.string.cancel, null).create();
+        folderDialog = d;
+        d.setOnDismissListener(x -> { if (folderDialog == d) folderDialog = null; if (resumed) immersiveBars(); });
+        browse.setOnClickListener(v -> openFolderPicker());
+        use.setOnClickListener(v -> {
+            String p = path.getText().toString().trim();
+            if (p.isEmpty()) return;
+            if (!p.startsWith("/")) p = new File(Environment.getExternalStorageDirectory(), p).getAbsolutePath();   // "Download/Torchlight2Mobile"
+            applyFolderChoice(new File(p));
+        });
+        reset.setOnClickListener(v -> {
+            crumb("game folder: reset to the automatic search (was " + GameFolder.saved(this) + ")");
+            GameFolder.prefs(this).edit().remove(GameFolder.PREF).apply();
+            folderApplied(null);
+        });
+        d.show();
+    }
+    private void openFolderPicker() {
+        Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+        i.putExtra(android.provider.DocumentsContract.EXTRA_INITIAL_URI,
+            android.provider.DocumentsContract.buildDocumentUri("com.android.externalstorage.documents", "primary:" + Environment.DIRECTORY_DOWNLOADS));
+        try { startActivityForResult(i, REQ_FOLDER); }
+        catch (android.content.ActivityNotFoundException e) { crumb("game folder picker: none on this phone"); android.widget.Toast.makeText(this, d3Ui().getString(R.string.folder_no_picker), android.widget.Toast.LENGTH_LONG).show(); }
+    }
+    // A chosen folder (or a folder that holds "Torchlight2Mobile"): saved only when usable; otherwise the player is told what is missing
+    private void applyFolderChoice(File picked) {
+        File d = GameFolder.normalize(picked);
+        int st = GameFolder.check(this, d);
+        crumb("game folder: the player chose " + picked.getAbsolutePath() + (d.equals(picked) ? "" : " -> " + d.getAbsolutePath()) + ": " + GameFolder.stateName(st));
+        if (!GameFolder.usable(st)) {
+            android.content.Context ui = d3Ui();
+            new AlertDialog.Builder(this).setTitle(ui.getString(R.string.folder_title)).setMessage(ui.getString(R.string.folder_bad, d.getAbsolutePath(), folderWhy(st))
+                + (GameFolder.removable(d) ? "\n\n" + ui.getString(R.string.folder_sd_warning) : "")).setPositiveButton(android.R.string.ok, null).show();
+            return;
+        }
+        GameFolder.prefs(this).edit().putString(GameFolder.PREF, d.getAbsolutePath()).apply();
+        if (GameFolder.removable(d)) android.widget.Toast.makeText(this, d3Ui().getString(R.string.folder_sd_warning), android.widget.Toast.LENGTH_LONG).show();
+        folderApplied(d);
+    }
+    // After a change (d = the new folder, null = automatic): the running game keeps its folder until the next launch; before the library
+    // loads the start simply runs again; after a failed nativeStart (native paths already set) restartGame brings up a new process.
+    private void folderApplied(File d) {
+        if (folderDialog != null) folderDialog.dismiss();
+        android.content.Context ui = d3Ui();
+        String what = d != null ? d.getAbsolutePath() : ui.getString(R.string.folder_next_auto);
+        if (started) {
+            android.widget.Toast.makeText(this, ui.getString(R.string.folder_set_next, what), android.widget.Toast.LENGTH_LONG).show();
+            if (folderRowUpdate != null) folderRowUpdate.run();
+            return;
+        }
+        android.widget.Toast.makeText(this, ui.getString(R.string.folder_set_now, what), android.widget.Toast.LENGTH_SHORT).show();
+        if (libraryLoaded) { crumb("restart in a new process for the new game folder"); restartGame(); return; }
+        GameFolder.forget(); lastStartError = null;
+        startHost();   // not resumed yet (back from the picker): onResume runs it
     }
 
     // 原生线程只投递主线程工作，不持有 Activity，也不直接操作视图。
