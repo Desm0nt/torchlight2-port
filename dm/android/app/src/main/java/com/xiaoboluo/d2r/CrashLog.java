@@ -37,10 +37,11 @@ final class CrashLog {
 
     private CrashLog() {}
 
+    // [TL2] <game folder>/logs (GameFolder: Download/<data folder> or the folder the player chose, e.g. on an SD card), else
     // Download/<data folder>/logs (writable), else <external files>/logs, else <files>/logs.
     static File dir(Context c) {
-        File pub = new File(android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS), DmActivity.FRONT_DATA_DIR + "/logs");
-        try { if (SaveTransfer.allFilesAccess(c) && (pub.isDirectory() || pub.mkdirs()) && pub.canWrite()) return pub; } catch (RuntimeException e) { /* storage not ready */ }
+        File pub = GameFolder.writable(c, "logs");
+        if (pub != null) return pub;
         File ext = c.getExternalFilesDir(null);
         File d = ext != null ? new File(ext, "logs") : new File(c.getFilesDir(), "logs");
         if (!d.isDirectory() && !d.mkdirs()) d = new File(c.getFilesDir(), "logs");
@@ -76,8 +77,7 @@ final class CrashLog {
     // same rule as DmActivity.startHost; both are looked at so a change of that rule does not lose the log).
     static File bootLog(Context c) {
         File a = new File(c.getFilesDir(), "dm/boot.log"), ext = c.getExternalFilesDir(null), b = ext == null ? null : new File(ext, "dm/boot.log");
-        File pub = new File(new File(android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS),
-                                     DmActivity.FRONT_DATA_DIR + "/logs"), "boot.log");   // [D3] where jni_android.c writes it now
+        File pub = new File(GameFolder.dir(c), "logs/boot.log");   // [D3] where jni_android.c writes it now; [TL2] in the game folder of this run
         File best = a.isFile() ? a : null;
         for (File f : new File[] { b, pub }) if (f != null && f.isFile() && (best == null || f.lastModified() > best.lastModified())) best = f;
         return best != null ? best : a;

@@ -31,14 +31,16 @@ final class Tl2Mods {
     static final String PREF = "tl2_mods";
     static final int CONVERTER_VERSION = 3;   // 2: + MEDIA/PORT/SKILLTREES.TXT (issue #6); 3: + skill icon atlases ZMODICONS_*. Bump when Tl2ModConv's output changes: every pack is converted again
 
-    static File modsDir() { return new File(android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS), DmActivity.DATA_DIR + "/mods"); }
+    // [TL2] <game folder>/mods (GameFolder: the internal storage, an SD card or the folder the player chose). The converted packs stay in
+    // workDir on internal storage, so no conversion writes reach a card.
+    static File modsDir(android.content.Context c) { return new File(GameFolder.dir(c), "mods"); }
     static File workDir(android.content.Context c) { return new File(c.getFilesDir(), "tl2mods"); }
 
     static final class Mod { final File file; boolean on; Tl2ModConv.Info info; String error; Mod(File f, boolean on) { file = f; this.on = on; } }
 
     /** The .MOD files in the folder, in the saved order (new files at the end, off), with their headers. */
-    static List<Mod> list(SharedPreferences p) {
-        File[] fs = modsDir().listFiles((d, n) -> n.toUpperCase(Locale.ROOT).endsWith(".MOD"));
+    static List<Mod> list(android.content.Context c, SharedPreferences p) {
+        File[] fs = modsDir(c).listFiles((d, n) -> n.toUpperCase(Locale.ROOT).endsWith(".MOD"));
         Map<String, File> found = new HashMap<>(); if (fs != null) for (File f : fs) if (f.isFile()) found.put(f.getName(), f);
         List<Mod> out = new ArrayList<>(); Set<String> seen = new HashSet<>();
         for (String line : p.getString(PREF, "").split("\n")) {
@@ -55,7 +57,7 @@ final class Tl2Mods {
         StringBuilder s = new StringBuilder(); for (Mod m : mods) s.append(m.file.getName()).append('\t').append(m.on ? '1' : '0').append('\n');
         p.edit().putString(PREF, s.toString()).apply();
     }
-    static int enabledCount(SharedPreferences p) { int n = 0; for (String l : p.getString(PREF, "").split("\n")) if (l.endsWith("\t1") && new File(modsDir(), l.substring(0, l.length() - 2)).isFile()) n++; return n; }
+    static int enabledCount(android.content.Context c, SharedPreferences p) { int n = 0; for (String l : p.getString(PREF, "").split("\n")) if (l.endsWith("\t1") && new File(modsDir(c), l.substring(0, l.length() - 2)).isFile()) n++; return n; }
 
     interface Progress { void step(int done, int total, String name); }
     static final class Outcome { int packs; final List<String> failed = new ArrayList<>(), log = new ArrayList<>(); }
@@ -73,7 +75,7 @@ final class Tl2Mods {
     /** Number of .MOD files that need converting at this launch (0 = only renames / deletes, no progress dialog needed). */
     static int pending(android.content.Context c, SharedPreferences p) {
         Map<String, String[]> cache = readCache(c); File paks = new File(workDir(c), "overlay/PAKS"); int n = 0;
-        for (Mod m : list(p)) if (m.on && m.info != null) { String[] e = cache.get(m.file.getName()); if (e == null || !e[1].equals(stamp(m.file)) || !new File(paks, e[0] + ".PAK").isFile()) n++; }
+        for (Mod m : list(c, p)) if (m.on && m.info != null) { String[] e = cache.get(m.file.getName()); if (e == null || !e[1].equals(stamp(m.file)) || !new File(paks, e[0] + ".PAK").isFile()) n++; }
         return n;
     }
 
@@ -81,7 +83,7 @@ final class Tl2Mods {
     static Outcome prepare(android.content.Context c, SharedPreferences p, Progress progress) {
         Outcome out = new Outcome(); File work = workDir(c), overlay = new File(work, "overlay"), paks = new File(overlay, "PAKS"); paks.mkdirs();
         Map<String, String[]> cache = readCache(c), next = new HashMap<>();
-        List<Mod> on = new ArrayList<>(); for (Mod m : list(p)) if (m.on) { if (m.info != null) on.add(m); else out.failed.add(m.file.getName() + ": " + m.error); }
+        List<Mod> on = new ArrayList<>(); for (Mod m : list(c, p)) if (m.on) { if (m.info != null) on.add(m); else out.failed.add(m.file.getName() + ": " + m.error); }
         // 1. packs to keep under their new names: first to temporary names (two mods may swap places), then to the final ones
         Map<String, String> keep = new HashMap<>();   // final base -> temporary base
         int todo = 0;

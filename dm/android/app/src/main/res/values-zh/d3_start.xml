@@ -6,4 +6,14 @@
     <string name="d3_start_missing_data">在 Download/Torchlight2Mobile 里没有找到游戏文件。请在电脑上用你自己的游戏文件运行 setup，再把它生成的「Torchlight2Mobile」文件夹拷到手机的 Download 文件夹。</string>
     <string name="d3_start_missing_modules">缺少打过补丁的游戏模块（Download/Torchlight2Mobile/dm/out）。请在电脑上重新运行 setup，再把整个「Torchlight2Mobile」文件夹重新拷到手机的 Download 文件夹。</string>
     <string name="d3_start_missing_shaders">缺少着色器（Download/Torchlight2Mobile/dm/shaders）。请在电脑上重新运行 setup，再把整个「Torchlight2Mobile」文件夹重新拷到手机的 Download 文件夹。</string>
+
+    <!-- [TL2] the game folder (GameFolder.java): ported from DOOM Mobile commit 148f1d2e -->
+    <string name="folder_choose_start">选择游戏文件夹…</string>
+    <string name="folder_searched">查找过的位置：</string>
+    <string name="folder_why_ok">完整</string>
+    <string name="folder_why_missing">未找到</string>
+    <string name="folder_why_unreadable">无法读取（Android 10 可能不让应用访问 SD 卡和 U 盘）</string>
+    <string name="folder_why_romfs">没有 romfs 文件夹</string>
+    <string name="folder_why_modules">缺少打过补丁的游戏模块（dm/out）</string>
+    <string name="folder_why_shaders">缺少着色器（dm/shaders）</string>
 </resources>
