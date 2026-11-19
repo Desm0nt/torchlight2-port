@@ -6,4 +6,14 @@
     <string name="d3_start_missing_data">File di gioco non trovati in Download/Torchlight2Mobile. Su un PC esegui setup con i tuoi file di gioco e copia la cartella «Torchlight2Mobile» creata nella cartella Download del telefono.</string>
     <string name="d3_start_missing_modules">Mancano i moduli di gioco patchati (Download/Torchlight2Mobile/dm/out). Esegui di nuovo setup sul PC e ricopia l\'intera cartella «Torchlight2Mobile» nella cartella Download del telefono.</string>
     <string name="d3_start_missing_shaders">Mancano gli shader (Download/Torchlight2Mobile/dm/shaders). Esegui di nuovo setup sul PC e ricopia l\'intera cartella «Torchlight2Mobile» nella cartella Download del telefono.</string>
+
+    <!-- [TL2] the game folder (GameFolder.java): ported from DOOM Mobile commit 148f1d2e -->
+    <string name="folder_choose_start">Scegli la cartella del gioco…</string>
+    <string name="folder_searched">Cercato in:</string>
+    <string name="folder_why_ok">completa</string>
+    <string name="folder_why_missing">non trovata</string>
+    <string name="folder_why_unreadable">non leggibile (Android 10 può chiudere schede SD e unità USB alle app)</string>
+    <string name="folder_why_romfs">manca la cartella romfs</string>
+    <string name="folder_why_modules">mancano i moduli del gioco patchati (dm/out)</string>
+    <string name="folder_why_shaders">mancano gli shader (dm/shaders)</string>
 </resources>

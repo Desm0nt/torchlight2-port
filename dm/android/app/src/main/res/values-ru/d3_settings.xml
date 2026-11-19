@@ -101,4 +101,26 @@
     <string name="tl2_mods_failed">Пропущены моды (не удалось преобразовать): %s</string>
     <string name="d3_mp_lan">Локальная беспроводная игра по Wi-Fi</string>
     <string name="tl2_mp_lan_note">Локальная сетевая игра работает между телефонами в одной сети Wi-Fi или на одной точке доступа. Пока не создана или не ищется локальная игра, ничего не открывается.</string>
+
+    <!-- [TL2] the game folder (GameFolder.java): ported from DOOM Mobile commit 148f1d2e -->
+    <string name="gear_folder">Папка игры</string>
+    <string name="folder_auto_fmt">%1$s (найдена автоматически)</string>
+    <string name="folder_custom_fmt">%1$s (выбрана вами)</string>
+    <string name="folder_next_fmt">Со следующего запуска: %1$s</string>
+    <string name="folder_next_auto">автоматический поиск</string>
+    <string name="folder_none">Папка игры не найдена</string>
+    <string name="folder_choose">Выбрать…</string>
+    <string name="folder_title">Папка игры</string>
+    <string name="folder_help">Выберите папку «Torchlight2Mobile» (в ней romfs и dm) или папку, в которой она лежит. Без выбора игра ищет Download/Torchlight2Mobile в памяти телефона, на SD-картах и USB-накопителях.</string>
+    <string name="folder_sd_warning">SD-карта или USB-накопитель медленнее памяти телефона: загрузки будут дольше, возможны подтормаживания.</string>
+    <string name="folder_browse">Обзор… (системный выбор папки)</string>
+    <string name="folder_path_hint">Путь, например /storage/XXXX-XXXX/Download/Torchlight2Mobile</string>
+    <string name="folder_use_path">Использовать этот путь</string>
+    <string name="folder_reset">Сбросить на автоматический</string>
+    <string name="folder_bad">Эту папку нельзя использовать:\n%1$s\n%2$s</string>
+    <string name="folder_not_path">Это не папка в памяти телефона, на SD-карте или USB-накопителе. Выберите папку там или введите её путь.</string>
+    <string name="folder_no_picker">На этом телефоне нет системного выбора папки: введите путь вручную.</string>
+    <string name="folder_set_next">Папка игры сохранена: %1$s. Она будет использоваться со следующего запуска.</string>
+    <string name="folder_set_now">Папка игры: %1$s</string>
+    <string name="folder_unavailable">Выбранную папку игры %1$s нельзя использовать (%2$s). Вместо неё найдена автоматически: %3$s</string>
 </resources>

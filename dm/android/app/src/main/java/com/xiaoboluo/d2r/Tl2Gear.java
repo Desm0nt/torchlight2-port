@@ -52,6 +52,7 @@ final class Tl2Gear {
         l.add(GearPages.fpsLimit(FPS_LIMITS, 60));
         l.add(note(R.string.d3_fps_note));
         if (a.drivers() != null) { l.add(GearPages.driver(a.drivers())); l.add(note(R.string.d3_driver_note)); }
+        l.add(folder(a));
         l.add(GearPages.rumble());
         l.add(localPlay());
         l.add(GearPages.fpsCounter());
@@ -150,23 +151,35 @@ final class Tl2Gear {
         };
     }
 
-    // ---- the mod manager (Tl2Mods): every .MOD in Download/Torchlight2Mobile/mods with title, author, version from its header, a tick to enable
+    // ---- the mod manager (Tl2Mods): every .MOD in <game folder>/mods (Download/Torchlight2Mobile by default, GameFolder) with title, author, version from its header, a tick to enable
     // it and up / down for the load order (lower = loaded later, wins). Its own dialog, saved with its own "Save"; the next start converts and
     // loads them (DmActivity.prepareTl2Mods).
     static GearSettings.Section mods(DmActivity a) {
         return new GearSettings.Section() {
             public void build(GearSettings g, LinearLayout box) {
                 g.heading(box, g.str(R.string.tl2_mods_title));
-                Button b = g.button(box, g.str(R.string.tl2_mods_button, Tl2Mods.enabledCount(g.gamePrefs())));
+                Button b = g.button(box, g.str(R.string.tl2_mods_button, Tl2Mods.enabledCount(g.a, g.gamePrefs())));
                 b.setOnClickListener(v -> showMods(g, b));
                 g.note(box, g.str(R.string.tl2_mods_restart));
             }
         };
     }
+    // ---- [TL2] the game folder this run uses, and "Choose..." (the chooser saves at once; the running game keeps its folder until
+    // the next launch). Ported from DOOM Mobile's DoomGear.folder (commit 148f1d2e, its issue #11).
+    static GearSettings.Section folder(DmActivity a) {
+        return new GearSettings.Section() {
+            public void build(GearSettings g, LinearLayout box) {
+                g.heading(box, g.when(g.str(R.string.gear_folder), false));
+                TextView t = g.text(box, a.folderLine());
+                Button b = g.button(box, g.str(R.string.folder_choose));
+                b.setOnClickListener(v -> a.showFolderDialog(() -> t.setText(a.folderLine())));
+            }
+        };
+    }
     static void showMods(GearSettings g, Button from) {
-        SharedPreferences p = g.gamePrefs(); final List<Tl2Mods.Mod> mods = Tl2Mods.list(p);
+        SharedPreferences p = g.gamePrefs(); final List<Tl2Mods.Mod> mods = Tl2Mods.list(g.a, p);
         LinearLayout box = g.vbox(null); box.setPadding(48, 24, 48, 0);
-        g.note(box, g.str(R.string.tl2_mods_folder, Tl2Mods.modsDir().getAbsolutePath()));
+        g.note(box, g.str(R.string.tl2_mods_folder, Tl2Mods.modsDir(g.a).getAbsolutePath()));
         final LinearLayout rows = g.vbox(box);
         final Runnable[] fill = new Runnable[1];
         fill[0] = () -> {
@@ -194,8 +207,8 @@ final class Tl2Gear {
         android.widget.ScrollView scroll = new android.widget.ScrollView(g.a); scroll.addView(box);
         new AlertDialog.Builder(g.a).setTitle(g.str(R.string.tl2_mods_title)).setView(scroll)
             .setPositiveButton(g.s("gear_save"), (d, w) -> {
-                String before = enabledList(p); Tl2Mods.save(p, mods); if (from != null) from.setText(g.str(R.string.tl2_mods_button, Tl2Mods.enabledCount(p)));
-                if (!before.equals(enabledList(p))) askRestart(g, Tl2Mods.enabledCount(p) > 0);   // the enabled set or its order changed
+                String before = enabledList(p); Tl2Mods.save(p, mods); if (from != null) from.setText(g.str(R.string.tl2_mods_button, Tl2Mods.enabledCount(g.a, p)));
+                if (!before.equals(enabledList(p))) askRestart(g, Tl2Mods.enabledCount(g.a, p) > 0);   // the enabled set or its order changed
             })
             .setNegativeButton(g.s("gear_cancel"), null).show();
     }
