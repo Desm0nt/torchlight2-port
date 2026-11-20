@@ -965,3 +965,18 @@ tree layout(s), 22 class name(s)`.
   получает иконки Странника (женские, если имя класса кончается на _F, иначе мужские). Перед записью сверяются байты сайта; отключатель
   DM_TL2_CLASSICON=0 (внутренний). Хозяин проверил на телефоне: оба пункта меню работают.
 - В этот же выпуск вошёл PR #18 (danjaniell): папка игры на SD-карте / любом томе, выбор папки в шестерёнке (GameFolder.java).
+
+## 20.11 Issue #27: svcBreak на входе в Temple Steppes с ACE + CLASSES_FULL (куча игры, собрано, проверено на Mi 14 Ultra без модов)
+- Бэктрейс игрока: `abort` из `main+0x162f78` → строка `main+0x1f80fd0` «FATAL ERROR! Failed to allocate %lu bytes!»: загрузчик пака
+  (`main+0x163b0c` → функция `main+0x162a80`) просит у `StandardAllocator::Allocate(size)` буфер под файл (`main+0x162bfc`), получает null
+  и сам роняет игру. Один ACE проходит, ACE + CLASSES_FULL — нет; падение через 127 с после запуска, на первой большой зоне → пик, не утечка.
+- Почему мало: сборка TL2 включает `DM_GAME_DOOM`, поэтому `APP_POOL_ADD_MB` = 0 — пул ровно как у Switch (3285 МБ), куча 3122 МБ.
+  Игра ставит кучу один раз (`main+0x14c5a4` QueryMemoryInfo → SetMemoryHeapSize(всего − занято) без повтора) и отдаёт её
+  аллокатору `main+0x751d000`.
+- Фикс (`dm/host/hle_svc.c`): для TL2 +512 МБ к пулу, если RAM + своп ≥ 6 ГБ (`tl2_pool_add`, строка `[TL2] app pool: ...`);
+  `DM_APP_POOL_ADD_MB` по-прежнему перекрывает. Куча 3634 МБ (резерв ≥ 4864 МБ, куча до ~3.75 ГБ — влезает).
+- Диагностика: `dm_guest_heap_stat` для TL2 (`sdk+0x2e7ae0` GetTotalFreeSize, `sdk+0x2e7b30` GetAllocatableSize); перехват
+  `nn::mem::StandardAllocator::Allocate(m)` (импорт main) пишет `[TL2] game heap low: free X MB of Y MB, largest block Z KB` на каждом
+  новом минимуме (шаг 32 МБ, не чаще раза в 2 с) и красную строку при null.
+- Проверено: Mi 14 Ultra, `heap27`: `首次设堆成功 3634 MB`, меню после загрузки — свободно 1938 МБ (≈ 1.7 ГБ игра берёт на старте).
+  С модами игрока не проверено (их нет локально).

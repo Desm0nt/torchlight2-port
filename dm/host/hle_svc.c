@@ -131,12 +131,31 @@ static int svc_mprotect(void *a, size_t n, int prot, const char *who) {
 // (see also dm_guest_heap_stat below). Measured: the extra amount turns one-to-one into main heap free space (138 -> 649 MB), while what the game carves out does not change with it;
 // heap pages never touched do not count toward resident memory, which grows only when the free space is actually used. The heap region limit is the 4 GB in the reservation (mem_init), which fits 3728 MB; adding more means changing the reservation first.
 // +512 rather than more: to leave room for devices with 6 GB of RAM; to be revisited once there are readings of the limit on real devices.
-#ifdef DM_GAME_DOOM
+#if defined(DM_GAME_TL2)
+// [TL2] +512 MB as D2R (issue #27): the game hands the whole pool minus its image to its heap (3122 MB at +0), and big PC mods together
+// (ACE + CLASSES_FULL) ran it out on a zone load: main+0x162bfc read buffer -> "FATAL ERROR! Failed to allocate %lu bytes!" -> abort
+// (svcBreak at sdk+0x389994). 3285 + 512 - 162 = 3635 MB fits the heap region (reserve >= 4864 MB - 1 GB). Untouched heap pages cost no
+// RAM, but the game sets its heap once (main+0x14c5b8, no retry): the extra is given only when RAM + swap >= 6 GB (tl2_pool_add below).
+#define APP_POOL_ADD_MB 512
+#include <sys/sysinfo.h>
+static long tl2_pool_add(void) {
+    struct sysinfo si; if (sysinfo(&si)) return 0;
+    unsigned long long mb = ((unsigned long long)si.totalram + si.totalswap) * si.mem_unit >> 20;
+    long add = mb >= 6144 ? APP_POOL_ADD_MB : 0;
+    LOG("[TL2] app pool: RAM+swap %llu MB -> heap extra %+ld MB (issue #27)", mb, add); return add;
+}
+#elif defined(DM_GAME_DOOM)
 #define APP_POOL_ADD_MB 0     // [DOOM] the console's pool as is (the +512 MB is a D2R main-heap workaround); DM_APP_POOL_ADD_MB still overrides
 #else
 #define APP_POOL_ADD_MB 512
 #endif
-static uint64_t app_pool(void) { static uint64_t v; if (!v) { const char *e = getenv("DM_APP_POOL_ADD_MB"); long add = e ? atol(e) : APP_POOL_ADD_MB; v = APP_POOL + ((uint64_t)add << 20); if (e) LOG("DM_APP_POOL_ADD_MB：应用内存池报 %llu MB（Switch 的 3285 MB %+ld）", (unsigned long long)(v >> 20), add); } return v; }
+static uint64_t app_pool(void) { static uint64_t v; if (!v) { const char *e = getenv("DM_APP_POOL_ADD_MB");
+#ifdef DM_GAME_TL2
+    long add = e ? atol(e) : tl2_pool_add();
+#else
+    long add = e ? atol(e) : APP_POOL_ADD_MB;
+#endif
+    v = APP_POOL +((uint64_t)add << 20); if (e) LOG("DM_APP_POOL_ADD_MB：应用内存池报 %llu MB（Switch 的 3285 MB %+ld）", (unsigned long long)(v >> 20), add); } return v; }
 static size_t image_bytes(void) { size_t n = 0; for (int i = 0; i < g_nmod; i++) n += g_mod[i].size; return (n + 0x1fffff) & ~(size_t)0x1fffff; }
 
 // 游戏主堆读数：主堆 = main+0x32137a0 那个 nn::mem::StandardAllocator（启动时把整块堆交给它）。申请失败返回空，原版多处不判空直接写
@@ -150,7 +169,15 @@ static size_t image_bytes(void) { size_t n = 0; for (int i = 0; i < g_nmod; i++)
 static module_t *mod_named(const char *n) { for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, n)) return &g_mod[i]; return NULL; }
 static _Atomic unsigned long long g_gheap_last[3];
 int dm_guest_heap_stat(unsigned long long *total_mb, unsigned long long *free_mb, unsigned long long *maxblk_kb) {
-#ifdef DM_GAME_DOOM   // [DOOM] main+0x32137a0 / sdk+0x2f9d78 / sdk+0x2f9dbc are D2R main + SDK 11.4.3 offsets: no heap readout
+#if defined(DM_GAME_TL2)
+    // [TL2] the game's heap allocator = main+0x751d000 (constructed over the whole heap at main+0x14c5e0); its own queries
+    // GetTotalFreeSize sdk+0x2e7ae0 / GetAllocatableSize sdk+0x2e7b30 (SDK 8.2 exports). Guest threads only.
+    module_t *mm = mod_named("main"), *ms = mod_named("sdk"); if (!mm || !ms || !g_heap_cur) return 0;
+    uint8_t *al = mm->base + 0x751d000; if (!al[0]) return 0;
+    uint64_t fr = ((uint64_t (*)(void *))(ms->base + 0x2e7ae0))(al), mx = ((uint64_t (*)(void *))(ms->base + 0x2e7b30))(al);
+    *total_mb = g_heap_cur >> 20; *free_mb = fr >> 20; *maxblk_kb = mx >> 10;
+    g_gheap_last[0] = *total_mb; g_gheap_last[1] = *free_mb; g_gheap_last[2] = *maxblk_kb; return 1;
+#elif defined(DM_GAME_DOOM)   // [DOOM] main+0x32137a0 / sdk+0x2f9d78 / sdk+0x2f9dbc are D2R main + SDK 11.4.3 offsets: no heap readout
     (void)total_mb; (void)free_mb; (void)maxblk_kb; (void)mod_named; return 0;
 #else
     module_t *mm = mod_named("main"), *ms = mod_named("sdk"); if (!mm || !ms || !g_heap_cur) return 0;
@@ -169,6 +196,31 @@ HLE_FORCE("_ZN2nn3mem17StandardAllocator8AllocateEmm", "照原版分配，只在
     void *p = orig(self, size, align);
     if (!p && size) { static _Atomic int n; if (atomic_fetch_add(&n, 1) < 8) LOG("【红】游戏堆分配返回空：申请 %zu 字节（对齐 %zu），分配器 %p；上次读数 主堆 %llu MB、余量 %llu MB、最大可分配块 %llu KB", size, align, self,
         (unsigned long long)g_gheap_last[0], (unsigned long long)g_gheap_last[1], (unsigned long long)g_gheap_last[2]); }
+    return p;
+}
+#endif
+#ifdef DM_GAME_TL2
+// [TL2] issue #27: the game's own Allocate(size) (main calls it through its PLT; the zone loader aborts on null with "FATAL ERROR! Failed
+// to allocate %lu bytes!"). Same allocation; logs the heap floor (each new low in 32 MB steps, at most every 2 s) so a log tells a leak
+// (the floor sinks over a session) from a peak (one zone needs more), and a null return with a fresh readout.
+HLE_FORCE("_ZN2nn3mem17StandardAllocator8AllocateEm", "TL2: game heap floor / null report (issue #27)", void *, hle_tl2_alloc, void *self, size_t size) {
+    static void *(*orig)(void *, size_t); if (!orig) { module_t *ms = mod_named("sdk"); orig = (void *(*)(void *, size_t))(ms->base + 0x2e7860); }
+    void *p = orig(self, size);
+    module_t *mm = mod_named("main"); if (!mm || (uint8_t *)self != mm->base + 0x751d000) return p;   // only the game's main heap
+    static _Atomic unsigned calls; static _Atomic long long floor_mb = -1; static _Atomic long long last_ns;
+    if (!p && size) {
+        unsigned long long t, f, m; int ok = dm_guest_heap_stat(&t, &f, &m); static _Atomic int n;
+        if (atomic_fetch_add(&n, 1) < 8) LOG("【红】[TL2] game heap: Allocate %zu bytes returned null; heap %llu MB, free %llu MB, largest block %llu KB%s", size,
+            ok ? t : 0, ok ? f : 0, ok ? m : 0, ok ? "" : " (no readout)");
+    } else if ((atomic_fetch_add(&calls, 1) & 255) == 0) {
+        struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); long long now = ts.tv_sec * 1000000000ll + ts.tv_nsec;
+        if (now - atomic_load(&last_ns) >= 2000000000ll) {
+            atomic_store(&last_ns, now); unsigned long long t, f, m;
+            if (dm_guest_heap_stat(&t, &f, &m)) { long long fl = atomic_load(&floor_mb);
+                if (fl < 0 || (long long)f + 32 <= fl) { atomic_store(&floor_mb, (long long)f);
+                    LOG("[TL2] game heap low: free %llu MB of %llu MB, largest block %llu KB", f, t, m); } }
+        }
+    }
     return p;
 }
 #endif
