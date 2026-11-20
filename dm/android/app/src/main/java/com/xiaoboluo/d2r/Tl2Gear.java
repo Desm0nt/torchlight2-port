@@ -33,6 +33,11 @@ import java.util.List;
 final class Tl2Gear {
     private Tl2Gear() {}
     static final boolean TL2 = DmActivity.TL2;
+    // The game's eleven text languages (RomFS CONSOLELOC/<code>.LANGUAGE). DM_LANG -> hle_oe.c GetDesiredLanguage; pt-BR and pl reach their
+    // files through hle_tl2_lang.c (the game's own picker sends them to English, issue #16). Names in their own language.
+    static final String[] LANG_CODES = {"", "en-US", "de", "fr", "es", "it", "pt-BR", "pl", "ru", "ja", "zh-Hans", "zh-Hant"};
+    static final String[] LANG_LABELS = {null /* gear_lang_system */, "English", "Deutsch", "Français", "Español", "Italiano", "Português (Brasil)", "Polski",
+        "Русский", "日本語", "简体中文", "繁體中文"};
     static final int[] FPS_LIMITS = {30, 60};   // above 60 is not offered: the game runs its frames at 60 like on the Switch (present interval 1)
 
     // The dialog, top to bottom (and the start environment in the same order)
@@ -41,7 +46,7 @@ final class Tl2Gear {
         List<GearSettings.Section> l = new ArrayList<>();
         l.add(startEnv(a));
         l.add(GearPages.menuLanguage());
-        l.add(GearPages.gameLanguage(DmActivity.D3_LANG_CODES, DmActivity.D3_LANG_LABELS, true));
+        l.add(GearPages.gameLanguage(LANG_CODES, LANG_LABELS, false));
         l.add(note(R.string.d3_game_lang_note));
         l.add(mode);
         l.add(GearPages.pictureShape(new String[] {g.str(R.string.d3_aspect_bars), g.str(R.string.d3_aspect_stretch), g.str(R.string.d3_aspect_wide)},

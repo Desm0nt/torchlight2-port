@@ -173,6 +173,7 @@ static void host_preload(int argc, char **argv) {
 #ifdef DM_GAME_TL2
     { void dm_tl2_wide_install(void); dm_tl2_wide_install(); }   // [TL2] DM_TL2_WIDE: the window / video settings at the screen's aspect before the guest runs (hle_tl2_wide.c)
     { void dm_tl2_classicon_install(void); dm_tl2_classicon_install(); }   // [TL2] modded classes in the character list (hle_tl2_classicon.c, issue #23)
+    { void dm_tl2_lang_install(void); dm_tl2_lang_install(); }   // [TL2] Brazilian Portuguese / Polish text instead of the English fallback (hle_tl2_lang.c, issue #16)
     { void dm_tl2_skilltree_install(void); dm_tl2_skilltree_install(); }   // [TL2] PC-mod classes' skill trees into the console's skill screen (hle_tl2_skilltree.c, issue #6)
 #endif
     uint64_t ta = now_ns();
