@@ -7,7 +7,8 @@ origins) -- plus some data files (packed as GUTS packs them) and a deleted path.
   1. both converters write identical PAK and PAK.MAN;
   2. every converted texture equals the game's own XTX (layout, info block, pixels; the RGBA8 source-format block aside);
   3. the TGA decoder agrees with Pillow on every TGA written;
-  4. two synthetic classes' PC skill trees (4 full tabs + overflow, overflow into a free 4th) become the expected MEDIA/PORT/SKILLTREES.TXT (issue #6);
+  4. four synthetic classes' PC skill trees (4 full tabs + overflow, overflow into a free 4th, and two with no SkillPane<N> name as in
+     SYNERGIES) become the expected MEDIA/PORT/SKILLTREES.TXT (issues #6, #25);
   5. skill icons of mod imagesets -> the expected console atlas (entries, page size, pixels; DXT against Pillow's decoder);
   6. with --mods: real PC mods convert to identical bytes in both (skill-tree tables and icon atlases included).
 """
@@ -64,10 +65,16 @@ def st_files():
     TEST (TEST_BASE.DAT; TEST_F.DAT inherits the tree through BASEFILE): 4 full tabs, each 12 skills in 4 rows x 3 (passive row 3 + 9
       actives: 2 per tree overflow) -> trees 0..3 and a 5th "More Skills" with the 8 overflow skills; tab 2's label carries a tab and a
       trailing space, one of its skills holds a nested skill (ignored); pane order in the file differs from the tab numbers.
-    TEST2 (TEST2_M.DAT): 3 tabs; tree 1 has 8 actives + 3 passives -> 1 overflow into a 4th tree "Alpha II"; tab 3 has no pane."""
+    TEST2 (TEST2_M.DAT): 3 tabs; tree 1 has 8 actives + 3 passives -> 1 overflow into a 4th tree "Alpha II"; tab 3 has no pane.
+    TEST3 (TEST3_M.DAT): no SkillPane<N> at all (as SYNERGIES) -- 3 panes named after their tabs, in another file order, 2 skills each;
+      paired by name, trees in the tabs' display order (prop 0x3f), and the file order plus the shown pane would pair them differently.
+    TEST4 (TEST4_M.DAT): no SkillPane<N> and nothing named -- 3 unnamed panes under the tabs' own order, the second one shown; paired
+      in file order from the shown one, with the "may belong to another pane" note."""
     w = lambda s: struct.pack('<H', len(s)) + s.encode('utf-16le'); f = lambda v: struct.pack('<f', v)
     sk = lambda nm, x, y, kids=(): st_obj(0x3d, nm, [(0x3f, f(x)), (0x22, f(y)), (0x40, w(nm)), (0x7b, struct.pack('<i', -1))], kids)
     tab = lambda n, lb, ic: st_obj(0x58, f'Tab{n}', [(0x23, w(lb)), (0x41, w(ic))])
+    xtab = lambda nm, x, lb, ic: st_obj(0x58, nm, [(0x23, w(lb)), (0x41, w(ic)), (0x3f, f(x))])   # a tab placed by hand: x = display order
+    hide = lambda shown: [] if shown else [(0x29, struct.pack('<i', 0))]   # prop 0x29 = hidden; the layout shows exactly one pane
     lay = lambda roots: bytes([0x0b, 0]) + struct.pack('<IH', 0, len(roots)) + b''.join(roots)
     def pane(n):   # 12 skills T<n>S<row><col>, written out of order; T2S00 holds a nested INNER
         return st_obj(0x3d, f'SkillPane{n}', [], [sk(f'T{n}S{r}{c}', 9 + 155 * c, 56 + 140 * r, [sk('INNER', 0, 0)] if (n, r, c) == (2, 0, 0) else ())
@@ -79,11 +86,21 @@ def st_files():
     p22 = st_obj(0x3d, 'SkillPane2', [], [sk('B0', 9, 56)])
     l2 = lay([st_obj(0x3d, 'Tabs', [], [tab(1, 'Alpha', 'IG_SKILLTABS_BLITZ_OFF'), tab(2, 'Beta', 'IG_SKILLTABS_LORE_OFF'), tab(3, 'Gamma', 'IG_SKILLTABS_SIGIL_OFF')]),
               st_obj(0x3d, 'skillGroup', [], [p21, p22])])
+    p3 = lambda nm, shown, ks: st_obj(0x3d, nm, hide(shown), [sk(k, 9 + 155 * c, 56) for c, k in enumerate(ks)])
+    l3 = lay([st_obj(0x3d, 'Tabs', [], [xtab('GAMMA', 269, 'Gamma', 'IG_SKILLTABS_SIGIL_OFF'), xtab('ALPHA', 138, 'Alpha', 'IG_SKILLTABS_WARFARE_OFF'),
+                                        xtab('BETA', 203, 'Beta', 'IG_SKILLTABS_LORE_OFF')]),
+              st_obj(0x3d, 'skillGroup', [], [p3('BETA', False, ['B3_1', 'B3_2']), p3('GAMMA', True, ['G3_1', 'G3_2']), p3('ALPHA', False, ['A3_1', 'A3_2'])])])
+    l4 = lay([st_obj(0x3d, 'Tabs', [], [xtab('', 203, 'Second', 'IG_SKILLTABS_FROST_OFF'), xtab('', 138, 'First', 'IG_SKILLTABS_BLITZ_OFF'),
+                                        xtab('', 269, 'Third', 'IG_SKILLTABS_AEGIS_OFF')]),
+              st_obj(0x3d, 'skillGroup', [], [p3('', False, ['D4_1']), p3('', True, ['E4_1']), p3('', False, ['F4_1'])])])
     d, u = 'MEDIA/UNITS/PLAYERS/TESTCLASS/', 'MEDIA/UI/MENUS/SKILLTREEOVERRIDES/'
     return [(d, 'TEST_BASE.DAT', 0, st_dat({'NAME': 'Test_Base', 'UISKILLTREE': 'media/ui/menus/skilltreeoverrides/skill_tree_test.layout'}), 0),
             (d, 'TEST_F.DAT', 0, st_dat({'NAME': 'Test_F', 'BASEFILE': 'media\\units\\players\\testclass\\test_base.dat'}), 0),
             (d, 'TEST2_M.DAT', 0, st_dat({'NAME': 'Test2_M', 'UISKILLTREE': '/MEDIA/UI/MENUS/SKILLTREEOVERRIDES/SKILL_TREE_TEST2.LAYOUT'}), 0),
-            (u, 'SKILL_TREE_TEST.LAYOUT', 1, l1, 0), (u, 'SKILL_TREE_TEST2.LAYOUT', 1, l2, 0)]
+            (d, 'TEST3_M.DAT', 0, st_dat({'NAME': 'Test3_M', 'UISKILLTREE': 'media/ui/menus/skilltreeoverrides/skill_tree_test3.layout'}), 0),
+            (d, 'TEST4_M.DAT', 0, st_dat({'NAME': 'Test4_M', 'UISKILLTREE': 'media/ui/menus/skilltreeoverrides/skill_tree_test4.layout'}), 0),
+            (u, 'SKILL_TREE_TEST.LAYOUT', 1, l1, 0), (u, 'SKILL_TREE_TEST2.LAYOUT', 1, l2, 0),
+            (u, 'SKILL_TREE_TEST3.LAYOUT', 1, l3, 0), (u, 'SKILL_TREE_TEST4.LAYOUT', 1, l4, 0)]
 
 # what both converters must store for st_files, written out by hand (not by the converter's rules)
 def _st_want():
@@ -95,7 +112,16 @@ def _st_want():
     o += ['L\t1\tMEDIA/UI/MENUS/SKILLTREEOVERRIDES/SKILL_TREE_TEST2.LAYOUT',
           'T\t1\t0\tAlpha\tblitz', 'T\t1\t1\tBeta\tlore', 'T\t1\t2\tGamma\tsigil', 'T\t1\t3\tAlpha II\tblitz']
     o += [f'S\t1\t0\t{i}\tA{i}' for i in range(7)] + [f'S\t1\t0\t{7 + i}\tAP{i}' for i in range(3)]
-    o += ['S\t1\t1\t0\tB0', 'S\t1\t3\t0\tA7', 'C\tTEST2_M\t1', 'C\tTEST_BASE\t0', 'C\tTEST_F\t0']
+    o += ['S\t1\t1\t0\tB0', 'S\t1\t3\t0\tA7']
+    o += ['L\t2\tMEDIA/UI/MENUS/SKILLTREEOVERRIDES/SKILL_TREE_TEST3.LAYOUT',   # panes paired with the tabs by name
+          'T\t2\t0\tAlpha\twarfare', 'T\t2\t1\tBeta\tlore', 'T\t2\t2\tGamma\tsigil',
+          'S\t2\t0\t0\tA3_1', 'S\t2\t0\t1\tA3_2', 'S\t2\t1\t0\tB3_1', 'S\t2\t1\t1\tB3_2', 'S\t2\t2\t0\tG3_1', 'S\t2\t2\t1\tG3_2']
+    o += ['L\t3\tMEDIA/UI/MENUS/SKILLTREEOVERRIDES/SKILL_TREE_TEST4.LAYOUT',   # nothing named: file order from the shown pane
+          'T\t3\t0\tFirst\tblitz', 'T\t3\t1\tSecond\tfrost', 'T\t3\t2\tThird\taegis',
+          'S\t3\t0\t0\tE4_1', 'S\t3\t1\t0\tF4_1', 'S\t3\t2\t0\tD4_1',
+          'X\t3\t3 skill pane(s) with no SkillPane<N> name: paired with the tabs in file order from the first shown one, '
+          'so a tab label may belong to another pane']
+    o += ['C\tTEST2_M\t1', 'C\tTEST3_M\t2', 'C\tTEST4_M\t3', 'C\tTEST_BASE\t0', 'C\tTEST_F\t0']
     return '\n'.join(o) + '\n'
 ST_WANT = _st_want()
 

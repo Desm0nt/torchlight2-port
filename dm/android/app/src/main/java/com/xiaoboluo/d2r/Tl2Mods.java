@@ -29,7 +29,7 @@ import java.util.Set;
 final class Tl2Mods {
     private Tl2Mods() {}
     static final String PREF = "tl2_mods";
-    static final int CONVERTER_VERSION = 3;   // 2: + MEDIA/PORT/SKILLTREES.TXT (issue #6); 3: + skill icon atlases ZMODICONS_*. Bump when Tl2ModConv's output changes: every pack is converted again
+    static final int CONVERTER_VERSION = 4;   // 2: + MEDIA/PORT/SKILLTREES.TXT (issue #6); 3: + skill icon atlases ZMODICONS_*; 4: skill panes found without the SkillPane<N> name (issue #25). Bump when Tl2ModConv's output changes: every pack is converted again
 
     // [TL2] <game folder>/mods (GameFolder: the internal storage, an SD card or the folder the player chose). The converted packs stay in
     // workDir on internal storage, so no conversion writes reach a card.

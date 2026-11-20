@@ -323,19 +323,76 @@ final class Tl2ModConv {
         return Integer.parseInt(r);
     }
     private static final java.util.regex.Pattern TAB_ICON = java.util.regex.Pattern.compile("IG_SKILLTABS_(.+?)_(OFF|ON|ROLLOVER)");
+    private static final int PANE_HIDDEN = 0x29, TAB_LABEL = 0x23, TAB_ICON_OFF = 0x41;
     private static final class Row { final double y, x; final int idx; final String name; Row(double y, double x, int i, String n) { this.y = y; this.x = x; idx = i; name = n; } }
     static final class Trees { final List<String> lines = new ArrayList<>(); int nskills; }
+    private static String[] tabLabel(Map<Integer, byte[]> props) {   // tools/tl2_mod.py _tab_label
+        String icon = pws(props.getOrDefault(TAB_ICON_OFF, new byte[0])); if (icon == null) icon = "";
+        java.util.regex.Matcher m = TAB_ICON.matcher(up(icon)); String lb = pws(props.getOrDefault(TAB_LABEL, new byte[0]));
+        return new String[] {clean(lb == null ? "" : lb), m.matches() ? lo(m.group(1)) : "-"};
+    }
+    /** the skill windows sk (ascending) -> their containers under the ancestor all of them share, in file order; empty = nothing to group
+     *  by. Mods that renamed the stock SkillPane-N containers (SYNERGIES) are grouped by this. tools/tl2_mod.py _pane_groups */
+    private static java.util.TreeMap<Integer, List<Integer>> paneGroups(List<LObj> objs, List<Integer> sk) {
+        java.util.TreeMap<Integer, List<Integer>> g = new java.util.TreeMap<>();
+        Map<Integer, List<Integer>> anc = new java.util.HashMap<>(); List<Integer> common = null;
+        for (int i : sk) {
+            List<Integer> ch = new ArrayList<>();
+            for (int p = objs.get(i).parent; p >= 0; p = objs.get(p).parent) ch.add(p);
+            anc.put(i, ch);
+            if (common == null) common = new ArrayList<>(ch); else common.retainAll(ch);
+        }
+        if (common == null || common.isEmpty()) return g;
+        int lca = common.get(0);
+        for (int i : sk) {
+            List<Integer> ch = anc.get(i); int k = ch.indexOf(lca);
+            if (k <= 0) { g.clear(); return g; }
+            g.computeIfAbsent(ch.get(k - 1), x -> new ArrayList<>()).add(i);
+        }
+        return g;
+    }
+    private static final class PaneOrder { final List<Integer> order = new ArrayList<>(); boolean byName; }
+    /** the pane containers in the display order of the tabs disp; tools/tl2_mod.py _pane_order */
+    private static PaneOrder paneOrder(List<LObj> objs, List<Integer> groups, List<Integer> disp) {
+        PaneOrder r = new PaneOrder();
+        Map<String, Integer> byName = new java.util.HashMap<>(); boolean named = true;
+        for (int g : groups) {
+            String n = up(objs.get(g).name);
+            if (n.isEmpty() || byName.containsKey(n)) { named = false; break; }
+            byName.put(n, g);
+        }
+        List<String> tn = new ArrayList<>();
+        for (int i : disp) tn.add(up(objs.get(i).name));
+        boolean pair = named && !tn.isEmpty() && tn.size() == groups.size();
+        if (pair) for (String n : tn) if (n.isEmpty() || !byName.containsKey(n)) { pair = false; break; }
+        if (pair) { for (String n : tn) r.order.add(byName.get(n)); r.byName = true; return r; }
+        int shown = 0, nshown = 0;
+        for (int k = 0; k < groups.size(); k++) if (!objs.get(groups.get(k)).props.containsKey(PANE_HIDDEN)) { shown = k; nshown++; }
+        int from = nshown == 1 ? shown : 0;
+        for (int k = 0; k < groups.size(); k++) r.order.add(groups.get((from + k) % groups.size()));
+        return r;
+    }
+    private static List<Integer> tabsByX(List<LObj> objs) {   // the skill tabs left to right (prop 0x3f), file order on a tie
+        List<Integer> d = new ArrayList<>();
+        for (int i = 0; i < objs.size(); i++) {
+            LObj o = objs.get(i);
+            if (o.type == 0x58 && (o.props.containsKey(TAB_LABEL) || o.props.containsKey(TAB_ICON_OFF))) d.add(i);
+        }
+        d.sort((a, c) -> {
+            double xa = pf(objs.get(a).props.get(0x3f)), xc = pf(objs.get(c).props.get(0x3f));
+            return xa < xc ? -1 : xa > xc ? 1 : Integer.compare(a, c);
+        });
+        return d;
+    }
     /** -> T / S / X lines (without the layout index) or null; tools/tl2_mod.py layout_trees */
     static Trees layoutTrees(byte[] b) {
         List<LObj> objs = layoutObjects(b); if (objs == null) return null;
         java.util.TreeMap<Integer, String[]> tabs = new java.util.TreeMap<>(); java.util.TreeMap<Integer, List<Row>> panes = new java.util.TreeMap<>();
-        for (LObj o : objs) {
+        java.util.TreeMap<Integer, String> loose = new java.util.TreeMap<>();   // every skill window by object index, for the name-free grouping
+        for (int i = 0; i < objs.size(); i++) {
+            LObj o = objs.get(i);
             int n = num(o.name, "TAB");
-            if (o.type == 0x58 && n != 0 && !tabs.containsKey(n)) {
-                String icon = pws(o.props.getOrDefault(0x41, new byte[0])); if (icon == null) icon = "";
-                java.util.regex.Matcher m = TAB_ICON.matcher(up(icon)); String lb = pws(o.props.getOrDefault(0x23, new byte[0]));
-                tabs.put(n, new String[] {clean(lb == null ? "" : lb), m.matches() ? lo(m.group(1)) : "-"});
-            }
+            if (o.type == 0x58 && n != 0 && !tabs.containsKey(n)) tabs.put(n, tabLabel(o.props));
             if (o.type == 0x3d && o.props.containsKey(0x40) && o.props.containsKey(0x7b)) {
                 String sk = pws(o.props.get(0x40)); int p = o.parent, pane = 0; boolean inside = false;
                 while (p >= 0) {
@@ -344,14 +401,37 @@ final class Tl2ModConv {
                     pane = num(q.name, "SKILLPANE"); if (pane != 0) break;
                     p = q.parent;
                 }
+                if (sk != null && !sk.isEmpty() && !inside) loose.put(i, clean(sk));
                 if (sk != null && !sk.isEmpty() && pane != 0 && !inside) {
                     List<Row> l = panes.computeIfAbsent(pane, k -> new ArrayList<>());
                     l.add(new Row(pf(o.props.get(0x22)), pf(o.props.get(0x3f)), l.size(), clean(sk)));
                 }
             }
         }
+        String fallbackNote = null;
+        if (panes.isEmpty() && !loose.isEmpty()) {
+            java.util.TreeMap<Integer, List<Integer>> groups = paneGroups(objs, new ArrayList<>(loose.keySet()));
+            if (!groups.isEmpty()) {
+                List<Integer> disp = tabsByX(objs);
+                PaneOrder po = paneOrder(objs, new ArrayList<>(groups.keySet()), disp);
+                tabs = new java.util.TreeMap<>();
+                for (int k = 0; k < disp.size(); k++) tabs.put(k + 1, tabLabel(objs.get(disp.get(k)).props));
+                for (int k = 0; k < po.order.size(); k++) {
+                    List<Integer> ids = groups.get(po.order.get(k)); List<Row> l = new ArrayList<>();
+                    for (int j = 0; j < ids.size(); j++) {
+                        LObj o = objs.get(ids.get(j));
+                        l.add(new Row(pf(o.props.get(0x22)), pf(o.props.get(0x3f)), j, loose.get(ids.get(j))));
+                    }
+                    panes.put(k + 1, l);
+                }
+                if (!po.byName && disp.size() > 1)
+                    fallbackNote = "X\t%\t" + po.order.size() + " skill pane(s) with no SkillPane<N> name: paired with the tabs in file order from the "
+                        + "first shown one, so a tab label may belong to another pane";
+            }
+        }
         Trees t = new Trees(); java.util.TreeSet<Integer> all = new java.util.TreeSet<>(tabs.keySet()); all.addAll(panes.keySet());
         List<String> notes = new ArrayList<>(), sl = new ArrayList<>(); List<String[]> over = new ArrayList<>(); int nt = 0;   // over: {tree, label, icon, skill}
+        if (fallbackNote != null) notes.add(fallbackNote);
         for (int n : all) {
             List<Row> rows = new ArrayList<>(panes.getOrDefault(n, new ArrayList<>()));
             if (nt >= ST_TREES) { String[] tb = tabs.get(n); notes.add("X\t%\ttree " + n + " (" + (tb == null || tb[0].isEmpty() ? "no tab" : tb[0]) + ", " + rows.size() + " skills) dropped: no free tree slot"); continue; }
