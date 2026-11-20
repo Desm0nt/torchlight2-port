@@ -353,9 +353,51 @@ def _pws(v):
     return v[2:2 + 2 * n].decode('utf-16le', 'replace') if 2 + 2 * n == len(v) else None
 def _pf(v): return struct.unpack('<f', v)[0] if v is not None and len(v) == 4 else 0.0
 
+PANE_HIDDEN, TAB_LABEL, TAB_ICON_OFF = 0x29, 0x23, 0x41
+
+def _tab_label(props):   # a skill tab (type 0x58) -> (label, icon key of the console's 12 "skill_tab_<key>" icons, "-" = keep)
+    icon = _pws(props.get(TAB_ICON_OFF, b'')) or ''
+    m = re.match(r'IG_SKILLTABS_(.+?)_(OFF|ON|ROLLOVER)$', _up(icon))
+    return _clean(_pws(props.get(TAB_LABEL, b'')) or ''), _lo(m.group(1)) if m else '-'
+
+def _pane_groups(objs, sk):
+    """the skill windows sk -> [(container index, [skill window indices])] in file order, grouped by the container under the ancestor
+    all of them share. [] when a skill window is that ancestor's own child (nothing to group by). Mods that renamed the stock
+    SkillPane<N> containers (SYNERGIES: JUSTICE / DIVINITY / ..., and unnamed ones) are grouped by this instead of by name."""
+    anc = {}
+    for i in sk:
+        ch, p = [], objs[i][3]
+        while p >= 0: ch.append(p); p = objs[p][3]
+        anc[i] = ch
+    common = None
+    for i in sk: common = anc[i] if common is None else [a for a in common if a in anc[i]]
+    if not common: return []
+    lca, g = common[0], {}
+    for i in sk:
+        k = anc[i].index(lca)
+        if not k: return []
+        g.setdefault(anc[i][k - 1], []).append(i)
+    return sorted(g.items())
+
+def _pane_order(objs, groups, disp):
+    """the pane containers of groups, in the display order of the tabs disp. By name when every tab names a pane of its own (SYNERGIES'
+    Paladin: tab JUSTICE over pane JUSTICE); else the containers in file order, rotated so that the one the layout shows first (no
+    PANE_HIDDEN) comes first, which is the leftmost tab's pane in every layout checked. Then the labels of the other tabs can be off."""
+    order = [g for g, _ in groups]
+    by_name, tn = {}, [_up(objs[i][1]) for _, i in disp]
+    for g in order:
+        n = _up(objs[g][1])
+        if not n or n in by_name: by_name = {}; break
+        by_name[n] = g
+    if len(tn) == len(order) and all(tn) and by_name and all(n in by_name for n in tn):
+        return [by_name[n] for n in tn], 1
+    shown = [k for k, g in enumerate(order) if PANE_HIDDEN not in objs[g][2]]
+    return (order[shown[0]:] + order[:shown[0]] if len(shown) == 1 else order), 0
+
 def layout_trees(b):
-    """-> ([(tree, label, icon key)], [(tree, slot, skill)], [notes]) or None. Trees = TabN / SkillPaneN in N order (tree 0, 1, ...). A
-    skill is a window (type 0x3d) with a skill name (prop 0x40) and prop 0x7b inside SkillPaneN; order = rows (y, prop 0x22) then x
+    """-> ([(tree, label, icon key)], [(tree, slot, skill)], [notes]) or None. Trees = TabN / SkillPaneN in N order (tree 0, 1, ...), or,
+    for a layout with no SkillPaneN, the tabs in display order over the containers _pane_order pairs with them. A skill is a window
+    (type 0x3d) with a skill name (prop 0x40) and prop 0x7b inside such a container; order = rows (y, prop 0x22) then x
     (0x3f), as the console table orders the stock trees; the lowest row (<= 3 skills) is the passive row -> the last slots of 7..9. A tree
     holds 10 (the console panel's slots): actives past the 7th go to overflow trees after the layout's own ("<tree> II" when they come
     from one tree, else "More Skills"), 10 each; at most ST_TREES trees in all (the console table's 120 rows / 10)."""
@@ -364,13 +406,10 @@ def layout_trees(b):
     def num(name, pre):
         u = _up(name); r = u[len(pre):]
         return int(r) if u.startswith(pre) and 1 <= len(r) <= 3 and all('0' <= c <= '9' for c in r) else 0
-    tabs, panes, notes = {}, {}, []
+    tabs, panes, notes, loose = {}, {}, [], {}
     for i, (typ, name, props, parent) in enumerate(objs):
         n = num(name, 'TAB')
-        if typ == 0x58 and n and n not in tabs:
-            icon = _pws(props.get(0x41, b'')) or ''
-            m = re.match(r'IG_SKILLTABS_(.+?)_(OFF|ON|ROLLOVER)$', _up(icon))
-            tabs[n] = (_clean(_pws(props.get(0x23, b'')) or ''), _lo(m.group(1)) if m else '-')
+        if typ == 0x58 and n and n not in tabs: tabs[n] = _tab_label(props)
         if typ == 0x3d and 0x40 in props and 0x7b in props:
             sk = _pws(props[0x40])
             p, pane, inside = parent, 0, False
@@ -379,8 +418,21 @@ def layout_trees(b):
                 pane = num(objs[p][1], 'SKILLPANE')
                 if pane: break
                 p = objs[p][3]
+            if sk and not inside: loose[i] = _clean(sk)
             if sk and pane and not inside:
                 panes.setdefault(pane, []).append((_pf(props.get(0x22)), _pf(props.get(0x3f)), len(panes.get(pane, [])), _clean(sk)))
+    if not panes and loose:
+        groups = _pane_groups(objs, sorted(loose))
+        disp = sorted(((_pf(o[2].get(0x3f)), i) for i, o in enumerate(objs) if o[0] == 0x58 and (TAB_LABEL in o[2] or TAB_ICON_OFF in o[2])))
+        if groups:
+            order, by_name = _pane_order(objs, groups, disp)
+            rows = dict(groups)
+            tabs = {k: _tab_label(objs[i][2]) for k, (_, i) in enumerate(disp, 1)}
+            panes = {k: [(_pf(objs[i][2].get(0x22)), _pf(objs[i][2].get(0x3f)), j, loose[i]) for j, i in enumerate(rows[g])]
+                     for k, g in enumerate(order, 1)}
+            if not by_name and len(disp) > 1:
+                notes.append(f'{len(order)} skill pane(s) with no SkillPane<N> name: paired with the tabs in file order from the '
+                             f'first shown one, so a tab label may belong to another pane')
     trees, skills, over = [], [], []
     for n in sorted(set(tabs) | set(panes)):
         if len(trees) >= ST_TREES:
