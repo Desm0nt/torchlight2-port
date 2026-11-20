@@ -59,7 +59,12 @@ static void mem_init(void) {
 #else
     const size_t ALIAS_BIG = 0;
 #endif
+#ifdef DM_GAME_TL2
+    // [TL2] 1 GB below the heap + a heap of up to 6 GiB (tl2_pool_add sizes it by RAM; it never asks past g_heap_cap)
+    const size_t start = (7ull << 30) + ALIAS_BIG, step = 128ull << 20, limit = (4864ull << 20) + ALIAS_BIG;
+#else
     const size_t start = (5ull << 30) + ALIAS_BIG, step = 128ull << 20, limit = (4864ull << 20) + ALIAS_BIG;
+#endif
 #ifdef DM_GAME_D3
     // [D3] MAP_NORESERVE (DM_AS_NORESERVE, default 1): without it the first mprotect RW of a part sets VM_ACCOUNT on it, which an
     // mprotect back to PROT_NONE keeps (UnmapPhysicalMemory, SetHeapSize shrink), so a once-committed range and a never-committed
@@ -132,17 +137,25 @@ static int svc_mprotect(void *a, size_t n, int prot, const char *who) {
 // heap pages never touched do not count toward resident memory, which grows only when the free space is actually used. The heap region limit is the 4 GB in the reservation (mem_init), which fits 3728 MB; adding more means changing the reservation first.
 // +512 rather than more: to leave room for devices with 6 GB of RAM; to be revisited once there are readings of the limit on real devices.
 #if defined(DM_GAME_TL2)
-// [TL2] +512 MB as D2R (issue #27): the game hands the whole pool minus its image to its heap (3122 MB at +0), and big PC mods together
+// [TL2] issue #27: the game hands the whole pool minus its image to its heap (3122 MB at the Switch's pool), and big PC mods together
 // (ACE + CLASSES_FULL) ran it out on a zone load: main+0x162bfc read buffer -> "FATAL ERROR! Failed to allocate %lu bytes!" -> abort
-// (svcBreak at sdk+0x389994). 3285 + 512 - 162 = 3635 MB fits the heap region (reserve >= 4864 MB - 1 GB). Untouched heap pages cost no
-// RAM, but the game sets its heap once (main+0x14c5b8, no retry): the extra is given only when RAM + swap >= 6 GB (tl2_pool_add below).
+// (svcBreak at sdk+0x389994). The size comes from tl2_pool_add (RAM - 3 GB, up to 6 GiB); APP_POOL_ADD_MB is unused for TL2. Measured
+// on a 16 GB phone: the game's own use at the menu is the same with a 3122 / 3634 / 6144 MB heap (1695 / 1696 / 1702 MB).
 #define APP_POOL_ADD_MB 512
 #include <sys/sysinfo.h>
+static size_t image_bytes(void);
+// [TL2] the heap the game gets = RAM - 3 GB (left to Android), within [the Switch's 3122 MB, 6 GiB (Horizon's heap region of a 39-bit
+// process), the heap region we reserved]. The guest AS is MAP_NORESERVE (D3 flags): heap pages the game never touches cost no RAM and
+// no commit, so a big heap is memory on demand. The game sets its heap once at startup and never grows it.
 static long tl2_pool_add(void) {
     struct sysinfo si; if (sysinfo(&si)) return 0;
-    unsigned long long mb = ((unsigned long long)si.totalram + si.totalswap) * si.mem_unit >> 20;
-    long add = mb >= 6144 ? APP_POOL_ADD_MB : 0;
-    LOG("[TL2] app pool: RAM+swap %llu MB -> heap extra %+ld MB (issue #27)", mb, add); return add;
+    long long ram = (long long)((unsigned long long)si.totalram * si.mem_unit >> 20), img = (long long)(image_bytes() >> 20);
+    long long heap = ram - 3072, cap = (long long)(g_heap_cap >> 20);
+    if (heap > 6144) heap = 6144;
+    if (heap > cap) heap = cap;
+    long add = (long)(heap + img - (long long)(APP_POOL >> 20)); if (add < 0) add = 0;
+    LOG("[TL2] app pool: RAM %lld MB, heap region %lld MB -> heap %lld MB (pool %+ld MB over the Switch's; issue #27)", ram, cap, (long long)(APP_POOL >> 20) + add - img, add);
+    return add;
 }
 #elif defined(DM_GAME_DOOM)
 #define APP_POOL_ADD_MB 0     // [DOOM] the console's pool as is (the +512 MB is a D2R main-heap workaround); DM_APP_POOL_ADD_MB still overrides
