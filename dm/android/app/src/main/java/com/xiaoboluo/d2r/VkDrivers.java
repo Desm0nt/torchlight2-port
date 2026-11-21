@@ -47,6 +47,8 @@ final class VkDrivers {
     File dir() { return new File(a().getFilesDir(), "drivers"); }
     private File guardFile() { return new File(a().getFilesDir(), "driver-trying"); }
     private SharedPreferences prefs() { return host.gamePrefs(); }
+    // The player's "Allow drivers this phone does not support" switch (DriverManager): rejected packages stay selectable, DM_VK_DRIVER_FORCE=1.
+    boolean forcing() { return prefs().getBoolean("driver_force", false); }
 
     // ---- at the start, before the library loads
     // The environment vk_driver.c reads and the packages in files/drivers. The hooks adrenotools loads live in nativeLibraryDir.
@@ -71,7 +73,10 @@ final class VkDrivers {
         // next starts agree, and the player is told once why. Runs before the crash guard, so a reset choice never counts as a strike.
         boolean turnipOk = turnipPossible();
         String why = drv.isEmpty() ? null : problem(drv);
-        if (why != null) {
+        boolean force = forcing();
+        if (why != null && force) {
+            host.crumb("driver: " + drv + " is forced past the hardware check (" + why + "), this phone has " + hardwareSummary());
+        } else if (why != null) {
             host.crumb("driver: saved choice " + drv + " cannot run here (" + why + "), this phone has " + hardwareSummary() + ": the system driver is used and the choice reset");
             p.edit().putString("driver", "").apply();
             notice = t("Драйвер Vulkan " + label(drv) + " не подходит: " + reasonText(why) + ". Используется системный драйвер.",
@@ -98,6 +103,7 @@ final class VkDrivers {
             catch (IOException e) { android.util.Log.e("dm", "driver guard: " + e); }
         }
         if (!drv.isEmpty()) Os.setenv("DM_VK_DRIVER", drv, true); else Os.unsetenv("DM_VK_DRIVER");
+        if (force && !drv.isEmpty()) Os.setenv("DM_VK_DRIVER_FORCE", "1", true); else Os.unsetenv("DM_VK_DRIVER_FORCE");   // vk_driver.c: skip its own family check
         return drv;
     }
     String defaultDriver() { return host.defaultDriver(this); }
@@ -436,6 +442,7 @@ final class VkDrivers {
                 org.json.JSONObject meta = null;
                 try (java.io.InputStream in = a().getAssets().open("drivers/" + n + "/meta.json")) { meta = new org.json.JSONObject(readStream(in)); } catch (Exception e) { /* no meta.json: the folder name decides */ }
                 String why = packageProblem(n, meta);
+                if (why != null && forcing()) { why = null; }   // the player allowed packages this phone does not support
                 if (why != null) {
                     if (out.isDirectory() && (org == null || "bundled".equals(org[0]))) { deleteDriverTree(out); android.util.Log.i("dm", "bundled driver " + n + ": removed, not for this phone (" + why + ")"); }
                     continue;
