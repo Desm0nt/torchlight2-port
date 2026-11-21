@@ -164,8 +164,8 @@ final class VkDrivers {
         if (!turnipPossible()) return "";   // 2.25: non-Adreno: the bundled Turnip is never the default
         File dir = dir();
         int m = adrenoModel(gpuModel());
-        if (m == 0) return qualcommSoc() ? pkgIfPresent(dir, DEFAULT_DRIVER) : "";
-        if (m < 600) return "";
+        if (m <= 0) return qualcommSoc() ? pkgIfPresent(dir, DEFAULT_DRIVER) : "";
+        if (AdrenoModel.tooOldForTurnip(m)) return "";   // a two-digit model (Adreno22) falls through to DEFAULT_DRIVER
         String auto = autoDriverForGpu(dir); if (auto != null) return auto;
         if (m == 710 || m == 720 || m == 722) return pkgIfPresent(dir, DRIVER_A710);
         if (m >= 800 && m < 900) return pkgIfPresent(dir, DRIVER_A8XX);
@@ -186,15 +186,8 @@ final class VkDrivers {
     }
 
     // ---- this phone's GPU
-    // "Adreno750v2" -> 750; 0 = no readable model; -1 = a model that is not an Adreno.
-    static int adrenoModel(String gpu) {
-        if (gpu == null || gpu.isEmpty()) return 0;
-        String g = gpu.toLowerCase(Locale.ROOT); int at = g.indexOf("adreno"); if (at < 0) return -1;
-        int i = at + 6, v = 0, n = 0;
-        while (i < g.length() && !Character.isDigit(g.charAt(i)) && n == 0 && i < at + 12) i++;
-        while (i < g.length() && Character.isDigit(g.charAt(i)) && n < 4) { v = v * 10 + (g.charAt(i++) - '0'); n++; }
-        return n > 0 ? v : -1;
-    }
+    // "Adreno750v2" -> 750, "Adreno22" -> 22; 0 = no readable model; -1 = a model that is not an Adreno (AdrenoModel.of, Android-free).
+    static int adrenoModel(String gpu) { return AdrenoModel.of(gpu); }
     // Can Turnip (Mesa freedreno, Adreno only) work on this phone at all? It drives the GPU through Qualcomm's kernel driver KGSL, so the device
     // node (or its sysfs class) must exist, and the GPU must be an Adreno 6xx or newer (a readable gpu_model), or, when the model is unreadable,
     // the SoC must be a Qualcomm one. vk_driver.c repeats the KGSL check.
@@ -204,7 +197,8 @@ final class VkDrivers {
     static boolean turnipPossible() {
         if (!kgsl()) return false;
         int m = adrenoModel(gpuModel());
-        return m == 0 ? qualcommSoc() : m >= 600;
+        if (m <= 0) { return qualcommSoc(); }   // unreadable, or not an Adreno string
+        return !AdrenoModel.tooOldForTurnip(m);   // "Adreno22" (SG6275P) is newer than a6xx, not older
     }
     static boolean qualcommSoc() {
         String s = ((android.os.Build.VERSION.SDK_INT >= 31 ? android.os.Build.SOC_MANUFACTURER + " " : "") + android.os.Build.HARDWARE).toLowerCase(Locale.ROOT);
