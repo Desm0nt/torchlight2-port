@@ -111,12 +111,16 @@ final class GearPages {
             void fill(GearSettings s, String want) {
                 drvBox.removeAllViews();
                 ArrayList<String> offered = new ArrayList<>(); StringBuilder hiddenWhy = new StringBuilder();
-                for (String n : d.packages()) { String why = d.problem(n); if (why == null) offered.add(n); else hiddenWhy.append("\n- ").append(d.label(n)).append(": ").append(d.reasonText(why)); }
+                boolean force = d.forcing();   // the manager's "allow" switch: every package is offered, a rejected one carries its reason on the label
+                for (String n : d.packages()) { String why = d.problem(n); if (why == null || force) offered.add(n); else hiddenWhy.append("\n- ").append(d.label(n)).append(": ").append(d.reasonText(why)); }
                 names = offered.toArray(new String[0]);
                 if (hiddenWhy.length() > 0) s.text(drvBox, s.t("Скрыты (не подходят этому телефону, " + VkDrivers.hardwareSummary() + "):",
                     "Hidden (cannot run on this phone, " + VkDrivers.hardwareSummary() + "):") + hiddenWhy);
                 String[] labels = new String[names.length + 1]; labels[0] = s.s("gear_driver_system");
-                for (int i = 0; i < names.length; i++) labels[i + 1] = d.label(names[i]);
+                for (int i = 0; i < names.length; i++) {
+                    String why = force ? d.problem(names[i]) : null;
+                    labels[i + 1] = why == null ? d.label(names[i]) : d.label(names[i]) + " (" + d.reasonText(why) + ")";
+                }
                 String cur = want != null && (want.isEmpty() || offered.contains(want)) ? want : s.gamePrefs().getString("driver", d.defaultDriver());
                 int at = 0; for (int i = 0; i < names.length; i++) if (names[i].equals(cur)) at = i + 1;
                 g = s.radios(drvBox, labels, at, false);
