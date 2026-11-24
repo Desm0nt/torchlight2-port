@@ -98,6 +98,8 @@
     <string name="tl2_mods_restart">Changes apply at the next start of the game (close it and open it again). While any mod is on, the game uses a separate save folder (a copy of your saves made the first time); your normal saves are not changed.</string>
     <string name="tl2_mods_none">No .MOD files in the folder yet.</string>
     <string name="tl2_mods_line">%1$s · version %2$d</string>
+    <string name="tl2_mods_overrides">Overrides %1$d files from %2$s</string>
+    <string name="tl2_mods_overridden">%1$d files overridden by %2$s</string>
     <string name="tl2_mods_bad">not a readable .MOD: %s</string>
     <string name="tl2_mods_preparing">Preparing mods (%1$d of %2$d)…\n%3$s</string>
     <string name="tl2_mods_failed">Mods skipped (could not be converted): %s</string>

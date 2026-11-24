@@ -659,6 +659,17 @@ final class Tl2ModConv {
         return out;
     }
 
+    // [TL2] the MAN entries of a .MOD without converting it (the mod overlap report, Tl2Mods.overlaps)
+    static List<Entry> readEntries(File mod) throws IOException {
+        try (RandomAccessFile in = new RandomAccessFile(mod, "r")) {
+            byte[] head = new byte[(int) Math.min(in.length(), 1 << 16)]; in.readFully(head);
+            Info info = readInfo(head);
+            if (info.offMan <= info.offData || info.offMan > in.length()) throw new IOException("bad .MOD offsets");
+            byte[] man = new byte[(int) (in.length() - info.offMan)]; in.seek(info.offMan); in.readFully(man);
+            return manRead(man);
+        }
+    }
+
     /** Converts one .MOD into <outDir>/PAKS/<pack>.PAK(.MAN); writes to temporary names and renames at the end. */
     static Result convert(File mod, File outDir, int slot, ImageDecoder img) throws IOException {
         Result res = new Result();

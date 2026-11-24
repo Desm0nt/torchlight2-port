@@ -190,8 +190,16 @@ final class Tl2Gear {
         g.note(box, g.str(R.string.tl2_mods_folder, Tl2Mods.modsDir(g.a).getAbsolutePath()));
         final LinearLayout rows = g.vbox(box);
         final Runnable[] fill = new Runnable[1];
+        // [TL2] overlap report: the .MOD manifests are read once on a background thread (Tl2Mods.entries), fill[0] then only reads the cache
+        final java.util.function.BiFunction<java.util.Map<Tl2Mods.Mod, Integer>, Integer, String> who = (mp, res) -> {
+            StringBuilder s = new StringBuilder(); int shown = 0, total = 0;
+            for (java.util.Map.Entry<Tl2Mods.Mod, Integer> e : mp.entrySet()) { total += e.getValue(); if (shown++ < 3) { s.append(shown > 1 ? ", " : "").append(Tl2Mods.describe(e.getKey())); } }
+            if (shown > 3) { s.append(" +").append(shown - 3); }
+            return g.str(res, total, s.toString());
+        };
         fill[0] = () -> {
             rows.removeAllViews();
+            final java.util.Map<Tl2Mods.Mod, Tl2Mods.Overlap> ov = Tl2Mods.overlaps(mods);
             if (mods.isEmpty()) { TextView t = g.text(rows, g.str(R.string.tl2_mods_none)); t.setPadding(0, 24, 0, 24); }
             for (int i = 0; i < mods.size(); i++) {
                 final int at = i; final Tl2Mods.Mod m = mods.get(i);
@@ -199,8 +207,11 @@ final class Tl2Gear {
                 CheckBox c = new CheckBox(g.a);
                 String sub = m.info == null ? g.str(R.string.tl2_mods_bad, m.error)
                     : g.str(R.string.tl2_mods_line, (m.info.author.isEmpty() ? "" : m.info.author + " · ") + m.file.getName(), m.info.modver);
+                Tl2Mods.Overlap o = ov.get(m);
+                if (o != null && !o.overrides.isEmpty()) { sub += "\n" + who.apply(o.overrides, R.string.tl2_mods_overrides); }
+                if (o != null && !o.overridden.isEmpty()) { sub += "\n" + who.apply(o.overridden, R.string.tl2_mods_overridden); }
                 c.setText(Tl2Mods.describe(m) + "\n" + sub); c.setEnabled(m.info != null); c.setChecked(m.on && m.info != null);
-                c.setOnCheckedChangeListener((b, on) -> m.on = on);
+                c.setOnCheckedChangeListener((b, on) -> { m.on = on; fill[0].run(); });
                 row.addView(c, new LinearLayout.LayoutParams(0, -2, 1f));
                 Button up = new Button(g.a), down = new Button(g.a);
                 up.setText("▲"); down.setText("▼"); up.setEnabled(i > 0); down.setEnabled(i < mods.size() - 1);
@@ -211,6 +222,11 @@ final class Tl2Gear {
             }
         };
         fill[0].run();
+        final List<java.io.File> modFiles = new ArrayList<>(); for (Tl2Mods.Mod m : mods) { if (m.info != null) { modFiles.add(m.file); } }
+        new Thread(() -> {
+            for (java.io.File f : modFiles) { try { Tl2Mods.entries(f); } catch (java.io.IOException | RuntimeException | OutOfMemoryError e) { /* skipped in the report */ } }
+            g.a.runOnUiThread(() -> fill[0].run());
+        }).start();
         g.note(box, g.str(R.string.tl2_mods_restart));
         android.widget.ScrollView scroll = new android.widget.ScrollView(g.a); scroll.addView(box);
         new AlertDialog.Builder(g.a).setTitle(g.str(R.string.tl2_mods_title)).setView(scroll)
