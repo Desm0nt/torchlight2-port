@@ -1803,6 +1803,60 @@ static uint64_t g_pa_wait;   // 本帧取图里节拍等待（自适应出图档
 static uint64_t g_acq_wait_ns, g_pq_wait_ns;   // 取图里节拍等待 / 等出图队列归还的累计，出图时按帧记（一帧内可有多次取图） | Accumulated display-link wait / wait for the present queue to return inside acquire, recorded per frame at present (there can be several acquires within one frame)
 uint64_t dm_nvn_frame_count(void) { return g_frame; }
 extern uint64_t g_t0_ns;   // 宿主进程起点（main.c；UIMSG 时间戳同基） | Host process start point (main.c; same base as the UIMSG timestamps)
+// [TL2] DM_LOWLAT=1 (default off): low-latency pre-frame sleep. After the pacer's own wait, the game thread sleeps until
+// next_slot - predicted_work - margin, so the frame it records samples input as late as the slot allows. next_slot = the pacer's next present slot
+// (o->pace + period); predicted_work = median of three maxima over the last 32 frames of (present call time - acquire return time), the 32 frames cut
+// into three runs; margin starts at 2 ms, +2 ms when a present missed its slot, -0.5 ms per 120 clean frames (0.5 .. 12 ms). The sleep is capped at one
+// period, runs through sleep_until_ns, and is skipped while the game is held (pause menu / background), without a pacer (period 0) and under DM_DETCLOCK.
+// One log line per 60 s: "[lowlat] predicted work, margin, average sleep". Thread-safe (one mutex, no allocation per frame).
+#ifdef DM_GAME_TL2
+extern int dm_hold_active(void) __attribute__((weak));   // hle_hold.c
+typedef struct {
+    pthread_mutex_t mu; float work_ms[32]; unsigned wn; uint64_t acq_ret, deadline, log_at; double margin_ms, sleep_sum_ms; unsigned clean, frames, missed;
+} lowlat_t;
+static lowlat_t g_ll = {PTHREAD_MUTEX_INITIALIZER, {0}, 0, 0, 0, 0, 2.0, 0, 0, 0, 0};
+static int lowlat_on(void) {
+    static _Atomic int v = -1; int s = atomic_load_explicit(&v, memory_order_relaxed);
+    if (s < 0) { const char *e = getenv("DM_LOWLAT"); s = e && *e == '1'; atomic_store(&v, s); if (s) LOG("[lowlat] on (DM_LOWLAT=1): the frame start waits for next slot - predicted work - margin (starts at 2 ms)"); }
+    return s;
+}
+static double lowlat_pred_locked(void) {   // median of the maxima of three runs of the last 32 samples; 0 until 9 samples exist
+    unsigned n = g_ll.wn < 32 ? g_ll.wn : 32; if (n < 9) return 0;
+    double mx[3] = {0, 0, 0}; unsigned per = n / 3;
+    for (unsigned i = 0; i < n; i++) { unsigned k = i / per < 2 ? i / per : 2; float v = g_ll.work_ms[(g_ll.wn - n + i) % 32]; if (v > mx[k]) mx[k] = v; }
+    double lo = mx[0] < mx[1] ? mx[0] : mx[1], hi = mx[0] < mx[1] ? mx[1] : mx[0];
+    return mx[2] < lo ? lo : mx[2] > hi ? hi : mx[2];
+}
+static void lowlat_acquire(const win_t *o) {   // game thread, after the pacer's wait
+    uint64_t start = 0, period = (dm_hold_active && dm_hold_active()) || dm_detclock_enabled() ? 0 : present_period(o);
+    pthread_mutex_lock(&g_ll.mu);
+    g_ll.deadline = 0;
+    if (period && o->pace) {
+        uint64_t now = now_ns(), next = o->pace + period, lead = (uint64_t)((lowlat_pred_locked() + g_ll.margin_ms) * 1e6);
+        g_ll.deadline = next;
+        if (lowlat_pred_locked() > 0 && next > lead + now) { start = next - lead; if (start > now + period) start = now + period; g_ll.sleep_sum_ms += (start - now) / 1e6; }
+    }
+    pthread_mutex_unlock(&g_ll.mu);
+    if (start) sleep_until_ns(start);
+    pthread_mutex_lock(&g_ll.mu); g_ll.acq_ret = period ? now_ns() : 0; pthread_mutex_unlock(&g_ll.mu);
+}
+static void lowlat_present(uint64_t t0) {   // game thread, at the present call
+    pthread_mutex_lock(&g_ll.mu);
+    uint64_t ar = g_ll.acq_ret, dl = g_ll.deadline; g_ll.acq_ret = g_ll.deadline = 0;
+    if (ar && t0 > ar && t0 - ar < 250000000ull) {   // longer = a load / stall, not a frame
+        g_ll.work_ms[g_ll.wn++ % 32] = (float)((t0 - ar) / 1e6); g_ll.frames++;
+        if (dl && t0 > dl) { g_ll.missed++; g_ll.clean = 0; g_ll.margin_ms = g_ll.margin_ms + 2 > 12 ? 12 : g_ll.margin_ms + 2; }
+        else if (dl && ++g_ll.clean >= 120) { g_ll.clean = 0; g_ll.margin_ms = g_ll.margin_ms - 0.5 < 0.5 ? 0.5 : g_ll.margin_ms - 0.5; }
+    }
+    if (!g_ll.log_at) g_ll.log_at = t0;
+    if (t0 - g_ll.log_at >= 60000000000ull && g_ll.frames) {
+        LOG("[lowlat] predicted work %.2f ms, margin %.2f ms, average sleep %.2f ms over %u frames (%u missed their slot)", lowlat_pred_locked(), g_ll.margin_ms,
+            g_ll.sleep_sum_ms / g_ll.frames, g_ll.frames, g_ll.missed);
+        g_ll.log_at = t0; g_ll.sleep_sum_ms = 0; g_ll.frames = g_ll.missed = 0;
+    }
+    pthread_mutex_unlock(&g_ll.mu);
+}
+#endif
 NVN(nvnWindowAcquireTexture, NVNwindowAcquireTextureResult, NVNwindow *w, NVNsync *s, int *idx) {
     win_t *o = (win_t *)w;
     *idx = o->ntex ? o->next++ % o->ntex : 0;
@@ -1822,6 +1876,9 @@ NVN(nvnWindowAcquireTexture, NVNwindowAcquireTextureResult, NVNwindow *w, NVNsyn
         if (pace < 0) { const char *e = getenv("DM_DETCLOCK_PACE"), *d = getenv("DM_DETCLOCK"); step = d ? strtoull(d, 0, 0) : 0; pace = e && atoi(e) && step; }
         if (pace) { if (last && now_ns() < last + step) sleep_until_ns(last + step); last = now_ns(); }
     }
+#ifdef DM_GAME_TL2
+    if (lowlat_on()) lowlat_acquire(o);   // [TL2] DM_LOWLAT: after the pacer's own wait, before the frame is recorded
+#endif
     g_acq_wait_ns += wait; g_pa_wait += wait; trow(g_frame, "@late_ms", wait ? (now_ns() - at) / 1e6 : 0);
     // 该张上一次出图还没被出图线程处理完（显示跟不上、落后一整轮交换链）：等它归还，再交给游戏画
     // The previous present of this texture has not yet been processed by the present thread (display cannot keep up, a whole swapchain round behind): wait for it to be returned, then hand it to the game to draw
@@ -2182,6 +2239,9 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
     present_cfg(o);
     gfx_enter();
     uint64_t t0 = now_ns();
+#ifdef DM_GAME_TL2
+    if (lowlat_on()) lowlat_present(t0);   // [TL2] DM_LOWLAT: work sample (present call - acquire return) and the missed-slot check
+#endif
     if (idx >= 0 && idx < o->ntex && idx < 4) {   // 只入队，立即返回；ticket 存翻译队列的任务号 | Enqueue only and return at once; ticket holds the translation queue's job number
         xjob j = {XJ_PRESENT, 0, NULL, snap_tex(o->tex[idx]), present_period(o) / 1e9}; memcpy(j.crop, o->crop, sizeof j.crop);
         if (g_nvn_present_crop) g_nvn_present_crop(j.crop);
