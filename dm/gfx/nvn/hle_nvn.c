@@ -1856,6 +1856,10 @@ static void lowlat_present(uint64_t t0) {   // game thread, at the present call
     }
     pthread_mutex_unlock(&g_ll.mu);
 }
+// [TL2] DM_FLIGHT=1 (default off): per-present feed of the stutter flight recorder (stall_android.c). The strong definitions are Android's;
+// elsewhere (graphics unit tests, other hosts) nothing is recorded.
+__attribute__((weak)) int dm_flight_on(void) { return 0; }
+__attribute__((weak)) void dm_flight_note(double acq_wait_ms, double cpu_ms, unsigned draws) { (void)acq_wait_ms; (void)cpu_ms; (void)draws; }
 #endif
 NVN(nvnWindowAcquireTexture, NVNwindowAcquireTextureResult, NVNwindow *w, NVNsync *s, int *idx) {
     win_t *o = (win_t *)w;
@@ -2241,6 +2245,7 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
     uint64_t t0 = now_ns();
 #ifdef DM_GAME_TL2
     if (lowlat_on()) lowlat_present(t0);   // [TL2] DM_LOWLAT: work sample (present call - acquire return) and the missed-slot check
+    uint64_t fl_acq_ns = g_acq_wait_ns;    // [TL2] DM_FLIGHT: this frame's acquire wait, before the per-frame reset below
 #endif
     if (idx >= 0 && idx < o->ntex && idx < 4) {   // 只入队，立即返回；ticket 存翻译队列的任务号 | Enqueue only and return at once; ticket holds the translation queue's job number
         xjob j = {XJ_PRESENT, 0, NULL, snap_tex(o->tex[idx]), present_period(o) / 1e9}; memcpy(j.crop, o->crop, sizeof j.crop);
@@ -2368,6 +2373,12 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
         if (a_ > 0) trow(f - 8, "@pres_at_ms", a_ * 1e3 - g_t0_ns / 1e6); }   // 上屏时刻（进程起点 ms；presentedTime 与 mach_absolute_time 同基） | on-screen present time (ms since process start; presentedTime shares a time base with mach_absolute_time)
     if (f >= 8 && slow_on()) slow_emit(f - 8);
     prev_out = now_ns();
+#ifdef DM_GAME_TL2
+    if (dm_flight_on()) {   // [TL2] DM_FLIGHT: acquire wait, this thread's CPU time and draw calls of the frame, for the ring in stall_android.c
+        static uint64_t fl_cpu, fl_draw; uint64_t c = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID);
+        dm_flight_note(fl_acq_ns / 1e6, fl_cpu && c > fl_cpu ? (c - fl_cpu) / 1e6 : 0, (unsigned)(dr - fl_draw)); fl_cpu = c; fl_draw = dr;
+    }
+#endif
 }
 
 #ifdef DM_GAME_DOOM
