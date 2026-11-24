@@ -502,6 +502,7 @@ final class Tl2ModConv {
     // SKILL_ICON / SKILL_ICON_INACTIVE from them; PC mods ship CEGUI imagesets instead. Every icon a mod skill names and a mod imageset
     // defines goes into ZMODICONS_<mod id>_<k>.ATLAS + .DDS (RGBA8 XTX, shelf-packed, padding 2) in the mod's pack.
     static final long[] K_ICONS = {tl2Hash("SKILL_ICON"), tl2Hash("SKILL_ICON_INACTIVE")};
+    static final long K_ITEM_ICON = tl2Hash("ICON");
     static final String ATLAS_DIR = "MEDIA/UICONSOLE/ATLASES/"; static final int ATLAS_MAX = 2048;
     interface TexSource { byte[] get(String upperPath) throws IOException; }
     static final class Gen { final String dir, name; final int type; final byte[] data; Gen(String d, String n, int t, byte[] b) { dir = d; name = n; type = t; data = b; } }
@@ -604,21 +605,33 @@ final class Tl2ModConv {
         }
     }
     private static final class Def { final String name, tex; final int x, y, w, h; Def(String n, String t, int x, int y, int w, int h) { name = n; tex = t; this.x = x; this.y = y; this.w = w; this.h = h; } }
-    /** files: UPPER path -> bytes (skill DATs, imagesets); -> generated files (atlas + texture per page); counts icons in n[0] */
+    private static boolean iconIsPath(String v) { String u = up(v); return (v.indexOf('/') >= 0 || v.indexOf('\\') >= 0) && (u.endsWith(".DDS") || u.endsWith(".PNG") || u.endsWith(".TGA")); }
+    /** files: UPPER path -> bytes (skill DATs, item DATs, imagesets); an item ICON that is a texture path exports the whole texture (up to 512x512); -> generated files (atlas + texture per page); counts icons in n[0] */
     static List<Gen> iconAtlases(Map<String, byte[]> files, TexSource src, long modid, ImageDecoder img, int[] n, List<String> notes) throws IOException {
         java.util.TreeMap<String, java.util.TreeSet<String>> want = new java.util.TreeMap<>();
         for (String p : new java.util.TreeSet<>(files.keySet())) {
-            if (!p.startsWith("MEDIA/SKILLS/") || !p.endsWith(".DAT")) continue;
+            boolean skill = p.startsWith("MEDIA/SKILLS/") && p.endsWith(".DAT");
+            if (!skill && !(p.startsWith("MEDIA/UNITS/ITEMS/") && p.endsWith(".DAT"))) continue;
             Map<Long, String> t = datTop(files.get(p)); if (t == null) continue;
-            for (long k : K_ICONS) { String v = t.get(k); if (v != null && !v.isEmpty()) want.computeIfAbsent(up(v), q -> new java.util.TreeSet<>()).add(v); }
+            for (long k : skill ? K_ICONS : new long[] {K_ITEM_ICON}) { String v = t.get(k); if (v != null && !v.isEmpty()) want.computeIfAbsent(up(v), q -> new java.util.TreeSet<>()).add(v); }
         }
         Map<String, Def> defs = new java.util.HashMap<>();
+        Map<String, Tex> texs = new java.util.HashMap<>(); java.util.HashSet<String> bad = new java.util.HashSet<>();
         for (String p : new java.util.TreeSet<>(files.keySet())) {
             if (!p.endsWith(".IMAGESET")) continue;
             Object[] r = imagesetParse(files.get(p)); if (r == null || ((String) r[0]).isEmpty()) continue;
             String tp = norm((String) r[0]);
             @SuppressWarnings("unchecked") List<Img> ims = (List<Img>) r[1];
             for (Img i : ims) { String u = up(i.name); if (want.containsKey(u) && !defs.containsKey(u)) defs.put(u, new Def(i.name, tp, i.x, i.y, i.w, i.h)); }
+        }
+        for (Map.Entry<String, java.util.TreeSet<String>> w : want.entrySet()) {
+            String first = w.getValue().first();
+            if (defs.containsKey(w.getKey()) || !iconIsPath(first)) continue;
+            String tp = norm(first); byte[] d = src.get(tp); if (d == null) continue;
+            Tex t;
+            try { t = new Tex(tp, d, img); texs.put(tp, t); } catch (IOException | RuntimeException ex) { bad.add(tp); notes.add(tp + ": " + ex.getMessage()); continue; }
+            if (t.w > 512 || t.h > 512) { notes.add(first + ": texture " + t.w + "x" + t.h + " larger than 512x512 skipped"); continue; }
+            if (t.w >= 1 && t.h >= 1) defs.put(w.getKey(), new Def(first, tp, 0, 0, t.w, t.h));
         }
         List<Def> items = new ArrayList<>(defs.values());
         items.sort((a, c) -> a.h != c.h ? Integer.compare(c.h, a.h) : up(a.name).compareTo(up(c.name)));
@@ -631,7 +644,6 @@ final class Tl2ModConv {
             cur.add(new int[] {i, x + 2, y + 2}); x += cw; rowh = Math.max(rowh, ch);
         }
         pages.add(cur);
-        Map<String, Tex> texs = new java.util.HashMap<>(); java.util.HashSet<String> bad = new java.util.HashSet<>();
         for (int k = 0; k < pages.size(); k++) {
             int W = 64, H = 64;
             for (int[] c : pages.get(k)) { Def e = items.get(c[0]); W = Math.max(W, c[1] + e.w + 2); H = Math.max(H, c[2] + e.h + 2); }
@@ -693,7 +705,7 @@ final class Tl2ModConv {
                     byte[] raw = new byte[(int) (cl != 0 ? cl : dl)]; in.readFully(raw); byte[] full = null;
                     String up = up(e.dir + e.name);
                     if ((up.startsWith("MEDIA/UNITS/PLAYERS/") && up.endsWith(".DAT")) || (up.startsWith("MEDIA/UI/") && up.endsWith(".LAYOUT")) ||
-                        (up.startsWith("MEDIA/SKILLS/") && up.endsWith(".DAT")) || up.endsWith(".IMAGESET")) {
+                        (up.startsWith("MEDIA/SKILLS/") && up.endsWith(".DAT")) || (up.startsWith("MEDIA/UNITS/ITEMS/") && up.endsWith(".DAT")) || up.endsWith(".IMAGESET")) {
                         try { stf.put(up, cl != 0 && cl != dl ? inflate(raw, (int) dl) : raw); } catch (IOException x) { /* not for the skill-tree table */ }
                     }
                     if (isTexture(e.name)) {

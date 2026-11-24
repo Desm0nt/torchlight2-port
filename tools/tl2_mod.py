@@ -503,6 +503,7 @@ def skilltrees_text(files):
 # reads. So every icon a mod skill names and a mod imageset defines is copied into extra atlas pages ZMODICONS_<mod id>_<k>.ATLAS / .DDS
 # (RGBA8 XTX, shelf-packed, padding 2 like the game's) in the mod's pack. Tl2ModConv.java writes the same bytes.
 K_ICONS = (tl2_hash('SKILL_ICON'), tl2_hash('SKILL_ICON_INACTIVE'))
+K_ITEM_ICON = tl2_hash('ICON')
 ATLAS_DIR, ATLAS_MAX = 'MEDIA/UICONSOLE/ATLASES/', 2048
 
 def _text(b):   # imageset bytes -> str (UTF-8 / UTF-16 with BOM)
@@ -582,8 +583,11 @@ class _Tex:
             s.cache[k] = bc_block(s.d, o, s.bc) if o + (8 if s.bc == 0x42 else 16) <= len(s.d) else [[0, 0, 0, 0]] * 16
         return tuple(s.cache[k][(y & 3) * 4 + (x & 3)])
 
+def _icon_is_path(v): return ('/' in v or '\\' in v) and _up(v).endswith(('.DDS', '.PNG', '.TGA'))
+
 def icon_atlases(files, tex_get, modid):
-    """files: {UPPER path: bytes} (skill DATs, imagesets); tex_get(UPPER path) -> texture bytes or None.
+    """files: {UPPER path: bytes} (skill DATs, item DATs, imagesets); tex_get(UPPER path) -> texture bytes or None.
+    An item ICON that is a texture path exports the whole texture (up to 512x512) as one entry.
     -> ([(dir, name, MAN type, bytes)], number of icons, [notes])"""
     want = {}
     for p in sorted(files):
@@ -592,7 +596,10 @@ def icon_atlases(files, tex_get, modid):
             for k in K_ICONS:
                 v = (t or {}).get(k, '')
                 if v: want.setdefault(_up(v), set()).add(v)
-    defs = {}
+        elif p.startswith('MEDIA/UNITS/ITEMS/') and p.endswith('.DAT'):
+            v = (dat_top(files[p]) or {}).get(K_ITEM_ICON, '')
+            if v: want.setdefault(_up(v), set()).add(v)
+    defs, texs, notes = {}, {}, []
     for p in sorted(files):
         if not p.endswith('.IMAGESET'): continue
         r = imageset_parse(files[p])
@@ -600,16 +607,26 @@ def icon_atlases(files, tex_get, modid):
         for nm, x, y, w, h in r[1]:
             u = _up(nm)
             if u in want and u not in defs: defs[u] = (nm, _up(r[0].replace('\\', '/')).lstrip('/'), x, y, w, h)
+    for u in sorted(want):
+        spell = sorted(want[u])
+        if u in defs or not _icon_is_path(spell[0]): continue
+        tp = _up(spell[0].replace('\\', '/')).lstrip('/'); d = tex_get(tp)
+        if d is None: continue
+        try: texs[tp] = _Tex(tp, d)
+        except Exception as ex: texs[tp] = None; notes.append(f'{tp}: {ex}'); continue
+        t = texs[tp]
+        if t.w > 512 or t.h > 512: notes.append(f'{spell[0]}: texture {t.w}x{t.h} larger than 512x512 skipped'); continue
+        if t.w >= 1 and t.h >= 1: defs[u] = (spell[0], tp, 0, 0, t.w, t.h)
     items = sorted(defs.values(), key=lambda e: (-e[5], _up(e[0])))
-    if not items: return [], 0, []
-    pages, cur, x, y, rowh, notes = [], [], 0, 0, 0, []
+    if not items: return [], 0, notes
+    pages, cur, x, y, rowh = [], [], 0, 0, 0
     for e in items:   # shelf packing, cell = image + 2 on every side
         cw, ch = e[4] + 4, e[5] + 4
         if x + cw > ATLAS_MAX: x, y, rowh = 0, y + rowh, 0
         if y + ch > ATLAS_MAX: pages.append(cur); cur, x, y, rowh = [], 0, 0, 0
         cur.append((e, x + 2, y + 2)); x += cw; rowh = max(rowh, ch)
     pages.append(cur)
-    texs, out, n = {}, [], 0
+    out, n = [], 0
     for k, pg in enumerate(pages):
         W = H = 64
         for e, px, py in pg: W, H = max(W, px + e[4] + 2), max(H, py + e[5] + 2)
@@ -651,7 +668,7 @@ def convert(mod_path, out_dir, slot=None, tex=True, log=print):
         dl, cl = struct.unpack_from('<II', pak, off)
         raw = bytes(pak[off + 8:off + 8 + (cl or dl)]); full = None
         up = _up(d + n)
-        if (up.startswith('MEDIA/UNITS/PLAYERS/') and up.endswith('.DAT')) or (up.startswith('MEDIA/UI/') and up.endswith('.LAYOUT')) or                 (up.startswith('MEDIA/SKILLS/') and up.endswith('.DAT')) or up.endswith('.IMAGESET'):
+        if (up.startswith('MEDIA/UNITS/PLAYERS/') and up.endswith('.DAT')) or (up.startswith('MEDIA/UI/') and up.endswith('.LAYOUT')) or                 (up.startswith('MEDIA/SKILLS/') and up.endswith('.DAT')) or (up.startswith('MEDIA/UNITS/ITEMS/') and up.endswith('.DAT')) or up.endswith('.IMAGESET'):
             try: stf[up] = zlib.decompress(raw) if cl and cl != dl else raw
             except zlib.error: pass
         if tex and n.upper().endswith(TEX_EXT):
