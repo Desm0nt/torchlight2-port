@@ -1,0 +1,119 @@
+#version 450
+// [TL2] DM_GFX_SCENE_SCALE: edge-adaptive spatial upsampling, the EASU pass of AMD FidelityFX Super Resolution 1.0 (FsrEasuF,
+// 32-bit path of ffx_fsr1.h, ported to plain GLSL; see docs/THIRD_PARTY.md). The scene was drawn into the top-left s*W x s*H
+// rectangle of its own W x H image; this expands that rectangle to the whole W x H into an RGBA16F temp image, which the engine
+// then blits back 1:1 (namespace sscale in xbg_game.cpp). Alpha is not part of EASU: it is taken bilinearly at the same point.
+// Regenerate xbg_easu_spv.h after editing this file (the command is at the top of that file).
+//
+// Copyright (c) 2021 Advanced Micro Devices, Inc. All rights reserved.
+// Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation
+// files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy,
+// modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the
+// Software is furnished to do so, subject to the following conditions:
+// The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
+// WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+// COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+// ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(set = 0, binding = 0) uniform sampler2D src;
+layout(set = 0, binding = 1, rgba16f) writeonly uniform image2D dst;
+// con0..con3: FsrEasuCon(inputViewport = s*W x s*H, inputSize = W x H, output = W x H), float bits, computed on the CPU
+layout(push_constant) uniform Push { uvec4 con0, con1, con2, con3; } pc;
+
+// The approximations of ffx_a.h (bit tricks, the same constants)
+float rcp_lo(float a) { return uintBitsToFloat(0x7ef07ebbu - floatBitsToUint(a)); }
+float rsq_lo(float a) { return uintBitsToFloat(0x5f347d74u - (floatBitsToUint(a) >> 1u)); }
+
+// Accumulate one filter tap: lanczos-2 approximation, rotated and stretched along the edge direction
+void tap(inout vec3 aC, inout float aW, vec2 off, vec2 dir, vec2 len, float lob, float clp, vec3 c) {
+    vec2 v = vec2(off.x * dir.x + off.y * dir.y, off.x * (-dir.y) + off.y * dir.x) * len;
+    float d2 = min(v.x * v.x + v.y * v.y, clp);
+    float wB = (2.0 / 5.0) * d2 - 1.0, wA = lob * d2 - 1.0;
+    wB *= wB; wA *= wA;
+    wB = (25.0 / 16.0) * wB - (25.0 / 16.0 - 1.0);
+    float w = wB * wA;
+    aC += c * w; aW += w;
+}
+
+// Direction and length from one of the four bilinear quadrants ('+' pattern of luma around c), weighted by w
+void set(inout vec2 dir, inout float len, float w, float lA, float lB, float lC, float lD, float lE) {
+    float dc = lD - lC, cb = lC - lB;
+    float lenX = rcp_lo(max(abs(dc), abs(cb)));
+    float dirX = lD - lB;
+    dir.x += dirX * w;
+    lenX = clamp(abs(dirX) * lenX, 0.0, 1.0); lenX *= lenX;
+    len += lenX * w;
+    float ec = lE - lC, ca = lC - lA;
+    float lenY = rcp_lo(max(abs(ec), abs(ca)));
+    float dirY = lE - lA;
+    dir.y += dirY * w;
+    lenY = clamp(abs(dirY) * lenY, 0.0, 1.0); lenY *= lenY;
+    len += lenY * w;
+}
+
+void main() {
+    ivec2 ip = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(ip, imageSize(dst)))) return;
+    vec4 con0 = uintBitsToFloat(pc.con0), con1 = uintBitsToFloat(pc.con1), con2 = uintBitsToFloat(pc.con2), con3 = uintBitsToFloat(pc.con3);
+    vec2 pp = vec2(ip) * con0.xy + con0.zw;
+    vec2 fp = floor(pp);
+    pp -= fp;
+    // 12-tap kernel:
+    //    b c
+    //  e f g h
+    //  i j k l
+    //    n o
+    vec2 p0 = fp * con1.xy + con1.zw, p1 = p0 + con2.xy, p2 = p0 + con2.zw, p3 = p0 + con3.xy;
+    vec4 bczzR = textureGather(src, p0, 0), bczzG = textureGather(src, p0, 1), bczzB = textureGather(src, p0, 2);
+    vec4 ijfeR = textureGather(src, p1, 0), ijfeG = textureGather(src, p1, 1), ijfeB = textureGather(src, p1, 2);
+    vec4 klhgR = textureGather(src, p2, 0), klhgG = textureGather(src, p2, 1), klhgB = textureGather(src, p2, 2);
+    vec4 zzonR = textureGather(src, p3, 0), zzonG = textureGather(src, p3, 1), zzonB = textureGather(src, p3, 2);
+    // Luma times 2 (b*0.5 + r*0.5 + g)
+    vec4 bczzL = bczzB * 0.5 + (bczzR * 0.5 + bczzG);
+    vec4 ijfeL = ijfeB * 0.5 + (ijfeR * 0.5 + ijfeG);
+    vec4 klhgL = klhgB * 0.5 + (klhgR * 0.5 + klhgG);
+    vec4 zzonL = zzonB * 0.5 + (zzonR * 0.5 + zzonG);
+    float bL = bczzL.x, cL = bczzL.y, iL = ijfeL.x, jL = ijfeL.y, fL = ijfeL.z, eL = ijfeL.w;
+    float kL = klhgL.x, lL = klhgL.y, hL = klhgL.z, gL = klhgL.w, oL = zzonL.z, nL = zzonL.w;
+    vec2 dir = vec2(0.0);
+    float len = 0.0;
+    set(dir, len, (1.0 - pp.x) * (1.0 - pp.y), bL, eL, fL, gL, jL);
+    set(dir, len, pp.x * (1.0 - pp.y), cL, fL, gL, hL, kL);
+    set(dir, len, (1.0 - pp.x) * pp.y, fL, iL, jL, kL, nL);
+    set(dir, len, pp.x * pp.y, gL, jL, kL, lL, oL);
+    // Normalize the direction; no direction at all = horizontal
+    vec2 dir2 = dir * dir;
+    float dirR = dir2.x + dir2.y;
+    bool zro = dirR < 1.0 / 32768.0;
+    dirR = zro ? 1.0 : rsq_lo(dirR);
+    dir.x = zro ? 1.0 : dir.x;
+    dir *= dirR;
+    // Edge length 0..1 -> kernel stretch and lobe shape
+    len = len * 0.5; len *= len;
+    float stretch = (dir.x * dir.x + dir.y * dir.y) * rcp_lo(max(abs(dir.x), abs(dir.y)));
+    vec2 len2 = vec2(1.0 + (stretch - 1.0) * len, 1.0 - 0.5 * len);
+    float lob = 0.5 + ((1.0 / 4.0 - 0.04) - 0.5) * len;
+    float clp = rcp_lo(lob);
+    // Deringing: clamp to the min / max of the 2x2 around the sample point (f g j k)
+    vec3 fC = vec3(ijfeR.z, ijfeG.z, ijfeB.z), gC = vec3(klhgR.w, klhgG.w, klhgB.w), jC = vec3(ijfeR.y, ijfeG.y, ijfeB.y), kC = vec3(klhgR.x, klhgG.x, klhgB.x);
+    vec3 min4 = min(min(fC, gC), min(jC, kC)), max4 = max(max(fC, gC), max(jC, kC));
+    vec3 aC = vec3(0.0);
+    float aW = 0.0;
+    tap(aC, aW, vec2( 0.0, -1.0) - pp, dir, len2, lob, clp, vec3(bczzR.x, bczzG.x, bczzB.x));   // b
+    tap(aC, aW, vec2( 1.0, -1.0) - pp, dir, len2, lob, clp, vec3(bczzR.y, bczzG.y, bczzB.y));   // c
+    tap(aC, aW, vec2(-1.0,  1.0) - pp, dir, len2, lob, clp, vec3(ijfeR.x, ijfeG.x, ijfeB.x));   // i
+    tap(aC, aW, vec2( 0.0,  1.0) - pp, dir, len2, lob, clp, jC);                               // j
+    tap(aC, aW, vec2( 0.0,  0.0) - pp, dir, len2, lob, clp, fC);                               // f
+    tap(aC, aW, vec2(-1.0,  0.0) - pp, dir, len2, lob, clp, vec3(ijfeR.w, ijfeG.w, ijfeB.w));   // e
+    tap(aC, aW, vec2( 1.0,  1.0) - pp, dir, len2, lob, clp, kC);                               // k
+    tap(aC, aW, vec2( 2.0,  1.0) - pp, dir, len2, lob, clp, vec3(klhgR.y, klhgG.y, klhgB.y));   // l
+    tap(aC, aW, vec2( 2.0,  0.0) - pp, dir, len2, lob, clp, vec3(klhgR.z, klhgG.z, klhgB.z));   // h
+    tap(aC, aW, vec2( 1.0,  0.0) - pp, dir, len2, lob, clp, gC);                               // g
+    tap(aC, aW, vec2( 1.0,  2.0) - pp, dir, len2, lob, clp, vec3(zzonR.z, zzonG.z, zzonB.z));   // o
+    tap(aC, aW, vec2( 0.0,  2.0) - pp, dir, len2, lob, clp, vec3(zzonR.w, zzonG.w, zzonB.w));   // n
+    vec3 c = min(max4, max(min4, aC * (1.0 / aW)));
+    // Alpha: bilinear at the output pixel's centre in input space (con0.xy = viewport / output, con1.xy = 1 / input size)
+    float a = textureLod(src, (vec2(ip) + 0.5) * con0.xy * con1.xy, 0.0).a;
+    imageStore(dst, ip, vec4(c, a));
+}
