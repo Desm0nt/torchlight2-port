@@ -2378,6 +2378,7 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
         static uint64_t fl_cpu, fl_draw; uint64_t c = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID);
         dm_flight_note(fl_acq_ns / 1e6, fl_cpu && c > fl_cpu ? (c - fl_cpu) / 1e6 : 0, (unsigned)(dr - fl_draw)); fl_cpu = c; fl_draw = dr;
     }
+    dm_dmnt_tick(g_frame);   // [TL2] Atmosphere cheat VM (hle_dmnt.c): returns at once without a cheat file for this build
 #endif
 }
 
