@@ -88,6 +88,62 @@ final class GearPages {
             }
         };
     }
+    // ---- 3D resolution as a percent of the render size (pref "scene_scale", default 100 = the variable unset): DM_GFX_SCENE_SCALE = the percent
+    // when below 100; the 3D world renders smaller and is upscaled (FSR 1), the HUD stays at full size
+    static final int[] SCENE_SCALE_STOPS = {100, 85, 75, 67, 50};
+    static GearSettings.Section sceneScale() {
+        return new GearSettings.Section() {
+            RadioGroup g;
+            public void build(GearSettings s, LinearLayout box) {
+                s.heading(box, s.whenKey("gear_scene_scale", false));
+                String[] labels = new String[SCENE_SCALE_STOPS.length];
+                for (int i = 0; i < labels.length; i++) labels[i] = SCENE_SCALE_STOPS[i] + "%";
+                g = s.radios(box, labels, stopIndex(SCENE_SCALE_STOPS, s.gamePrefs().getInt("scene_scale", 100)), true);
+                s.note(box, s.s("gear_scene_scale_note"));
+            }
+            public void save(GearSettings s, SharedPreferences.Editor game, SharedPreferences.Editor pad) { game.putInt("scene_scale", SCENE_SCALE_STOPS[GearSettings.picked(g)]); }
+            public void env(GearSettings s) throws ErrnoException {
+                int pct = SCENE_SCALE_STOPS[stopIndex(SCENE_SCALE_STOPS, s.gamePrefs().getInt("scene_scale", 100))];
+                if (pct < 100) Os.setenv("DM_GFX_SCENE_SCALE", String.valueOf(pct), true); else Os.unsetenv("DM_GFX_SCENE_SCALE");
+            }
+        };
+    }
+    // ---- texture filtering: the game's own (pref "aniso" 0, the variable unset) or forced anisotropic 2x / 4x / 8x / 16x (DM_GFX_ANISO)
+    static final int[] ANISO_STOPS = {0, 2, 4, 8, 16};
+    static GearSettings.Section aniso() {
+        return new GearSettings.Section() {
+            RadioGroup g;
+            public void build(GearSettings s, LinearLayout box) {
+                s.heading(box, s.whenKey("gear_aniso", false));
+                String[] labels = new String[ANISO_STOPS.length];
+                labels[0] = s.s("gear_aniso_game");
+                for (int i = 1; i < labels.length; i++) labels[i] = ANISO_STOPS[i] + "x";
+                g = s.radios(box, labels, stopIndex(ANISO_STOPS, s.gamePrefs().getInt("aniso", 0)), true);
+            }
+            public void save(GearSettings s, SharedPreferences.Editor game, SharedPreferences.Editor pad) { game.putInt("aniso", ANISO_STOPS[GearSettings.picked(g)]); }
+            public void env(GearSettings s) throws ErrnoException {
+                int af = ANISO_STOPS[stopIndex(ANISO_STOPS, s.gamePrefs().getInt("aniso", 0))];
+                if (af > 0) Os.setenv("DM_GFX_ANISO", String.valueOf(af), true); else Os.unsetenv("DM_GFX_ANISO");
+            }
+        };
+    }
+    // ---- low latency (pref "lowlat", off by default): DM_LOWLAT=1 when on, unset when off
+    static GearSettings.Section lowLatency() {
+        return new GearSettings.Section() {
+            RadioGroup g;
+            public void build(GearSettings s, LinearLayout box) {
+                s.heading(box, s.whenKey("gear_lowlat", false));
+                g = s.radios(box, s.keys("gear_off", "gear_on"), s.gamePrefs().getBoolean("lowlat", false) ? 1 : 0, true);
+            }
+            public void save(GearSettings s, SharedPreferences.Editor game, SharedPreferences.Editor pad) { game.putBoolean("lowlat", GearSettings.picked(g) == 1); }
+            public void env(GearSettings s) throws ErrnoException {
+                if (s.gamePrefs().getBoolean("lowlat", false)) Os.setenv("DM_LOWLAT", "1", true); else Os.unsetenv("DM_LOWLAT");
+            }
+        };
+    }
+    // the index of v in stops, 0 when it is not one of them
+    private static int stopIndex(int[] stops, int v) { for (int i = 0; i < stops.length; i++) if (stops[i] == v) return i; return 0; }
+
     // ---- upscale to the screen resolution (vulkan_present.cpp DM_GFX_UPSCALE): the swapchain at the window size + a GSR pass; off by default
     static GearSettings.Section upscale() {
         return new GearSettings.Section() {

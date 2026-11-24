@@ -54,6 +54,9 @@ final class Tl2Gear {
         l.add(stretchLoading());
         // TL2 mods: their own row in the pause menu (DmActivity.portRows -> Tl2Gear.showMods), not a gear section
         l.add(GearPages.sharpen());
+        l.add(GearPages.sceneScale());   // 3D resolution, DM_GFX_SCENE_SCALE (next launch)
+        l.add(GearPages.aniso());   // texture filtering, DM_GFX_ANISO (next launch)
+        l.add(GearPages.lowLatency());   // DM_LOWLAT (next launch)
         l.add(GearPages.fpsLimit(FPS_LIMITS, 60));
         l.add(note(R.string.d3_fps_note));
         if (a.drivers() != null) { l.add(GearPages.driver(a.drivers())); l.add(note(R.string.d3_driver_note)); }
