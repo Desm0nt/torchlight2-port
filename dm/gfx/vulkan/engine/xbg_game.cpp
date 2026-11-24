@@ -1293,7 +1293,7 @@ namespace bright{extern bool enabled;extern uint64_t applied;extern float last_k
 // [TL2] DM_GFX_SCENE_SCALE (namespace sscale, defined after namespace bright): the hooks below in the Image struct, prepare_read,
 // scissor, the pass begins and the draw viewport. on_: the switch is set (50..99); with it unset every hook returns at once.
 struct Image;struct Pass;
-namespace sscale{extern bool on_,disabled;extern uint64_t expands,shrinks;void transfer_use(Image &im,VkCommandBuffer cmd,VkImageLayout next);void read_use(Image &im,bool storage);
+namespace sscale{extern bool on_,disabled;extern int pct;extern uint64_t expands,shrinks;void transfer_use(Image &im,VkCommandBuffer cmd,VkImageLayout next);void read_use(Image &im,bool storage);
     VkExtent2D begin(const Pass &p,VkCommandBuffer cmd,uint32_t cleared);bool is_scene(const Pass &p);VkRect2D rect(const VkRect2D &r,const Pass &p);void viewport(VkViewport &v,const Pass &p);}
 #endif
 namespace astccache{void frame();void perf();}   // [TL2] ASTC texture cache: committed lazy entries join the index once a frame; PERF line
@@ -4184,6 +4184,16 @@ VkSampler sampler_slow(const samp_par &p,Image &im,VkFormat viewed,bool integer_
         && (s.addressModeU==VK_SAMPLER_ADDRESS_MODE_REPEAT || s.addressModeU==VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT || s.addressModeV==VK_SAMPLER_ADDRESS_MODE_REPEAT || s.addressModeV==VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT)){
          const float game=s.anisotropyEnable?s.maxAnisotropy:1.0f;const float want=std::max(game,std::min(float(force),properties.limits.maxSamplerAnisotropy));
          if(want>1.0f){s.anisotropyEnable=VK_TRUE;s.maxAnisotropy=want;}}}
+#ifdef DM_GAME_TL2
+    // [TL2] DM_GFX_SCENE_SCALE: the scene renders at pct% and FSR 1 upscales it, so the GPU picks smaller mips than at full size and
+    // textures look soft. Mipmapped, non-compare samplers get a mip LOD bias of log2(pct/100) (75%: -0.415, 50%: -1.0), clamped to
+    // +-maxSamplerLodBias. sscale::init runs in the device init before any sampler exists, so pct and on_ are valid here. Known limit:
+    // samplers are cached, so after a runtime sscale disable the samplers already created keep the bias (slightly sharper at full size, harmless).
+    if(sscale::on_ && !s.compareEnable && (s.mipmapMode==VK_SAMPLER_MIPMAP_MODE_LINEAR || s.maxLod>0.25f)){
+        const float lim=properties.limits.maxSamplerLodBias;const float bias=log2f(float(sscale::pct)/100.f);
+        static bool told=false;if(!told){told=true;xbg_logf("NVN scene scale: texture LOD bias %.2f (DM_GFX_SCENE_SCALE=%d)",double(bias),sscale::pct);}
+        s.mipLodBias=std::max(-lim,std::min(lim,s.mipLodBias+bias));}
+#endif
     need(s.pNext==nullptr,"Unexpected sampler extension chain");
 #if defined(DM_GAME_XC2) || defined(DM_GAME_D3)
     // [XC2] a border-sampling wrap with a non-canonical colour: the real colour through VK_EXT_custom_border_color where the device has it
