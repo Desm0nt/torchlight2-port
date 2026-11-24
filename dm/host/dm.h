@@ -72,6 +72,13 @@ int gate_obs_present(int id);
 void dm_quiet_difficulty_msg(int on);   // 秘境局里拦原版「游戏难度设为 N」提示（观测门 15，diag.c） | In a rift run, block the original game's 「游戏难度设为 N」(Game difficulty set to N) message (observation gate 15, diag.c)
 int gate_svc_present(int num);   // 产物里有没有这个 svc 号的门（剪口引入的宿主调用号用）   // 产物里有没有这个观测门（gates.tsv 登记过） | Whether the build output has a gate for this svc number (for host call numbers introduced by cuts)   // whether the build output has this observation gate (registered in gates.tsv)
 uint64_t now_ns(void);
+// [TL2] Main module build id (loader.c; first 8 bytes in upper-case hex name the cheat / patch files, as Atmosphere does) and the two Atmosphere-style
+// features keyed by it: dmnt cheat VM (hle_dmnt.c, ticked once per present from hle_nvn.c) and ExeFS IPS / pchtxt patches (hle_exefs_patch.c, from host_preload)
+int dm_main_build_id(uint8_t id[0x20]);   // 1 = known (id filled), 0 = not available
+void dm_dmnt_tick(uint64_t frame);
+void dm_exefs_patch_apply(void);
+int dm_code_poke(module_t *m, uint64_t off, const void *src, size_t n);   // write into a module image (mprotect + icache flush on code pages); 0 / -1 (hle_exefs_patch.c)
+int dm_tl2_data_path(const char *rel, char *out, size_t n);   // <data folder>/<rel> (Download/Torchlight2Mobile; DM_ASTC_DATA_DIR, else DM_ROMFS/..), 0 / -1
 uint64_t guest_ns(void);              // 客体时钟（hle_os.c；DM_TICK_HOLD 冻结时不走） | Guest clock (hle_os.c; does not advance while DM_TICK_HOLD is frozen)
 int dm_detclock_enabled(void);
 void dm_guest_clock_advanced(void);

@@ -4,6 +4,7 @@
 // The code area (original text and patch area) is set to read-only+execute as soon as it is copied in, and from then on the loader only writes data: on iOS these two blocks must be embedded as is as signed code segments.
 #include "dm.h"
 #include <TargetConditionals.h>
+#include <ctype.h>
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -425,6 +426,48 @@ static void map_image(module_t *m, const char *dir) {
 }
 #endif
 
+// [TL2] Main module build id (Atmosphere's cheat / patch files are named by its first 8 bytes). Sources, first hit wins:
+//   1. <dir>/main.nso, the NSO header: 0x20 bytes at 0x40 (when the player left the original next to the module files);
+//   2. <dir>/main.cuts.tsv, the rewriter's "# BUILD_ID <hex>" header (patch_nso.py; 16 bytes, rest zero) - setup_tl2.py does not ship this file yet;
+//   3. DM_TL2_BUILD_ID=<hex>, a manual override (dm/env).
+// Nothing found = the cheat VM and the ExeFS patches stay off ("[dmnt]" / "[exefs]" say so once).
+static uint8_t g_main_bid[0x20]; static int g_main_bid_ok;
+static size_t bid_hex(const char *s, uint8_t *out, size_t max) {
+    size_t n = 0;
+    while (n < max && isxdigit((unsigned char)s[0]) && isxdigit((unsigned char)s[1])) {
+        char b[3] = {s[0], s[1], 0}; out[n++] = (uint8_t)strtoul(b, NULL, 16); s += 2;
+    }
+    return n;
+}
+static void main_build_id_load(const char *dir) {
+    char p[1100]; uint8_t id[0x20]; memset(id, 0, sizeof id); const char *how = NULL; FILE *f;
+    snprintf(p, sizeof p, "%s/main.nso", dir);
+    if ((f = fopen(p, "rb"))) {
+        uint8_t h[0x60];
+        if (fread(h, 1, sizeof h, f) == sizeof h && !memcmp(h, "NSO0", 4)) { memcpy(id, h + 0x40, 0x20); how = "main.nso header"; }
+        fclose(f);
+    }
+    if (!how) {
+        snprintf(p, sizeof p, "%s/main.cuts.tsv", dir);
+        if ((f = fopen(p, "r"))) {
+            char l[256];
+            if (fgets(l, sizeof l, f) && !strncmp(l, "# BUILD_ID", 10)) {
+                const char *q = l + 10; while (*q == '\t' || *q == ' ') q++;
+                if (bid_hex(q, id, sizeof id) >= 8) how = "main.cuts.tsv";
+            }
+            fclose(f);
+        }
+    }
+    if (!how) { const char *e = getenv("DM_TL2_BUILD_ID"); if (e && bid_hex(e, id, sizeof id) >= 8) how = "DM_TL2_BUILD_ID"; }
+    if (!how) {   // 4. the one supported build (README "Known limitations": update v327680, main a0c6c2d2...; every patch site is checked against it)
+        static const uint8_t k_v327680[0x14] = {0xa0,0xc6,0xc2,0xd2,0x2d,0xea,0x79,0x33,0xbc,0xcc,0xe0,0x74,0xc5,0x4e,0x1b,0x0f,0x72,0xe0,0x96,0x7d};
+        memcpy(id, k_v327680, sizeof k_v327680); how = "supported build v327680";
+    }
+    memcpy(g_main_bid, id, sizeof id); g_main_bid_ok = 1;
+    LOG("[build id] main %02X%02X%02X%02X%02X%02X%02X%02X (%s)", id[0], id[1], id[2], id[3], id[4], id[5], id[6], id[7], how);
+}
+int dm_main_build_id(uint8_t id[0x20]) { if (g_main_bid_ok) memcpy(id, g_main_bid, 0x20); return g_main_bid_ok; }
+
 void load_modules(const char *dir, const char **names, int n) {
     // 先全部映射并解析符号表，再统一重定位（跨模块符号要先都在位）
     // DM_BOOTPROF：① 宿主装载细分（毫秒），定 ③ 预重定位 / mmap 的上限
@@ -444,6 +487,7 @@ void load_modules(const char *dir, const char **names, int n) {
         t = now_ns(); parse_dynamic(m); tp += now_ns() - t;
         t = now_ns(); register_gates(m, dir); tg += now_ns() - t;
         LOG("%s: base %p size %#zx", names[i], m->base, m->size);
+        if (!i) main_build_id_load(dir);
         g_nmod++;
     }
     force_init();
