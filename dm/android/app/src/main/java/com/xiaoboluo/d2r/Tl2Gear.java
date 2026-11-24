@@ -45,6 +45,23 @@ final class Tl2Gear {
         Mode mode = new Mode(a);
         List<GearSettings.Section> l = new ArrayList<>();
         l.add(startEnv(a));
+        if (TL2) {
+            // [TL2] four category pages (GearSettings.page: a button per page, its own dialog with Save / Cancel; each section's env() still runs at the start)
+            GearSettings.Section shape = GearPages.pictureShape(new String[] {g.str(R.string.d3_aspect_bars), g.str(R.string.d3_aspect_stretch), g.str(R.string.d3_aspect_wide)},
+                DmActivity.D3_ASPECT_DEFAULT, g.str(R.string.d3_aspect_wide_note), a::applyAspectLayout, (s, v) -> aspectEnv(a, v), mode::relabel);
+            l.add(page(g.str(R.string.tl2_gear_display), shape, stretchLoading(), GearPages.sharpen(), GearPages.sceneScale(), GearPages.aniso(), GearPages.fpsCounter()));
+            List<GearSettings.Section> perf = new ArrayList<>();
+            perf.add(GearPages.fpsLimit(FPS_LIMITS, 60)); perf.add(note(R.string.d3_fps_note)); perf.add(GearPages.lowLatency());
+            if (a.drivers() != null) { perf.add(GearPages.driver(a.drivers())); perf.add(note(R.string.d3_driver_note)); }
+            l.add(page(g.str(R.string.tl2_gear_perf), perf.toArray(new GearSettings.Section[0])));
+            l.add(page(g.str(R.string.tl2_gear_controls), new Layout(), editLeavesGear(GearPages.padControls()), GearPages.deadzone(), new TouchRows(), GearPages.rumble(), GearPages.gearButton()));
+            List<GearSettings.Section> game = new ArrayList<>();
+            game.add(menuLanguageInPage()); game.add(GearPages.gameLanguage(LANG_CODES, LANG_LABELS, false)); game.add(note(R.string.d3_game_lang_note));
+            game.add(mode); game.add(localPlay()); game.add(folder(a));
+            if (a.updateNotice() != null) game.add(GearPages.updates(a.updateNotice()));
+            l.add(page(g.str(R.string.tl2_gear_game), game.toArray(new GearSettings.Section[0])));
+            return l;
+        }
         l.add(GearPages.menuLanguage());
         l.add(GearPages.gameLanguage(LANG_CODES, LANG_LABELS, false));
         l.add(note(R.string.d3_game_lang_note));
@@ -71,6 +88,45 @@ final class Tl2Gear {
         l.add(GearPages.gearButton());
         if (a.updateNotice() != null) l.add(GearPages.updates(a.updateNotice()));   // the app version + "Check for new versions at start" (UpdateNotice)
         return l;
+    }
+
+    // ---- [TL2] pages. GearSettings.page opens a page as a GearSettings of its own while the main dialog stays open underneath; a section
+    // that leaves or reopens the gear from inside a page (menu language, "Edit the layout...") must close that main dialog too, or it ends up
+    // stacked / covering the pad editor. top = the main dialog's GearSettings, remembered when its page buttons are built.
+    private static GearSettings top;
+    static GearSettings.Section page(String title, GearSettings.Section... in) {
+        GearSettings.Section p = GearSettings.page(title, in);
+        return new GearSettings.Section() {
+            public void build(GearSettings g, LinearLayout box) { top = g; p.build(g, box); }
+            public void env(GearSettings g) throws ErrnoException { p.env(g); }
+        };
+    }
+    static void closeTop() { if (top != null) top.dismiss(); }
+    // the menu language reopens the gear in the new language (GearSettings.reopen closes only the page): close the old main dialog as well
+    static GearSettings.Section menuLanguageInPage() {
+        GearSettings.Section in = GearPages.menuLanguage();
+        return new GearSettings.Section() {
+            public void build(GearSettings g, LinearLayout box) { in.build(g, box); }
+            public void after(GearSettings g) {
+                String was = g.a.getSharedPreferences(Ui.PREFS, android.content.Context.MODE_PRIVATE).getString("ui_lang", "");
+                GearSettings old = top;   // reopen() builds a new main dialog, which becomes top
+                in.after(g);
+                if (old != null && !was.equals(g.a.getSharedPreferences(Ui.PREFS, android.content.Context.MODE_PRIVATE).getString("ui_lang", ""))) old.dismiss();
+            }
+        };
+    }
+    // "Edit the layout..." (the two buttons under the sliders: edit, reset) closes the page, and here the main dialog too, so the pad shows
+    static GearSettings.Section editLeavesGear(GearSettings.Section in) {
+        return new GearSettings.Section() {
+            public void build(GearSettings s, LinearLayout box) {
+                in.build(s, box);
+                ((Button) box.getChildAt(box.getChildCount() - 2)).setOnClickListener(v -> {
+                    s.dismiss(); closeTop();
+                    FrontMenu f = s.host.front(); FrontMenu.Pad p = s.host.pad();
+                    if (f != null) f.edit(); else if (p != null) p.startEdit(null);
+                });
+            }
+        };
     }
 
     // ---- [mp] local wireless play over the LAN (hle_ldn.c; pref "mp_lan", on by default -> DM_LDN): the game's own local multiplayer (Pia over
