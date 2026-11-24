@@ -370,6 +370,9 @@ static void receipt(const NpadState *s, uint32_t id, uint32_t style, uint64_t km
 }
 
 void (*dm_pad_hook)(uint64_t, uint64_t *, int32_t *, int32_t *, int32_t *, int32_t *);
+// [TL2] The buttons and sticks as the game got them at its latest read (after every filter); dm_hid_keys folds them into the dmnt key mask.
+static _Atomic uint64_t g_keys_btn; static _Atomic int32_t g_keys_lx, g_keys_ly, g_keys_rx, g_keys_ry;
+uint64_t dm_hid_keys(void) { return dm_keys_mask(atomic_load(&g_keys_btn), atomic_load(&g_keys_lx), atomic_load(&g_keys_ly), atomic_load(&g_keys_rx), atomic_load(&g_keys_ry)); }
 static void fill(NpadState *s, uint32_t id, uint32_t style) {
     pthread_once(&g_receipt_once, receipt_init);
     DM_PROF(0, "taps", ui_taps_step());
@@ -449,6 +452,7 @@ static void fill(NpadState *s, uint32_t id, uint32_t style) {
 #else
     s->attributes = ATTR_CONNECTED;
 #endif
+    atomic_store(&g_keys_btn, s->buttons); atomic_store(&g_keys_lx, s->lx); atomic_store(&g_keys_ly, s->ly); atomic_store(&g_keys_rx, s->rx); atomic_store(&g_keys_ry, s->ry);   // [TL2] final values the game receives, read by dm_hid_keys
     atomic_store_explicit(&g_sampled_right,(uint32_t)s->rx|((uint64_t)(uint32_t)s->ry<<32),memory_order_release);
     receipt(s, id, style, km, read_start_ns);
 }

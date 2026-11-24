@@ -39,6 +39,13 @@ void dm_pad_set(uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry
 // Private skill-aim-v1: takes only paired received samples of the right axis that GetNpad has actually returned, not values the front end has not yet had consumed.
 void dm_input_sampled_right(int32_t *rx,int32_t *ry);
 
+// [TL2] Key mask in the Atmosphere dmnt layout (HidNpadButton): bits 0-15 the buttons, bits 16-19 left stick left / up / right / down, bits 20-23 the right stick, a direction counts past +-16384.
+static inline uint64_t dm_keys_mask(uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry) {
+    return (buttons & 0xFFFF) | (uint64_t)(lx < -16384) << 16 | (uint64_t)(ly > 16384) << 17 | (uint64_t)(lx > 16384) << 18 | (uint64_t)(ly < -16384) << 19
+         | (uint64_t)(rx < -16384) << 20 | (uint64_t)(ry > 16384) << 21 | (uint64_t)(rx > 16384) << 22 | (uint64_t)(ry < -16384) << 23;
+}
+uint64_t dm_hid_keys(void);   // [TL2] what the game was handed at its latest controller read, as dm_keys_mask (dmnt key-press cheats, hle_dmnt.c)
+
 // 手柄状态注入点：GetNpadState 填完原状态后、伪键覆盖前调用。Mac 宿主触点脚本（touch_mac.c，Mac 专用、按 _mac 约定不进 iOS 包）启动时注册；iOS 不带该文件，保持空
 // Controller state injection point: called after GetNpadState has filled in the original state and before the pseudo-key override. The Mac host touch point script (touch_mac.c, Mac only, kept out of the iOS app by the _mac convention) registers at startup; iOS does not carry that file and it stays empty
 extern void (*dm_pad_hook)(uint64_t now, uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry);

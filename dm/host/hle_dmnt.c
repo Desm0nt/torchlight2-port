@@ -10,9 +10,10 @@
 // outside the main image go through a pipe (write / read return EFAULT on an unmapped or protected page instead of killing the process), writes into the
 // main image use dm_code_poke (the tw_poke pattern). A bad address ends that cheat's run for this tick (the pointer may not be valid yet; logged 3 times);
 // a malformed opcode or a runaway loop disables that cheat for good ("[dmnt] cheat X disabled"). Budgets: 100000 opcodes per tick, 50000 per cheat.
-// Key press (type 8): hle_hid.c holds the pad state in static atomics with no getter, so the opcode reads as "never pressed" (logged once).
+// Key press (type 8): reads dm_hid_keys (hle_hid.c), the buttons and stick directions as the game got them at its latest controller read (Atmosphere HidNpadButton layout).
 #ifdef DM_GAME_TL2
 #include "dm.h"
+#include "dm_input.h"
 #include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -118,10 +119,7 @@ static int skip_block(const uint32_t *op, unsigned n, unsigned *pc, int want_els
     }
     return 0;   // unterminated: the block runs to the end of the program
 }
-static uint64_t pad_pressed(void) {
-    static int said; if (!said) { said = 1; LOG("[dmnt] key-press opcode (8): no pad state getter in hle_hid.c, read as never pressed"); }
-    return 0;
-}
+static uint64_t pad_pressed(void) { return dm_hid_keys(); }
 
 // ---- the VM: one cheat, one pass
 static int run_inner(const cheat_t *c, uint32_t tick_used, uint32_t *used_out) {
