@@ -4153,6 +4153,17 @@ VkSampler sampler_slow(const samp_par &p,Image &im,VkFormat viewed,bool integer_
         if(!strict){static std::set<int> told;if(told.insert(int(viewed)).second)xbg_logf("NVN sampler: format %u (NVN %#x) has no linear filtering on this device: its samplers use NEAREST (min=%u mag=%u mip=%u compare=%u)",unsigned(viewed),im.source.d.format,p.minf,p.magf,unsigned(s.mipmapMode),p.cmp_mode);
             s.minFilter=s.magFilter=VK_FILTER_NEAREST;s.mipmapMode=VK_SAMPLER_MIPMAP_MODE_NEAREST;s.anisotropyEnable=VK_FALSE;s.maxAnisotropy=1;}}
     if((s.minFilter==VK_FILTER_LINEAR || s.magFilter==VK_FILTER_LINEAR) && !(fp.optimalTilingFeatures&VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT))xbg_fatalf("NVN sampler linear filtering unsupported min=%u mag=%u compare=%u/%u format=%#x vk=%u optimalFeatures=%#x texture=%llu decoded=%d imfmt=%u",p.minf,p.magf,p.cmp_mode,p.cmp_func,im.source.d.format,unsigned(viewed),fp.optimalTilingFeatures,(unsigned long long)im.source.serial,int(im.decoded),unsigned(im.fmt));
+    // [TL2] DM_GFX_ANISO = 2 / 4 / 8 / 16 (unset or any other value: the game's own setting, nothing changes): forced anisotropic
+    // filtering on trilinear, non-compare samplers of repeating textures (U or V REPEAT /
+    // MIRRORED_REPEAT: ground, walls; clamped render-target and UI samplers stay as they are). Only with samplerAnisotropy enabled
+    // (without it DM_GFX_ANISO_FALLBACK above has already turned the game's own anisotropy off), at most maxSamplerAnisotropy and
+    // never below the game's value. The sampler cache key below includes maxAnisotropy. Logged once at the first sampler.
+    {static const int force=[]{const char *e=getenv("DM_GFX_ANISO");const int n=e?atoi(e):0;const int v=(n==2 || n==4 || n==8 || n==16)?n:0;
+         if(v){xbg_logf("NVN aniso override: %d (device max %g)",v,double(properties.limits.maxSamplerAnisotropy));}return v;}();
+     if(force && cfg.enabled_core.samplerAnisotropy && s.minFilter==VK_FILTER_LINEAR && s.mipmapMode==VK_SAMPLER_MIPMAP_MODE_LINEAR && !s.compareEnable
+        && (s.addressModeU==VK_SAMPLER_ADDRESS_MODE_REPEAT || s.addressModeU==VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT || s.addressModeV==VK_SAMPLER_ADDRESS_MODE_REPEAT || s.addressModeV==VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT)){
+         const float game=s.anisotropyEnable?s.maxAnisotropy:1.0f;const float want=std::max(game,std::min(float(force),properties.limits.maxSamplerAnisotropy));
+         if(want>1.0f){s.anisotropyEnable=VK_TRUE;s.maxAnisotropy=want;}}}
     need(s.pNext==nullptr,"Unexpected sampler extension chain");
 #if defined(DM_GAME_XC2) || defined(DM_GAME_D3)
     // [XC2] a border-sampling wrap with a non-canonical colour: the real colour through VK_EXT_custom_border_color where the device has it
