@@ -136,6 +136,9 @@ extern "C" int mtl_addr(uint64_t addr,uint64_t len,void **buf,uint64_t *off);   
 
 #include "xbg_present_thread.inc"   // [present-thread] PERF-D07 DM_GFX_PRESENT_THREAD: the queue lock and the present hand-off (namespace ptq)
 #include "xbg_vendor_policy.h"
+#include "xbg_stock_tile.h"   // [stock-tile] PNH-B-01: the exact tile rules on Qualcomm's stock driver (port-common stock-tile)
+// [stock-tile] the device's VkDriverId / driverName (0 / "" when it reports none) and the module's decision (initialize)
+static uint32_t gpu_driver_id=0;static char gpu_driver_name[64]="";static int stock_tile_mode=1;static bool stock_tile_on=false;
 // [nonadreno] (from the DOOM 2016 port, 7c0da0e) DM_GFX_SIM_GPU (xbg_vendor_policy.h): every format-feature query of this file goes through here, so a simulated
 // Mali / PowerVR / Xclipse profile also narrows format features (BC, linear filtering of 16-bit / depth formats, D24). Without
 // the switch sim_gpu is 0 and this is the driver's answer unchanged.
@@ -7524,6 +7527,11 @@ extern "C" int xbg_game_initialize(const xbg_game_config *c,char *error,size_t b
 #endif
     
      gpguard::careful=false;gpguard::loaded=false;gpguard::skip.clear();gpguard::told.clear();gpguard::proven.clear();gpguard::any=false;gpguard::load();
+     // [stock-tile] Qualcomm's stock driver bins every pass through GMEM: the exact tile rules (TILE_BARRIER, CLEAR_FOLD) default on there too
+     // (xbg_stock_tile.h, DM_GFX_STOCK_TILE; PNH-B-01; applied in the tile pass policy below). Turnip and every other driver keep their family defaults.
+     {VkPhysicalDeviceDriverProperties dp{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};VkPhysicalDeviceProperties2 p2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};p2.pNext=&dp;vkGetPhysicalDeviceProperties2(cfg.physical,&p2);
+      gpu_driver_id=uint32_t(dp.driverID);snprintf(gpu_driver_name,sizeof gpu_driver_name,"%s",dp.driverName);
+      stock_tile_mode=xbg_stock_tile_mode(getenv("DM_GFX_STOCK_TILE"));stock_tile_on=xbg_stock_tile_active(stock_tile_mode,properties.vendorID,gpu_driver_id);}
      ubo_dynamic_on=xbg_env_or(getenv("DM_GFX_UBO_DYNAMIC"),xbg_ubo_dynamic_default(gpu_policy));noout_mask_on=xbg_env_or(getenv("DM_GFX_NOOUT_MASK"),xbg_noout_mask_default(gpu_policy));
      xbg_logf("NVN gpu policy: pipe_serial=%d pipe_guard=%d ubo_dynamic=%d noout_mask=%d zero-copy default=%d (DM_GFX_PIPE_SERIAL / PIPE_GUARD / UBO_DYNAMIC / NOOUT_MASK / ZEROCOPY)",
               int(gpguard::serial),int(gpguard::guard),int(ubo_dynamic_on),int(noout_mask_on),int(xbg_zero_copy_default(gpu_policy)));}
@@ -7570,12 +7578,22 @@ extern "C" int xbg_game_initialize(const xbg_game_config *c,char *error,size_t b
      ldc_fold=dm("/gfx-ldc-fold","DM_GFX_LDC_FOLD");forward_temps=dm("/gfx-forward-temps","DM_GFX_FORWARD_TEMPS");nan_minmax=dm("/gfx-nan-minmax","DM_GFX_NAN_MINMAX");
      {auto env_on=[](const char *env,int def){const char *e=getenv(env);return e&&*e?atoi(e)!=0:def!=0;};
       d3perf_switches();   // [d3-perf][nonadreno] defaults, the GPU self-test off Adreno, explicit env
-      {const char *e=getenv("DM_GFX_CLEAR_FOLD");clear_fold_mode=e&&*e?atoi(e):xbg_clear_fold_default(gpu_policy);   // [tile] render-pass policy (xbg_vendor_policy.h)
+      {const bool stk=stock_tile_on;   // [stock-tile] the exact rules (CLEAR_FOLD, TILE_BARRIER) also on Qualcomm's stock driver; NOLOAD / STORE_HIST stay family-only
+       const int clear_fold_family=xbg_clear_fold_default(gpu_policy);
+       const char *e=getenv("DM_GFX_CLEAR_FOLD");clear_fold_mode=e&&*e?atoi(e):clear_fold_family?clear_fold_family:(stk?1:0);   // [tile] render-pass policy (xbg_vendor_policy.h)
        if(clear_fold_mode && !lazy_clear_on){xbg_logf("NVN DM_GFX_CLEAR_FOLD=%d needs DM_GFX_LAZY_CLEAR (off here: its load-op clear self-test or env): off",clear_fold_mode);clear_fold_mode=0;}
        e=getenv("DM_GFX_STORE_HIST");store_hist_mode=e&&*e?atoi(e):xbg_store_hist_default(gpu_policy);hist_on=store_hist_mode!=0;e=getenv("DM_GFX_STORE_HIST_FRAMES");if(e&&*e)store_hist_frames=unsigned(std::max(1,atoi(e)));
-       tile_barrier_on=xbg_env_or(getenv("DM_GFX_TILE_BARRIER"),xbg_tile_barrier_default(gpu_policy));
+       tile_barrier_on=xbg_env_or(getenv("DM_GFX_TILE_BARRIER"),xbg_stock_tile_default(xbg_tile_barrier_default(gpu_policy),stk));
        xbg_logf("NVN tile pass policy (policy family %s): DM_GFX_CLEAR_FOLD=%d DM_GFX_STORE_HIST=%d (after %u unread frames) DM_GFX_TILE_BARRIER=%d DM_GFX_LEAN_USAGE=%d DM_GFX_NOLOAD=%d; defaults clear_fold=%d store_hist=%d tile_barrier=%d lean_usage=%d noload=%d",
-                xbg_gpu_family_name(gpu_policy),clear_fold_mode,store_hist_mode,store_hist_frames,int(tile_barrier_on),int(lean_usage_on),int(noload_enabled),xbg_clear_fold_default(gpu_policy),xbg_store_hist_default(gpu_policy),int(xbg_tile_barrier_default(gpu_policy)),int(xbg_lean_usage_default(gpu_policy)),int(xbg_noload_default(gpu_policy)));}
+                xbg_gpu_family_name(gpu_policy),clear_fold_mode,store_hist_mode,store_hist_frames,int(tile_barrier_on),int(lean_usage_on),int(noload_enabled),xbg_clear_fold_default(gpu_policy),xbg_store_hist_default(gpu_policy),int(xbg_tile_barrier_default(gpu_policy)),int(xbg_lean_usage_default(gpu_policy)),int(xbg_noload_default(gpu_policy)));
+       {auto own=[](const char *n){const char *v=getenv(n);return v && *v;};   // [stock-tile] one line: which exact rules are on and why
+        const uint32_t wanted=stk?((xbg_tile_barrier_default(gpu_policy)?0u:XBG_STK_TILE_BARRIER)|(clear_fold_family?0u:XBG_STK_CLEAR_FOLD)):0u;
+        const uint32_t effective=(tile_barrier_on?XBG_STK_TILE_BARRIER:0u)|(clear_fold_mode?XBG_STK_CLEAR_FOLD:0u);
+        const uint32_t own_set=(own("DM_GFX_TILE_BARRIER")?XBG_STK_TILE_BARRIER:0u)|(own("DM_GFX_CLEAR_FOLD")?XBG_STK_CLEAR_FOLD:0u);
+        char line[600];xbg_stock_tile_line(line,sizeof line,stock_tile_mode,stk,properties.vendorID,gpu_driver_id,gpu_driver_name,wanted,effective,own_set,false);
+        xbg_logf("NVN stock tile: %s (DM_GFX_STOCK_TILE)",line);
+        pc_note("stock-tile",stk?1:0,"%s",line);   // [pc]
+       }}
       xbg_logf("NVN d3-perf pass switches: DM_GFX_REPORT_INPASS=%d DM_GFX_LAZY_CLEAR=%d",int(report_inpass),int(lazy_clear_on));
       texcoord_unguard=!env_on("DM_GFX_TEXCOORD_NAN",1);
       xbg_logf("NVN d3-perf shader switches: DM_GFX_NAN_SAT=%d DM_GFX_LDC_CANON=%d DM_GFX_F2I_NOTRUNC=%d DM_GFX_TEXCOORD_NAN=%d (texcoord NaN guard kept)",int(nan_sat),int(ldc_canon),int(f2i_notrunc),int(!texcoord_unguard));}
