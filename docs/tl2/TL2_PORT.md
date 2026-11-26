@@ -1026,3 +1026,10 @@ tree layout(s), 22 class name(s)`.
   - pn2 сток + `DM_GFX_TILE_POISON=1`: stock-tile `applied`, маджента нет, 60 fps, device-fault `enabled`; gpu-floor снова 100 % (late 114/600).
   - pn3 `DM_GFX_SIM_GPU=mali DM_GFX_BC_ASTC=1 DM_PRESENT_MAX_HZ=120`: bc-astc не сработал (Adreno сэмплирует BC, GPU-декода нет —
     проверять только на настоящем Mali); 120 Гц: голос 120 Гц есть, но такт показа выбран при инициализации окна по экрану 60 Гц → 60 fps.
+
+## 26.11 PR #32 (danjaniell): 3D-разрешение с FSR 1, анизотропия, низкая задержка, читы, патчи ExeFS, иконки предметов модов
+- Влит `3900527`. Всё новое выключено по умолчанию (`DM_GFX_SCENE_SCALE` 50..99, `DM_GFX_ANISO`, `DM_LOWLAT=1`, `DM_FLIGHT=1`);
+  читы `cheats/<build id>.txt`, патчи `exefs_patches/<имя>/`; конвертер модов v5 (иконки предметов `ICON`); ⚙ TL2 на четырёх страницах.
+- Проверено до слияния: сливается поверх 0.1.14 без конфликтов; новые `vkCmd*` (EASU: Dispatch, Blit, PushConstants, …) идут через
+  vk-enc-thread; SPIR-V `xbg_easu_spv.h` = glslc из `xbg_easu.comp` (3676 слов); `t_dmnt_keys` OK. Mi 14 Ultra, Храмовые степи + бой,
+  `DM_GFX_SCENE_SCALE=50 DM_GFX_ANISO=16`: один EASU-апскейл на кадр, LOD bias −1, 60 fps, без артефактов. Mali / PowerVR не проверены.
