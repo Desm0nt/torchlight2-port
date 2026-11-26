@@ -745,9 +745,39 @@ static int fence_flush_mode(void) {
             m & 2 ? "; nvnQueueFlush too" : ""); }
     return m;
 }
-static void x_flush_req(void);   // queues XJ_FLUSH (translation queue below)
+static void x_flush_req(int force);   // queues XJ_FLUSH (translation queue below); force 1: [fence-flush] a game thread waits, past the guard
+// [fence-flush] PERF-X16 guard (the engine half: xbg_game.cpp xbg_flush_now, DM_NVN_FENCE_FLUSH_GUARD). With a 2-slot ring a hand-off makes
+// the next translation reuse the other slot, so while that slot is still on the GPU the translator would wait for it in recording_slot.
+// A game that fences with FLUSH_FOR_CPU many times a frame would turn every one of them into such a wait. So the engine holds ("defers") a
+// flush whose hand-off would wait, and this side wakes it when a game thread starts waiting for the GPU (a timed SyncWait on a fence not done,
+// or the same fence polled twice with no submit in between): the waiting game submits nothing before that older work is done, so the
+// hand-off then costs the translator nothing, and the GPU gets the frame as on the Switch (TL2: SyncWait(UINT64_MAX) on frame N-1).
+// Counters for NVN PERF overlap (dm_nvn_ff_counts, read and cleared by the engine): FenceSync calls (all / with FLUSH_FOR_CPU / with another
+// flag bit), nvnQueueFlush calls, held flushes woken by a timed wait / by a spinning poll.
+static _Atomic uint64_t g_ff_fs_all, g_ff_fs_cpu, g_ff_fs_other, g_ff_qflush, g_ff_wake_wait, g_ff_wake_spin;
+static _Atomic int g_ff_waiters, g_ff_req;   // game threads in a timed SyncWait on a fence not done; a forced flush job is queued
+void dm_nvn_ff_counts(uint64_t out[6]) {
+    out[0] = atomic_exchange(&g_ff_fs_all, 0); out[1] = atomic_exchange(&g_ff_fs_cpu, 0); out[2] = atomic_exchange(&g_ff_fs_other, 0);
+    out[3] = atomic_exchange(&g_ff_qflush, 0); out[4] = atomic_exchange(&g_ff_wake_wait, 0); out[5] = atomic_exchange(&g_ff_wake_spin, 0);
+}
 NVN(nvnQueueFenceSync, void, NVNqueue *q, NVNsync *s, NVNsyncCondition c, int f) { (void)q; (void)c; ((sync_t *)s)->fenced = 1; ((sync_t *)s)->fence = x_fence();
-    if ((f & 1) && (fence_flush_mode() & 1)) x_flush_req(); }   // 1 = NVN_SYNC_FLAG_FLUSH_FOR_CPU_BIT
+    atomic_fetch_add(&g_ff_fs_all, 1); if (f & 1) atomic_fetch_add(&g_ff_fs_cpu, 1); if (f & ~1) atomic_fetch_add(&g_ff_fs_other, 1);   // [fence-flush]
+    if ((f & 1) && (fence_flush_mode() & 1)) x_flush_req(0); }   // 1 = NVN_SYNC_FLAG_FLUSH_FOR_CPU_BIT
+// [fence-flush] nvnSyncWait, after a poll found the fence not done: a timed wait registers as a waiter (returns 1: ff_wait_end after the
+// wait) and wakes a held flush; a poll wakes it only when the game spins (the same fence twice, no submit in between). One forced job at a time.
+static int ff_wait_begin(uint64_t fence, uint64_t timeout) {
+    if (!(fence_flush_mode() & 3)) return 0;
+    if (timeout) {
+        atomic_fetch_add(&g_ff_waiters, 1);
+        if (mtl_flush_pending() && !atomic_exchange(&g_ff_req, 1)) { atomic_fetch_add(&g_ff_wake_wait, 1); x_flush_req(1); }
+        return 1;
+    }
+    static _Atomic uint64_t last_fence, last_subs; const uint64_t subs = x_fence();
+    const uint64_t pf = atomic_exchange(&last_fence, fence), ps = atomic_exchange(&last_subs, subs);
+    if (pf == fence && ps == subs && mtl_flush_pending() && !atomic_exchange(&g_ff_req, 1)) { atomic_fetch_add(&g_ff_wake_spin, 1); x_flush_req(1); }
+    return 0;
+}
+static void ff_wait_end(int w) { if (w) atomic_fetch_sub(&g_ff_waiters, 1); }
 // 没围栏过的同步对象按真机行为等到超时；已围栏的只在 GPU 真正完成到该栅栏值后放行
 // 诊断：游戏每帧在 SyncWait / 读事件上等了多久、等的是落后最新提交几次的栅栏（每 300 帧一行）
 // A sync object that was never fenced waits until the timeout, as on the device; a fenced one is released only once the GPU has really completed up to that fence value
@@ -885,7 +915,8 @@ NVN(nvnSyncWait, NVNsyncWaitResult, const NVNsync *s, uint64_t timeout) {
                        if (g_gw_on) LOG("[nvn] SyncWait knobs: stats=1 lag=%d poll_us=%d", g_sync_lag, g_poll_us); }
     if (!g_gw_on) {   // default: unchanged
         if (mtl_wait(o->fence, 0)) return NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED;
-        return mtl_wait(o->fence, timeout) ? NVN_SYNC_WAIT_RESULT_CONDITION_SATISFIED : NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED;
+        const int ffw = ff_wait_begin(o->fence, timeout), ok = mtl_wait(o->fence, timeout); ff_wait_end(ffw);   // [fence-flush] a held flush goes now
+        return ok ? NVN_SYNC_WAIT_RESULT_CONDITION_SATISFIED : NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED;
     }
     uint64_t f = o->fence, p0 = atomic_load(&g_pf0), p1 = atomic_load(&g_pf1); int cls = p1 && f <= p1 ? 0 : p0 && f <= p0 ? 1 : 2;
     atomic_fetch_add(&g_gwa_calls[cls], 1); gwa_report();
@@ -896,7 +927,7 @@ NVN(nvnSyncWait, NVNsyncWaitResult, const NVNsync *s, uint64_t timeout) {
         f = p1; atomic_fetch_add(&g_gwa_lagged, 1);
     }
     int ok = mtl_wait(f, 0), immediate = ok;
-    if (!ok && timeout) ok = mtl_wait(f, timeout);
+    if (!ok) { const int ffw = ff_wait_begin(f, timeout); if (timeout) ok = mtl_wait(f, timeout); ff_wait_end(ffw); }   // [fence-flush]
     if (ok) { if (sp_sync == (const void *)s && sp_fence == o->fence) { atomic_fetch_add(&g_gwa_span_ns[sp_cls], now_ns() - sp_t0); sp_sync = NULL; }
               return immediate ? NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED : NVN_SYNC_WAIT_RESULT_CONDITION_SATISFIED; }
     atomic_fetch_add(&g_gwa_notdone[cls], 1);
@@ -917,7 +948,9 @@ __attribute__((weak)) void mtl_event_peek(const volatile uint32_t *val) { mtl_ev
 __attribute__((weak)) int mtl_idle_mode(void) { return 0; }
 __attribute__((weak)) int mtl_idle_poll(uint64_t idle_ns) { (void)idle_ns; return 0; }
 // [TL2 #4] DM_NVN_FENCE_FLUSH (strong in nvn_vk.c): hand the translated work to the GPU now. Weak: backends that start work at commit.
-__attribute__((weak)) void mtl_flush(void) {}
+// [fence-flush] force 1: past the guard; returns 1 when the guard held the flush; mtl_flush_pending: a held flush waits.
+__attribute__((weak)) int mtl_flush(int force) { (void)force; return 0; }
+__attribute__((weak)) int mtl_flush_pending(void) { return 0; }
 NVN(nvnEventBuilderSetDefaults, void, NVNeventBuilder *b) { memset(b, 0, sizeof(ev_builder_t)); }
 NVN(nvnEventBuilderSetStorage, void, NVNeventBuilder *b, const NVNmemoryPool *p, int64_t off) { *(ev_builder_t *)b = (ev_builder_t){(const pool_t *)p, off}; }
 NVN(nvnEventInitialize, NVNboolean, NVNevent *e, const NVNeventBuilder *b) {
@@ -971,7 +1004,7 @@ NVN(nvnQueueFinalize, void, NVNqueue *q) { ((queue_t *)q)->magic = 0; }
 NVN(nvnQueueGetError, NVNqueueGetErrorResult, NVNqueue *q, NVNqueueErrorInfo *info) {
     (void)q; if (info) memset(info, 0, sizeof *info); return NVN_QUEUE_GET_ERROR_RESULT_GPU_NO_ERROR;
 }
-NVN(nvnQueueFlush, void, NVNqueue *q) { (void)q; if (fence_flush_mode() & 2) x_flush_req(); }   // [TL2 #4] DM_NVN_FENCE_FLUSH bit 2
+NVN(nvnQueueFlush, void, NVNqueue *q) { (void)q; atomic_fetch_add(&g_ff_qflush, 1); if (fence_flush_mode() & 2) x_flush_req(0); }   // [TL2 #4] DM_NVN_FENCE_FLUSH bit 2
 NVN(nvnQueueFinish, void, NVNqueue *q) { (void)q; x_drain(); mtl_finish(); }
 
 // ---------- 命令缓冲：录进游戏的命令内存，提交时执行 CPU 可见副作用 ----------
@@ -1563,7 +1596,15 @@ static void x_run(const xjob *j, uint64_t job) {
         { void front_gtx_frame(void); front_gtx_frame(); }
 #endif
         XTRACE_BEGIN("dm-x-present"); uint64_t tk = mtl_present(j->tex, j->period, j->crop); XTRACE_END(); pthread_mutex_lock(&g_xmu); g_xtk[job % XTK].job = job; g_xtk[job % XTK].tk = tk; pthread_mutex_unlock(&g_xmu); }
-    else if (j->kind == XJ_FLUSH) { XTRACE_BEGIN("dm-x-flush"); mtl_flush(); XTRACE_END(); }   // [TL2 #4] DM_NVN_FENCE_FLUSH
+    else if (j->kind == XJ_FLUSH) { XTRACE_BEGIN("dm-x-flush");   // [TL2 #4] DM_NVN_FENCE_FLUSH; [fence-flush] n = 1: forced by a waiting game thread
+        if (j->n) atomic_store(&g_ff_req, 0);
+        // Forced only from the tail: no submit was enqueued behind this job (the translator has caught up with the game). A game that
+        // queued the rest of its frame and then waits gets the hand-off at the frame's last flush, not at its first (the rest would wait
+        // for the GPU in recording_slot). A held flush whose game thread began a timed wait meanwhile (it may have missed the held
+        // flag) goes too.
+        const int tail = x_fence() == j->sub;
+        if (mtl_flush(tail && (j->n || atomic_load(&g_ff_waiters) > 0)) && tail && atomic_load(&g_ff_waiters) > 0) mtl_flush(1);
+        XTRACE_END(); }
     else {
         XTRACE_BEGIN("dm-x-frame");
         // 按同一线程的累计CPU差统计整个翻译帧（回放、出图均含）；不把GPU/交换链等待当CPU负载。
@@ -1622,6 +1663,7 @@ static void *x_thread(void *a) {
 }
 static void x_start(void) {
     const char *e = getenv("DM_NVN_SYNC"); g_x_sync = e && atoi(e);
+    { void pc_note(const char *, int, const char *, ...); const int ffm = fence_flush_mode(); pc_note("fence-flush", ffm != 0, "%s", ffm ? "DM_NVN_FENCE_FLUSH: a FenceSync(FLUSH_FOR_CPU) hands the translated work to the GPU, guarded by DM_NVN_FENCE_FLUSH_GUARD (NVN PERF overlap fs_cpu / flush / flush_defer); PERF-X16" : "DM_NVN_FENCE_FLUSH=0: translated work waits for the next present"); }   // [pc]
     if (g_x_sync) { LOG("[nvn] DM_NVN_SYNC=1：翻译在提交线程上同步做（对照档）"); return; }
     pthread_attr_t at; pthread_attr_init(&at);
 #ifdef __APPLE__
@@ -1652,7 +1694,7 @@ static uint64_t x_push(xjob *j) {   // 返回任务号 | Returns the job number
 static void x_wait(uint64_t job) { pthread_mutex_lock(&g_xmu); while (g_xq_done < job) pthread_cond_wait(&g_xcv, &g_xmu); pthread_mutex_unlock(&g_xmu); }
 static void x_drain(void) { pthread_mutex_lock(&g_xmu); uint64_t job = g_xq_in; pthread_mutex_unlock(&g_xmu); x_wait(job); }
 static uint64_t x_fence(void) { return atomic_load(&g_x_subs); }
-static void x_flush_req(void) { xjob j = {XJ_FLUSH}; x_push(&j); }   // [TL2 #4] DM_NVN_FENCE_FLUSH: runs right after the submits enqueued before it
+static void x_flush_req(int force) { xjob j = {XJ_FLUSH, force}; j.sub = x_fence(); x_push(&j); }   // [fence-flush] sub: submits enqueued before it   // [TL2 #4] DM_NVN_FENCE_FLUSH: runs right after the submits enqueued before it
 static int x_sub_translated(uint64_t sub) { if (g_x_sync) return 1; pthread_mutex_lock(&g_xmu); const int ok = g_xsub_done >= sub; pthread_mutex_unlock(&g_xmu); return ok; }   // [TL2 #12] from ETR cmp16
 // 等翻译线程把第 sub 次提交翻完（栅栏值 ≤ 已翻译数才去问引擎）；timeout 纳秒，超时返回 0。同步翻译模式提交当场执行，不用等
 // Wait until the translation thread has translated submit number `sub` (the engine is asked about a fence only once it has been translated); timeout in ns, returns 0 on timeout.

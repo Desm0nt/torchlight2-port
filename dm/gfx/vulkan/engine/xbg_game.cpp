@@ -829,8 +829,23 @@ int sync_site=SITE_OTHER;uint64_t block_ns[SITE_COUNT],block_calls[SITE_COUNT],s
 //   flush / flush_behind / flush_empty  DM_NVN_FENCE_FLUSH jobs a frame that submitted / of them behind running GPU work / found nothing
 //   present_side  presents whose layout change went into the side command buffer (DM_GFX_PRESENT_SIDE)
 //   game_wait_ms  the game's timed fence waits (xbg_legacy_wait wall time); poolreset reset / fence: ms the retires and reuses waited
+//   [fence-flush] fs / fs_cpu / fs_other / qflush  the game's nvnQueueFenceSync calls (all / with FLUSH_FOR_CPU / with another flag bit) and
+//                 nvnQueueFlush calls a frame (hle_nvn.c dm_nvn_ff_counts); guard = DM_NVN_FENCE_FLUSH_GUARD; flush_defer: flush requests
+//                 held by the guard; flush_forced: hand-offs made because a game thread waited (past the guard); wake_wait / wake_spin:
+//                 held requests woken by a timed SyncWait / a spinning poll; flush_drop: held requests that ended in another submit
+//                 (present, chunk, legacy wait); flush_stale: forced jobs that found nothing to hand off; ring_ms / ring_waits: translation
+//                 waiting for the GPU in recording_slot (what the guard prevents)
+extern "C" void dm_nvn_ff_counts(uint64_t out[6]) __attribute__((weak));
 namespace overlap {
 uint64_t frames=0,window_t0=0,translate_ns=0,gpu_ns=0,gpu_spans=0,gap_ns=0,gap_max=0,gaps=0,pairs=0,submits=0,behind=0,flushes=0,flush_behind=0,flush_empty=0,side=0;
+uint64_t flush_defer=0,flush_forced=0,flush_drop=0,flush_stale=0,ring_ns=0,ring_waits=0;   // [fence-flush]
+// [fence-flush] DM_NVN_FENCE_FLUSH_GUARD (default 1; 0 = TL2 ffefa79: every FenceSync(FLUSH_FOR_CPU) hands off at once). 1: a flush hands the
+// recording slot to the GPU only when that cannot make the next translation wait for the GPU in the 2-slot ring: the other slot is idle and
+// no flush handed off since the last present (at most one such cut a frame: each costs a slot turn, and on a tiler a split pass), or a game
+// thread waits for the GPU (force: it submits nothing until the older slot is done). Otherwise it is held (pending) until a game thread
+// waits (hle_nvn.c ff_wait_begin), or the next submit of the slot by another site (present ...) takes it along.
+std::atomic<int> pending{0};unsigned frame_flushes=0;int guard_mode=-1;
+bool guard(){if(guard_mode<0){guard_mode=xbg_env_or(getenv("DM_NVN_FENCE_FLUSH_GUARD"),1);xbg_logf("NVN fence flush guard=%d (DM_NVN_FENCE_FLUSH_GUARD: 1 = a flush that would make the next translation wait for the GPU is held until a game thread waits; 0 = every flush hands off)",guard_mode);}return guard_mode!=0;}
 std::atomic<uint64_t> game_wait_ns{0},game_waits{0};
 uint64_t last_end=0,last_serial=UINT64_MAX;   // GPU timestamp at the end of the last retired slot and its serial (retire = submission order)
 void span(uint64_t serial,uint64_t t0,uint64_t t1,uint64_t mask,double period_ns){
@@ -839,13 +854,18 @@ void span(uint64_t serial,uint64_t t0,uint64_t t1,uint64_t mask,double period_ns
     last_end=t1;last_serial=serial;
 }
 void frame(){   // at each present (engine lock held)
+    frame_flushes=0;   // [fence-flush]
     const uint64_t now=timing_clock();if(!window_t0){window_t0=now;frames=0;return;}
     if(++frames<300)return;
     const double f=double(frames),wall=double(now-window_t0)/1e6,su=submits?double(submits):1.0;
-    xbg_logf("NVN PERF overlap frames=%llu fps=%.1f translate_ms=%.2f gpu_ms=%.2f gpu_gap_ms=%.2f gap_max_ms=%.2f gaps=%llu/%llu submits=%.2f behind_gpu=%.2f flush=%.2f flush_behind=%.2f flush_empty=%.2f present_side=%.2f game_wait_ms=%.2f game_waits=%.2f poolreset reset_ms=%.2f fence_ms=%.2f",
+    uint64_t ff[6]={};if(dm_nvn_ff_counts)dm_nvn_ff_counts(ff);   // [fence-flush] the game's FenceSync / QueueFlush calls, wake-ups (hle_nvn.c)
+    xbg_logf("NVN PERF overlap frames=%llu fps=%.1f translate_ms=%.2f gpu_ms=%.2f gpu_gap_ms=%.2f gap_max_ms=%.2f gaps=%llu/%llu submits=%.2f behind_gpu=%.2f flush=%.2f flush_behind=%.2f flush_empty=%.2f present_side=%.2f game_wait_ms=%.2f game_waits=%.2f poolreset reset_ms=%.2f fence_ms=%.2f"
+             " fs=%.2f fs_cpu=%.2f fs_other=%.2f qflush=%.2f guard=%d flush_defer=%.2f flush_forced=%.2f wake_wait=%.2f wake_spin=%.2f flush_drop=%.2f flush_stale=%.2f ring_ms=%.2f ring_waits=%.2f",
              (unsigned long long)frames,f*1000.0/wall,translate_ns/1e6/f,gpu_ns/1e6/f,gap_ns/1e6/f,gap_max/1e6,(unsigned long long)gaps,(unsigned long long)pairs,submits/f,behind/su,flushes/f,flushes?double(flush_behind)/double(flushes):0.0,flush_empty/f,side/f,
-             game_wait_ns.exchange(0)/1e6/f,game_waits.exchange(0)/f,poolreset::ov_wait_ns/1e6/f,poolreset::ov_fence_ns/1e6/f);
+             game_wait_ns.exchange(0)/1e6/f,game_waits.exchange(0)/f,poolreset::ov_wait_ns/1e6/f,poolreset::ov_fence_ns/1e6/f,
+             ff[0]/f,ff[1]/f,ff[2]/f,ff[3]/f,guard_mode,flush_defer/f,flush_forced/f,ff[4]/f,ff[5]/f,flush_drop/f,flush_stale/f,ring_ns/1e6/f,ring_waits/f);
     window_t0=now;frames=0;translate_ns=gpu_ns=gpu_spans=gap_ns=gap_max=gaps=pairs=submits=behind=flushes=flush_behind=flush_empty=side=0;poolreset::ov_wait_ns=poolreset::ov_fence_ns=0;
+    flush_defer=flush_forced=flush_drop=flush_stale=ring_ns=ring_waits=0;   // [fence-flush]
 }
 }
 void fold_completion_wait_stats(){
@@ -1113,7 +1133,7 @@ void retire_slot(Slot &s){
     poolreset::finish_fence(s);   // [TL2 #4] split: the pool reset may still run; recording_slot waits for it before reuse
     {CPU_SCOPE(Fence);bool busy=vkGetFenceStatus(cfg.device,s.fence)==VK_NOT_READY;uint64_t b0=busy?timing_clock():0;
      VK(vkWaitForFences(cfg.device,1,&s.fence,VK_TRUE,std::max<uint64_t>(cfg.fence_timeout_ns,10000000000ull)));
-     if(busy){block_ns[sync_site]+=timing_clock()-b0;++block_calls[sync_site];}}
+     if(busy){const uint64_t w=timing_clock()-b0;block_ns[sync_site]+=w;++block_calls[sync_site];if(sync_site==SITE_RING){overlap::ring_ns+=w;++overlap::ring_waits;}}}   // [fence-flush] ring_ms
     ++perf.waits;
     if(s.prof){
         s.prof=false;
@@ -1251,7 +1271,7 @@ void submit_slots(bool wait){
             VK(vkEndCommandBuffer(s.pro));cbs[0]=s.pro;cbs[1]=s.cmd;ncb=2;s.pro_ops.clear();}
         VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};si.commandBufferCount=ncb;si.pCommandBuffers=cbs;
         {const Slot &o=slots[slot_index^1];const bool behind=o.pending && vkGetFenceStatus(cfg.device,o.fence)==VK_NOT_READY;   // [TL2 #4] NVN PERF overlap: the GPU still runs the previous slot
-         ++overlap::submits;overlap::behind+=behind;if(sync_site==SITE_FLUSH){++overlap::flushes;overlap::flush_behind+=behind;}}
+         ++overlap::submits;overlap::behind+=behind;if(sync_site==SITE_FLUSH){++overlap::flushes;overlap::flush_behind+=behind;}else if(overlap::pending.exchange(0))++overlap::flush_drop;}   // [fence-flush] a held flush went with this submit
         ptq::before_submit();{CPU_SCOPE(Submit);VK(ptq::submit(cfg.queue,1,&si,s.fence));}++submit_by[sync_site];poolreset::queue(s);crumbs::submitted();
         s.recording=false;s.pending=true;s.covers=submitted;s.serial=slot_serial;s.hud_frame=hud::frame.load(std::memory_order_relaxed);slot_index^=1;++perf.submits;snapshot_reset();++slot_serial;
         pending_events.insert(pending_events.end(),recording_events.begin(),recording_events.end());recording_events.clear();
@@ -7808,10 +7828,16 @@ static void xbg_submit_now(int n,const uint64_t *handles){std::lock_guard<std::r
 // [TL2 #4] DM_NVN_FENCE_FLUSH (hle_nvn.c nvnQueueFenceSync with FLUSH_FOR_CPU): as a Switch queue flush, the translated work starts on
 // the GPU now, queued behind the slot that still runs; nothing waits. The next recording_slot() reuses the other slot, whose frame the
 // game itself waits for (TL2: SyncWait on frame N-1 before it presents N and records N+1); the present goes to pside.
-static void xbg_flush_now(){std::lock_guard<std::recursive_mutex> lock(mutex);if(!initialized || failed)return;
-    const Slot &cur=slots[slot_index];if(!cur.recording || !cur.ops){++overlap::flush_empty;return;}
-    SiteScope site(SITE_FLUSH);submit_slots(false);}
-extern "C" void xbg_game_flush(void){if(!gfx_async){xbg_flush_now();return;}gfx_enqueue([]{xbg_flush_now();});}
+// [fence-flush] DM_NVN_FENCE_FLUSH_GUARD (overlap::guard): hold a flush whose hand-off would make the next recording_slot wait for the GPU
+// (the other slot still runs) or that would be a second cut this frame, unless a game thread waits (force). Returns 1 when held.
+static int xbg_flush_now(int force){std::lock_guard<std::recursive_mutex> lock(mutex);if(!initialized || failed)return 0;
+    const Slot &cur=slots[slot_index];if(!cur.recording || !cur.ops){if(force)++overlap::flush_stale;else ++overlap::flush_empty;overlap::pending=0;return 0;}
+    if(!force && overlap::guard()){const Slot &o=slots[slot_index^1];
+        if(overlap::frame_flushes || (o.pending && vkGetFenceStatus(cfg.device,o.fence)==VK_NOT_READY)){++overlap::flush_defer;overlap::pending=1;return 1;}}
+    overlap::flush_forced+=force?1:0;++overlap::frame_flushes;overlap::pending=0;
+    SiteScope site(SITE_FLUSH);submit_slots(false);return 0;}
+extern "C" int xbg_game_flush(int force){if(!gfx_async)return xbg_flush_now(force);gfx_enqueue([force]{xbg_flush_now(force);});return 0;}
+extern "C" int xbg_game_flush_pending(void){return overlap::pending.load();}
 extern "C" uint64_t xbg_legacy_last_fence(){return gfx_async?gfx_enqueued.load():[]{std::lock_guard<std::recursive_mutex> lock(mutex);return submitted;}();}
 extern "C" int xbg_legacy_wait(uint64_t fence,uint64_t timeout){
     struct GameWait{uint64_t t0;~GameWait(){if(t0){overlap::game_wait_ns.fetch_add(timing_clock()-t0,std::memory_order_relaxed);overlap::game_waits.fetch_add(1,std::memory_order_relaxed);}}}game_wait{timeout?timing_clock():0};   // [TL2 #4] NVN PERF overlap game_wait_ms
