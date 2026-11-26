@@ -696,6 +696,7 @@ public class DmActivity extends Activity implements SurfaceHolder.Callback, Disp
         }
         started = true;
         GameStateHint.install(this, resumed);   // [game-state] GameManager.setGameState from the native loading / scene state (API 33)
+        PaceVote.install(this, resumed);        // [pace-vote] the window's display mode follows the frame cap (30 -> 60 Hz)
         if (touchOverlay != null) touchOverlay.setInputEnabled(true);
         drivers.gameStarted(view, () -> { if (updates != null) updates.start(); });   // [front] VkDrivers: the notice from this launch's driver check, then the crash guard / fallback watch; [TL2] the update check after the first frames
         nativeFocus(3);

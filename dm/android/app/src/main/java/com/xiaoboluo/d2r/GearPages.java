@@ -14,6 +14,7 @@ import java.util.ArrayList;
 // applyDoomSettings (same prefs, same environment, same texts), plus the generic parts other ports had (Switch mode, picture shape, menu
 // language: XC2 / Diablo III / XC3). A port lists the ones it wants in GearHost.gearSections, in its order, between its own sections:
 //   fpsLimit       frame rate limit 30 / 60 / 90 / 120 (GearDisplay; DM_PRESENT_MAX_HZ, + mirrors like DOOM's DM_DOOM_TICK_MAX)   next launch
+//                  ([pace-vote] up to 60 and no mirrors: immediately, PaceVote.setCap)
 //   renderScale    3D resolution as a fraction (pref "res"; DOOM / Eternal: DM_DOOM_RES)                                          next launch
 //   sharpen        FSR RCAS sharpening (DM_GFX_SHARPEN, vulkan_present.cpp)                                                       next launch
 //   upscale        GSR upscale to the screen (DM_GFX_UPSCALE=gsr; only DOOM 2016's vulkan_present.cpp has it so far)              next launch
@@ -37,15 +38,23 @@ final class GearPages {
     static GearSettings.Section fpsLimit(int[] limits, int def, String... mirrorEnv) {
         return new GearSettings.Section() {
             final ArrayList<Integer> lims = new ArrayList<>(); RadioGroup g;
+            // [pace-vote] a cap up to 60 applies live (PaceVote.setCap -> the pacer and the window's vote); above 60 needs the display mode
+            // asked at start (GearDisplay.applyDisplayMode) and mirrors are read at start: those stay "next launch"
+            boolean live() { return mirrorEnv.length == 0 && !lims.isEmpty() && lims.get(lims.size() - 1) <= 60; }
             public void build(GearSettings s, LinearLayout box) {
                 for (int l : limits) if (GearDisplay.fpsLimitAvailable(s.a, l)) lims.add(l);
                 String[] labels = new String[lims.size()]; int at = 0, cur = GearDisplay.fpsLimit(s.a, s.gamePrefs(), limits, def);
                 for (int i = 0; i < labels.length; i++) { labels[i] = String.valueOf(lims.get(i)); if (lims.get(i) == cur) at = i; }
-                s.heading(box, s.whenKey("gear_fps_limit", false));
+                s.heading(box, s.whenKey("gear_fps_limit", live()));
                 g = s.radios(box, labels, at, true);
                 if (!lims.isEmpty() && lims.get(lims.size() - 1) > 60) s.text(box, s.s("gear_fps_note"));
             }
-            public void save(GearSettings s, SharedPreferences.Editor game, SharedPreferences.Editor pad) { if (!lims.isEmpty()) game.putInt("fps_limit", lims.get(GearSettings.picked(g))); }
+            public void save(GearSettings s, SharedPreferences.Editor game, SharedPreferences.Editor pad) {
+                if (lims.isEmpty()) return;
+                int was = GearDisplay.fpsLimit(s.a, s.gamePrefs(), limits, def), now = lims.get(GearSettings.picked(g));
+                game.putInt("fps_limit", now);
+                if (live() && now != was) PaceVote.setCap(now);   // [pace-vote] only on a real change
+            }
             public void env(GearSettings s) throws ErrnoException {
                 int lim = GearDisplay.fpsLimit(s.a, s.gamePrefs(), limits, def);
                 Os.setenv("DM_PRESENT_MAX_HZ", String.valueOf(lim), true);
