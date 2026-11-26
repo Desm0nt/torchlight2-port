@@ -12,6 +12,8 @@
 #include "xbg_game_internal.h"
 #include "xbg_cpu_timing.h"
 #include "xbg_completion_wait.h"
+#define XBG_CB_BARRIER_REPORT 1   // [pc] pvr-cb-barrier: its decision goes to boot.log through pc_note
+#include "xbg_cb_barrier.h"   // [pvr-cb-barrier] FN-63: optional full barrier at the start of every primary command buffer (port-common)
 #ifdef DM_COMPLETION_WAIT_SELFTEST
 extern "C" int xbg_completion_wait_selftest(char *report,size_t bytes);
 #endif
@@ -40,6 +42,9 @@ extern "C" int xbg_completion_wait_selftest(char *report,size_t bytes);
 #include "xbg_pass_values_spv.h"
 #include "xbg_bc_gpu.h"
 #include "xbg_bc_decode_spv.h"
+#include "xbg_bc_astc.h"   // [nonadreno] bc-astc-gpu: GPU-decoded BC stored as ASTC 4x4 (port-common/modules/bc-astc-gpu)
+#include "xbg_bc_astc_tables.h"
+#include "xbg_bc_astc_encode_spv.h"
 #include "xbg_spirv_quad.h"
 #include "xbg_spirv_lone.h"
 #include "xbg_spirv_gscull.h"
@@ -700,7 +705,8 @@ inline bool ab_off(const char *name){return ab_period>0 && !ab_frame_on && !strc
 bool ab_enabled(){if(ab_period<=0)return true;ab_on=((std::chrono::steady_clock::now().time_since_epoch().count()/1000000000ll/ab_period)&1)==0;return ab_on;}
 // [nonadreno] One GPU BC decode batch (issue #6; BcUpload / bcgpu): input = region table + raw blocks in a stream-arena range, copied
 // into bcgpu's input buffer, decoded by xbg_bc_decode.comp into bcgpu's output buffer, then copied into the image (copies: offsets in it).
-struct BcJob{VkBuffer buffer;VkDeviceSize offset,size;VkPipeline pipeline;uint32_t regions,blocks,bpp,block_words;VkImage image;std::vector<VkBufferImageCopy> copies;};
+struct BcAstcOut;   // [nonadreno] bc-astc-gpu: astc = the ASTC encoder (image stored as ASTC 4x4, xbg_bc_astc.inc), astc_flags its push flags, astc_out the [hook] sink readback
+struct BcJob{VkBuffer buffer;VkDeviceSize offset,size;VkPipeline pipeline;uint32_t regions,blocks,bpp,block_words;VkImage image;std::vector<VkBufferImageCopy> copies;VkPipeline astc{};uint32_t astc_flags=0;std::shared_ptr<BcAstcOut> astc_out{};};
 namespace bcgpu{void record(VkCommandBuffer cmd,const BcJob &job);}
 struct Slot {
     bool reset_queued=false,reset_busy=false;VkResult reset_result=VK_SUCCESS;   // poolreset: a reset job was queued for this submission / still runs (under poolreset::mu)
@@ -1175,7 +1181,7 @@ Slot &recording_slot(){
         s.readback.cached=readback_cached;
         if(!s.fence){VkFenceCreateInfo f{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};VK(vkCreateFence(cfg.device,&f,nullptr,&s.fence));}
         if(!s.timestamps && timestamp_bits){VkQueryPoolCreateInfo q{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};q.queryType=VK_QUERY_TYPE_TIMESTAMP;q.queryCount=2;VK(vkCreateQueryPool(cfg.device,&q,nullptr,&s.timestamps));}
-        bind_cache_reset();if(s.pool){if(s.reset_queued){poolreset::finish(s);s.reset_queued=false;if(s.reset_result==VK_TIMEOUT)xbg_fatalf("The GPU did not finish this slot's work within %llu ms (fence wait timed out), so the device is hung",(unsigned long long)(std::max<uint64_t>(cfg.fence_timeout_ns,10000000000ull)/1000000ull));else VK(s.reset_result);}else VK(vkResetCommandPool(cfg.device,s.pool,0));}else{VK(vkResetCommandBuffer(s.cmd,0));if(s.pro)VK(vkResetCommandBuffer(s.pro,0));}VkCommandBufferBeginInfo b{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};b.flags=VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;VK(vkBeginCommandBuffer(s.cmd,&b));
+        bind_cache_reset();if(s.pool){if(s.reset_queued){poolreset::finish(s);s.reset_queued=false;if(s.reset_result==VK_TIMEOUT)xbg_fatalf("The GPU did not finish this slot's work within %llu ms (fence wait timed out), so the device is hung",(unsigned long long)(std::max<uint64_t>(cfg.fence_timeout_ns,10000000000ull)/1000000ull));else VK(s.reset_result);}else VK(vkResetCommandPool(cfg.device,s.pool,0));}else{VK(vkResetCommandBuffer(s.cmd,0));if(s.pro)VK(vkResetCommandBuffer(s.pro,0));}VkCommandBufferBeginInfo b{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};b.flags=VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;VK(xbg_cb_begin(s.cmd,&b,properties.vendorID));
         if(s.timestamps){vkCmdResetQueryPool(s.cmd,s.timestamps,0,2);vkCmdWriteTimestamp(s.cmd,VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,s.timestamps,0);}
         s.recording=true;s.ops=0;if(mid_chunk_ns)slot_rec_begin=timing_clock();
         const uint64_t frame=stats.presents.load()+1;
@@ -1217,7 +1223,7 @@ void submit_slots(bool wait){
         VkCommandBuffer cbs[2]{s.cmd,VK_NULL_HANDLE};uint32_t ncb=1;
         if(!s.pro_ops.empty() || !s.pro_images.empty()){
             if(!s.pro){VkCommandBufferAllocateInfo pa{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};pa.commandPool=s.pool?s.pool:command_pool;pa.level=VK_COMMAND_BUFFER_LEVEL_PRIMARY;pa.commandBufferCount=1;VK(vkAllocateCommandBuffers(cfg.device,&pa,&s.pro));}
-            VkCommandBufferBeginInfo pb{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};pb.flags=VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;VK(vkBeginCommandBuffer(s.pro,&pb));
+            VkCommandBufferBeginInfo pb{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};pb.flags=VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;VK(xbg_cb_begin(s.pro,&pb,properties.vendorID));
             // Earlier submissions first (the other slot still reads these ranges), then the copies, then this submission.
             VkMemoryBarrier before{VK_STRUCTURE_TYPE_MEMORY_BARRIER};before.srcAccessMask=VK_ACCESS_MEMORY_READ_BIT|VK_ACCESS_MEMORY_WRITE_BIT;before.dstAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT;
             vkCmdPipelineBarrier(s.pro,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT,0,1,&before,0,nullptr,0,nullptr);
@@ -1914,6 +1920,7 @@ struct Image {
     VkImageAspectFlags aspects{};VkImageUsageFlags usage{};uint32_t width{},height{},depth=1,levels{},layers{},bpp{};VkSampleCountFlagBits samples=VK_SAMPLE_COUNT_1_BIT;bool uploaded=false,gpu_written=false,decoded=false,mutable_format=false;VkImageCreateInfo create{}; // create: as created (no pNext), for upgrade_mutable
     bool sampled_ever=false,storage_dirty=false;uint64_t storage_write=0,prior_write=0;std::vector<VkFormat> view_formats;   // formats listed at the mutable upgrade (empty: no list, any format)
     bool subst=false;int64_t subst_bytes=0;   // [nonadreno] ASTC overlay: created in the substitute format of its BC format (bc_store BC_SUBST), blocks uploaded as they are
+    bool bc_astc=false;     // [nonadreno] bc-astc-gpu (DM_GFX_BC_ASTC): decoded on the GPU and stored as ASTC 4x4 (fmt), decided at creation (xbg_bc_astc.inc)
     int pack=-1;int64_t pack_bytes=0,pack_rgba=0;VkFormat pack_unorm{},pack_srgb{};XbgAcEntry pack_e{};   // [TL2] made from the ASTC texture cache (pack >= 0 = its source; pack_e: its entry, a copy: the index grows while playing)
        // [DOOM] storage-only images (VT feedback) need no barrier between draws
     uint64_t cpu_hash=0,checked_submission=UINT64_MAX,last_write=0;uint32_t stable_checks=0;int64_t mem_bytes=0,bc_bytes=0,bc_data=0,dec_bytes=0,dec_native=0;bool bc_first_done=false;   // dec_*: decoded BC (decoded_bytes_live); bc_first_done: first full upload counted (bct_first_*)
@@ -1939,7 +1946,7 @@ struct Image {
         if(decoded){
             need(xbg_bc_view_compatible(source.d.format,v->format),"BC texture view must retain compression and signedness");
             xbg_bc_format info;need(xbg_bc_format_info(v->format,&info)==0,"Invalid BC view format");
-            return decoded_format(info.pixels);
+            return bc_astc?xbg_bc_astc_vk_format(v->format):decoded_format(info.pixels);   // [nonadreno] bc-astc-gpu: UNORM / sRGB ASTC 4x4
         }
         if(pack>=0){   // [TL2] ASTC texture cache: the UNORM / sRGB partner of the entry's block format; anything else is logged, own format
             if(xbg_bc_view_compatible(source.d.format,v->format))return xbg_ac_srgb(v->format)?pack_srgb:pack_unorm;
@@ -2508,6 +2515,8 @@ int bc_partial_flag=-1;size_t bc_batch=0;
 bool bc_partial_on(){if(bc_partial_flag<0){const char *e=getenv("DM_GFX_BC_PARTIAL");bc_partial_flag=e?atoi(e)!=0:1;}return bc_partial_flag!=0;}
 size_t bc_batch_bytes(){if(!bc_batch){const char *e=getenv("DM_GFX_BC_BATCH_MB");long mb=e?atol(e):32;if(mb<4)mb=4;if(mb>128)mb=128;bc_batch=size_t(mb)<<20;}return bc_batch;}
 namespace bcgpu{bool prepare();VkPipeline pipeline(uint32_t fmt,uint32_t opt);size_t in_cap();size_t out_cap();void shutdown();void prewarm();}
+namespace bcastc{VkFormat image_format(const tex_t *t,VkSampleCountFlagBits samples);void note_image(const Image &im,const tex_t *t);VkPipeline pipeline();void attach_out(BcJob &j,uint64_t serial,uint32_t fmt);void record(VkCommandBuffer cmd,const BcJob &j,bool full);void shutdown();const char *report(int store,int *on);}   // [nonadreno] bc-astc-gpu (xbg_bc_astc.inc, after bcgpu)
+extern "C" void pc_note(const char *id,int applied,const char *fmt,...);   // [pc]
 // Once, at the first decoded texture: the decoder (DM_GFX_BC_DECODE), E5B9G9R9 for unsigned BC6H (DM_GFX_BC6_E5) and the log line.
 void bc_decode_init(){
     if(bc_mode>=0)return;
@@ -2573,12 +2582,15 @@ struct BcUpload {
     uint32_t fmt,bw=1,bh=1,block_bytes,bpp,opt=0;size_t cap;
     std::vector<uint8_t> data;std::vector<VkBufferImageCopy> copies;XbgBcGpuBatch gpu;VkPipeline pipe{};
     size_t bytes=0,raw_bytes=0,out_bytes=0;unsigned batches=0,rects=0;
+    VkPipeline enc{};   // [nonadreno] bc-astc-gpu: the ASTC encoder of an ASTC-stored image (GPU decode only), null otherwise
+    bool partial=false;   // [nonadreno] bc-astc-gpu: set by bcastc::copy_from_buffer (D16 has it for DM_GFX_BC_VERIFY; TL2 has no bcv, only the module sets it)
     BcUpload(Image &i,const tex_t *tex,bool prologue):im(i),t(tex),pro(prologue),fmt(tex->d.format),cap(bc_batch_bytes()){
         int w=1,h=1;const int b=nvn_fmt_bpb(fmt,&w,&h);bw=uint32_t(std::max(w,1));bh=uint32_t(std::max(h,1));
         if(!im.decoded){block_bytes=bpp=im.bpp;return;}
         need(b==8 || b==16,"BC block size");block_bytes=uint32_t(b);bpp=im.bpp;opt=(xbg_bc_8bit_channels && (fmt==0x49 || fmt==0x4b)?1u:0u)|(xbg_bc6_e5 && fmt==0x50?2u:0u);   // only where it changes the output: one pipeline per format
         mode=bc_mode==2?2:1;
         if(mode==2){pipe=bcgpu::pipeline(fmt,opt);if(!pipe){mode=1;static bool told=false;if(!told){told=true;xbg_logf("NVN BC decode: no GPU pipeline for fmt=%#x opt=%u, decoding on the CPU",fmt,opt);}}}
+        if(im.bc_astc){need(mode==2,"bc-astc-gpu: ASTC-stored BC texture without its GPU decode pipeline");enc=bcastc::pipeline();need(enc!=VK_NULL_HANDLE,"bc-astc-gpu: ASTC encoder missing");}   // [nonadreno] bc-astc-gpu: never CPU-decoded RGBA8
     }
     // One block rectangle of a subresource: nbx x nby blocks x nz slices, tight rows of raw blocks (as nvn_deswizzle writes them), to
     // the pixel rectangle (x, y, z) w x h x d of level / layer. The one entry point of a BC upload, full or partial: the planned ASTC
@@ -2591,7 +2603,7 @@ struct BcUpload {
         if(mode==2){
             if(!gpu.fits(raw_n,out_n,bcgpu::in_cap(),bcgpu::out_cap(),16384,size_t(properties.limits.maxComputeWorkGroupCount[0])*64,uint32_t(n)))flush();
             need(raw_n+16384*32<=bcgpu::in_cap() && out_n<=bcgpu::out_cap(),"BC decode rectangle exceeds the GPU scratch");
-            c.bufferOffset=gpu.add(raw,nbx,nby,nz,block_bytes,bpp);copies.push_back(c);return;}
+            {const uint32_t first=gpu.blocks;const size_t o=gpu.add(raw,nbx,nby,nz,block_bytes,bpp);c.bufferOffset=enc?size_t(first)*16:o;}copies.push_back(c);return;}   // [nonadreno] bc-astc-gpu: ASTC blocks at first block * 16
         size_t at=(data.size()+15)&~size_t(15);
         if(!data.empty() && at+out_n>cap){flush();at=0;}
         data.resize(at+out_n);c.bufferOffset=at;copies.push_back(c);
@@ -2605,6 +2617,7 @@ struct BcUpload {
         Buffer staging;
         if(mode==2){staging=stream_buffer(gpu.input_bytes(),nullptr,0,false);gpu.write_input(staging.mapped);staging.flush();bytes+=gpu.input_bytes();
             BcJob j{staging.buffer,staging.offset,VkDeviceSize(gpu.input_bytes()),pipe,uint32_t(gpu.regions()),gpu.blocks,bpp,block_bytes/4,im.image,std::move(copies)};
+            if(enc){j.astc=enc;j.astc_flags=xbg_bc_astc_flags(fmt);bcastc::attach_out(j,t->serial,fmt);}   // [nonadreno] bc-astc-gpu
             ++bcw_gpu_batches;bcw_gpu_blocks+=gpu.blocks;gpu.clear();copies.clear();
             if(pro){Slot &s=recording_slot();s.pro_images.push_back({im.image,im.layout,im.aspects,im.levels,im.layers,VK_NULL_HANDLE,{}});im.layout=VK_IMAGE_LAYOUT_GENERAL;s.pro_bc.push_back(std::move(j));}
             else{Commands c;im.transition(c.command,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);bcgpu::record(c.command,j);im.transition(c.command,VK_IMAGE_LAYOUT_GENERAL);c.finish();}
@@ -2772,6 +2785,8 @@ Image &get_image_slow(const tex_t *t,bool upload){CPU_SCOPE(Image);
         else if(p->subst){const char *kept=nullptr;p->fmt=astc_ov_format(t,t->L.layers,&kept);p->bpp=t->L.bpb;}   // [nonadreno] ASTC overlay: same block size, blocks as they are
         else if(pack){p->pack=pack_e.pad[0];p->pack_e=pack_e;p->pack_unorm=xbg_ac_format(pack_e.bw,pack_e.bh,0x44);p->pack_srgb=xbg_ac_format(pack_e.bw,pack_e.bh,0x48);p->fmt=xbg_ac_format(pack_e.bw,pack_e.bh,t->d.format);p->bpp=16;}   // [TL2]
         else {p->fmt=format(t->d.format);p->bpp=t->L.bpb;if(t->d.format==0x32 && depth16_as_d24)p->fmt=VK_FORMAT_X8_D24_UNORM_PACK32;}
+        if(p->decoded){const VkFormat af=bcastc::image_format(t,p->samples);if(af!=VK_FORMAT_UNDEFINED){p->fmt=af;p->bc_astc=true;}}   // [nonadreno] bc-astc-gpu: BC1 / BC2 / BC3 / BC7 on the GPU decode path -> ASTC 4x4 (TL2: a cache hit is BC_NOT, never decoded)
+        {int on=0;if(const char *why=bcastc::report(int(store),&on))pc_note("bc-astc-gpu",on,"%s",why);}   // [pc]
         VkFormatProperties fp;vkGetPhysicalDeviceFormatProperties(cfg.physical,p->fmt,&fp);
         VkImageUsageFlags usage=VK_IMAGE_USAGE_TRANSFER_SRC_BIT|VK_IMAGE_USAGE_TRANSFER_DST_BIT;
         if(fp.optimalTilingFeatures&VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT)usage|=VK_IMAGE_USAGE_SAMPLED_BIT;
@@ -2806,6 +2821,7 @@ Image &get_image_slow(const tex_t *t,bool upload){CPU_SCOPE(Image);
         VK(vkCreateImage(cfg.device,&ci,nullptr,&p->image));p->create=ci;VkMemoryRequirements r;vkGetImageMemoryRequirements(cfg.device,p->image,&r);
         p->mem_bytes=int64_t(r.size);image_bytes_live+=p->mem_bytes;if(xbg_bc_format_info(t->d.format,&info)==0){p->bc_bytes=p->mem_bytes;p->bc_data=int64_t(t->L.size);bc_image_bytes_live+=p->bc_bytes;bc_data_bytes_live+=p->bc_data;}
         if(p->decoded){p->dec_bytes=p->mem_bytes;p->dec_native=int64_t(t->L.size);decoded_bytes_live+=p->dec_bytes;decoded_native_live+=p->dec_native;bc_vram_note(*p,t);}
+        if(p->bc_astc)bcastc::note_image(*p,t);   // [nonadreno] bc-astc-gpu
         if(p->pack>=0){p->pack_bytes=p->mem_bytes;astc_cache_bytes_live+=p->pack_bytes;p->pack_rgba=astccache::rgba_bytes(*p);astc_cache_rgba_live+=p->pack_rgba;}   // [TL2]
         if(p->subst){p->subst_bytes=p->mem_bytes;astc_ov_bytes_live+=p->subst_bytes;astc_ov_note(t,p->layers,nullptr,p->fmt);}   // [nonadreno] ASTC overlay
         else if(astc_ov_mask && store!=BC_NOT){const char *kept=nullptr;astc_ov_format(t,t->L.layers,&kept);if(kept)astc_ov_note(t,p->layers,kept,VK_FORMAT_UNDEFINED);}
@@ -3502,7 +3518,8 @@ const std::array<Shader*,6> &program_shaders(const prog_t *prog){
 } // namespace
 
 extern "C" void xbg_logf(const char *fmt,...){CPU_SCOPE(Log);char text[1024];va_list a;va_start(a,fmt);vsnprintf(text,sizeof(text),fmt,a);va_end(a);if(cfg.log)cfg.log(cfg.userdata,text);else fprintf(stderr,"[xbg] %s\n",text);}
-extern "C" __attribute__((noreturn)) void xbg_fatalf(const char *fmt,...){va_list a;va_start(a,fmt);vsnprintf(error_text,sizeof(error_text),fmt,a);va_end(a);failed=true;xbg_logf("FATAL: %s",error_text);crumbs::report("fatal");if(cfg.fatal)cfg.fatal(cfg.userdata,error_text);abort();}
+#include "xbg_device_fault.h"   // [device-fault] FN-64: the driver's report of a lost device (port-common device-fault)
+extern "C" __attribute__((noreturn)) void xbg_fatalf(const char *fmt,...){va_list a;va_start(a,fmt);vsnprintf(error_text,sizeof(error_text),fmt,a);va_end(a);failed=true;xbg_logf("FATAL: %s",error_text);if(xbg_device_fault_text(error_text))xbg_device_fault_report(cfg.device,xbg_logf,"fatal");crumbs::report("fatal");if(cfg.fatal)cfg.fatal(cfg.userdata,error_text);abort();}
 extern "C" int xbg_backend_failed(){return failed;}
 extern "C" const char *xbg_game_last_error(){return error_text;}
 extern "C" int xbg_device_integer(int p,int *out){
@@ -6219,6 +6236,7 @@ void shutdown(){
     if(layout)vkDestroyPipelineLayout(cfg.device,layout,nullptr);if(set_layout)vkDestroyDescriptorSetLayout(cfg.device,set_layout,nullptr);
     for(VkBuffer b:{in_buf,out_buf})if(b)vkDestroyBuffer(cfg.device,b,nullptr);for(VkDeviceMemory m:{in_mem,out_mem})if(m)vkFreeMemory(cfg.device,m,nullptr);
     if(kat_pool)vkDestroyCommandPool(cfg.device,kat_pool,nullptr);if(kat_fence)vkDestroyFence(cfg.device,kat_fence,nullptr);kat_pool={};kat_fence={};kat_cb={};
+    bcastc::shutdown();   // [nonadreno] bc-astc-gpu
     in_buf=out_buf={};in_mem=out_mem={};module={};pool={};layout={};set_layout={};set={};in_bytes=out_bytes=0;tried=ok=false;
 }
 bool make_buffer(size_t n,VkBuffer &b,VkDeviceMemory &m){
@@ -6270,7 +6288,7 @@ bool selftest(VkPipeline pipe,uint32_t fmt,uint32_t opt){
     if(!kat_cb){VkCommandBufferAllocateInfo ca{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};ca.commandPool=kat_pool;ca.level=VK_COMMAND_BUFFER_LEVEL_PRIMARY;ca.commandBufferCount=1;
         if(vkAllocateCommandBuffers(cfg.device,&ca,&kat_cb)!=VK_SUCCESS){kat_cb={};arena.release();return true;}}
     VkCommandBuffer cb=kat_cb;vkResetCommandBuffer(cb,0);
-    VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};bi.flags=VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;vkBeginCommandBuffer(cb,&bi);
+    VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};bi.flags=VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;xbg_cb_begin(cb,&bi,properties.vendorID);
     VkMemoryBarrier mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER};mb.srcAccessMask=VK_ACCESS_MEMORY_WRITE_BIT;mb.dstAccessMask=VK_ACCESS_MEMORY_READ_BIT|VK_ACCESS_MEMORY_WRITE_BIT;
     auto full=[&]{vkCmdPipelineBarrier(cb,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,0,1,&mb,0,nullptr,0,nullptr);};
     full();VkBufferCopy c{st.offset,0,in_b};vkCmdCopyBuffer(cb,st.buffer,in_buf,1,&c);full();
@@ -6384,10 +6402,17 @@ void record(VkCommandBuffer cmd,const BcJob &j){
     const uint32_t push[4]={j.regions,j.blocks,j.bpp,j.block_words};
     vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,j.pipeline);vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,layout,0,1,&set,0,nullptr);
     vkCmdPushConstants(cmd,layout,VK_SHADER_STAGE_COMPUTE_BIT,0,sizeof(push),push);vkCmdDispatch(cmd,(j.blocks+63)/64,1,1);
+    if(j.astc){bcastc::record(cmd,j,full);return;}   // [nonadreno] bc-astc-gpu: encode, then the ASTC blocks into the image
     step_barrier(cmd,full,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_SHADER_WRITE_BIT,VK_ACCESS_TRANSFER_READ_BIT);
     vkCmdCopyBufferToImage(cmd,out_buf,j.image,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,uint32_t(j.copies.size()),j.copies.data());
 }
 }
+// [nonadreno] bc-astc-gpu tree shims (TL2: no record thread / drvc / pt_mode; migration/bc-astc-gpu.md)
+#define XBG_BCA_CMD(f) vkCmd##f
+#define XBG_BCA_SYNC()
+#define XBG_BCA_SUBMIT(si,fence) ptq::submit(cfg.queue,1,&(si),(fence))   // present-thread queue lock (as bcgpu::selftest)
+#define XBG_BCA_MODULE_LOCK gpguard::ModuleLock serial;
+#include "xbg_bc_astc.inc"   // [nonadreno] bc-astc-gpu: namespace bcastc (encoder, self-test, decisions)
 namespace bright {
 bool enabled=true,failed=false;uint64_t applied=0;float last_k=1;
 VkDescriptorSetLayout set_layout{};VkPipelineLayout layout{};VkPipeline pipeline{};VkSampler sampler{};VkDescriptorPool pool{};
@@ -6709,6 +6734,7 @@ void copy_texture_buffer(const p_copy_b2t &request,bool to_buffer){preflight_cpu
         size_t bytes=size_t(p.r.width)*p.r.height*p.r.depth*im.bpp;
         if(!im.gpu_written && !(p.tex->d.flags&0x10)){invalidate_cpu_range(uint64_t(uintptr_t(p.tex->mem)),p.tex->L.size);
             if(guest_texture_write(p.tex,level,layer,p.r,reinterpret_cast<const uint8_t*>(p.src),row,image)){im.uploaded=false;im.checked_submission=UINT64_MAX;return;}}
+        if(im.bc_astc){bcastc::copy_from_buffer(im,p.tex,level,layer,p.r,reinterpret_cast<const uint8_t*>(p.src),row,image);im.gpu_written=true,provenance_write(im,__LINE__);return;}   // [nonadreno] bc-astc-gpu: GPU decode + encode, no RGBA8
         need(bytes<=256ull*1024*1024,"Decoded BC staging exceeds memory bound");std::vector<uint8_t> decoded(bytes);
         int result=xbg_decode_bc_linear(p.tex->d.format,p.r.width,p.r.height,p.r.depth,reinterpret_cast<const void*>(p.src),source_bytes,row,image,decoded.data(),decoded.size());
         if(result)xbg_fatalf("NVN BC staging decode failed format=%#x level=%u result=%d",p.tex->d.format,level,result);
@@ -6805,6 +6831,7 @@ void copy_texture(const p_copy_t2t &p){preflight_cpu_reads();Image &s=get_image(
             (unsigned long long)p.src->serial,p.src->d.format,int(s.subst),(unsigned long long)p.dst->serial,p.dst->d.format,int(d.subst));
         return;
     }
+    const int astc_route=bcastc::copy_route(s,d);if(astc_route==2)return;   // [nonadreno] bc-astc-gpu: 1 = ASTC 4x4 blocks into an ASTC-stored image, 2 = ASTC / RGBA8 mix skipped
     // 已知ASTC-pack源是ASTC4x4，目的BC3及既有RGBA BC目标从建图起解码，不迁移已有内容。
     // Known ASTC-pack sources use ASTC4x4; BC3 and existing RGBA BC destinations are decoded at creation without migrating contents.
     if(!s.decoded && d.decoded && s.fmt>=VK_FORMAT_ASTC_4x4_UNORM_BLOCK && s.fmt<=VK_FORMAT_ASTC_4x4_SRGB_BLOCK && (d.fmt==VK_FORMAT_R8G8B8A8_UNORM || d.fmt==VK_FORMAT_R8G8B8A8_SRGB)
@@ -6824,7 +6851,7 @@ void copy_texture(const p_copy_t2t &p){preflight_cpu_reads();Image &s=get_image(
         return;
     }
     need(!(s.fmt>=VK_FORMAT_ASTC_4x4_UNORM_BLOCK && s.fmt<=VK_FORMAT_ASTC_12x12_SRGB_BLOCK && d.source.d.format>=0x41 && d.source.d.format<=0x50 && !d.decoded && !d.subst),"ASTC blocks into a native BC texture: the ASTC pack needs decoded BC (marker gfx-native-bc = 0)");
-    if(s.decoded || d.decoded)need(s.decoded && d.decoded && xbg_bc_view_compatible(s.source.d.format,d.source.d.format),"BC texture copy must retain compression and signedness");
+    if((s.decoded || d.decoded) && astc_route!=1)need(s.decoded && d.decoded && xbg_bc_view_compatible(s.source.d.format,d.source.d.format),"BC texture copy must retain compression and signedness");   // [nonadreno] bc-astc-gpu
 #ifdef DM_GAME_DOOM
     // NVN CopyTextureToTexture between different colour formats runs on the 2D engine, which converts texels (DOOM: the
     // RGBA8 Bink frame -> the R11G11B10F scene target). A bit copy there reads RGBA8 bits as small floats (a green screen),
@@ -6892,6 +6919,7 @@ void partial_clear_texture(Image &im,const p_clear_tex &request,uint32_t level,u
 void clear_texture(const p_clear_tex &input){preflight_cpu_reads();
     p_clear_tex p=input;
     Image &im=get_image(p.tex,false);need((uint32_t(p.mask)&~15u)==0,"Invalid texture clear mask");if(!p.mask)return;
+    if(im.bc_astc){bcastc::clear_skipped(im);return;}   // [nonadreno] bc-astc-gpu: no clear of compressed images
     uint32_t level=p.has_view&&p.view.set_levels?p.view.base_level:0,layer=p.has_view&&p.view.set_layers?p.view.min_layer:0;
     region_check(im,level,layer,p.r);uint32_t w=std::max(1u,im.width>>level),h=std::max(1u,im.height>>level);
     need(p.is_uint>=0 && p.is_uint<=2,"Invalid texture clear scalar type");int scalar=p.is_uint==2?1:p.is_uint==1?2:0;
@@ -7276,7 +7304,7 @@ VkCommandBuffer begin(){
         VkCommandBufferAllocateInfo a{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};a.commandPool=e.pool;a.level=VK_COMMAND_BUFFER_LEVEL_PRIMARY;a.commandBufferCount=1;VK(vkAllocateCommandBuffers(cfg.device,&a,&e.cmd));
         VkFenceCreateInfo fi{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};VK(vkCreateFence(cfg.device,&fi,nullptr,&e.fence));}
     else if(e.used){VK(vkWaitForFences(cfg.device,1,&e.fence,VK_TRUE,std::max<uint64_t>(cfg.fence_timeout_ns,10000000000ull)));VK(vkResetFences(cfg.device,1,&e.fence));e.used=false;}   // 4 presents old: long done
-    VK(vkResetCommandPool(cfg.device,e.pool,0));VkCommandBufferBeginInfo b{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};b.flags=VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;VK(vkBeginCommandBuffer(e.cmd,&b));
+    VK(vkResetCommandPool(cfg.device,e.pool,0));VkCommandBufferBeginInfo b{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};b.flags=VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;VK(xbg_cb_begin(e.cmd,&b,properties.vendorID));
     // as Commands (non-draw): everything submitted before is complete and visible first (the frame slot ended its pass at submit)
     VkMemoryBarrier mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER};mb.srcAccessMask=VK_ACCESS_MEMORY_WRITE_BIT;mb.dstAccessMask=VK_ACCESS_MEMORY_READ_BIT|VK_ACCESS_MEMORY_WRITE_BIT;
     vkCmdPipelineBarrier(e.cmd,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,0,1,&mb,0,nullptr,0,nullptr);
