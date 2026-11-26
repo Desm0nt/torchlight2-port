@@ -128,6 +128,7 @@
     <string name="folder_set_now">Game folder: %1$s</string>
     <string name="folder_unavailable">The chosen game folder %1$s cannot be used (%2$s). Found automatically and used instead: %3$s</string>
     <string name="tl2_gear_display">Display</string>
+    <string name="tl2_orb_numbers">Show HP / MP numbers by the orb</string>
     <string name="tl2_gear_perf">Performance</string>
     <string name="tl2_gear_controls">Controls</string>
     <string name="tl2_gear_game">Game &amp; system</string>

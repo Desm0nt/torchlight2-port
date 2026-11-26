@@ -178,6 +178,7 @@ static void host_preload(int argc, char **argv) {
     { void dm_tl2_classicon_install(void); dm_tl2_classicon_install(); }   // [TL2] modded classes in the character list (hle_tl2_classicon.c, issue #23)
     { void dm_tl2_lang_install(void); dm_tl2_lang_install(); }   // [TL2] Brazilian Portuguese / Polish text instead of the English fallback (hle_tl2_lang.c, issue #16)
     { void dm_tl2_skilltree_install(void); dm_tl2_skilltree_install(); }   // [TL2] PC-mod classes' skill trees into the console's skill screen (hle_tl2_skilltree.c, issue #6)
+    { void dm_tl2_orbs_install(void); dm_tl2_orbs_install(); }   // [TL2] HP / MP numbers beside the HUD orb (hle_tl2_orbs.c, issue #31)
 #endif
     uint64_t ta = now_ns();
 #ifndef DM_GAME_DOOM   // [DOOM] D2R-only: probes / tick hash (diag.c), target ranking (hle_target.c)

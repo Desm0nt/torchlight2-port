@@ -720,6 +720,22 @@ JNIEXPORT jboolean JNICALL Java_com_xiaoboluo_d2r_DmActivity_nativeTl2ToggleMap(
 #endif
 }
 
+// [TL2] HP / MP numbers beside the HUD orb (hle_tl2_orbs.c, issue #31). out[12]: shown, hp, hp max, mp, mp max, orb x0 y0 x1 y1, text x,
+// line height (picture fractions). Returns 1 shown, 0 hidden / not in game, -1 off (DM_TL2_ORB_NUMBERS=0, other build, check failed).
+// Java: `static native int nativeTl2Orbs(float[] out);` in Tl2OrbNumbers.
+JNIEXPORT jint JNICALL Java_com_xiaoboluo_d2r_Tl2OrbNumbers_nativeTl2Orbs(JNIEnv *env, jclass cls, jfloatArray out) {
+    (void)cls;
+#ifdef DM_GAME_TL2
+    if (!out) return -1;
+    float v[12]; int dm_tl2_orbs(float *out, int n); int r = dm_tl2_orbs(v, 12);
+    jint n = (*env)->GetArrayLength(env, out);
+    (*env)->SetFloatArrayRegion(env, out, 0, n < 12 ? n : 12, v);
+    return r;
+#else
+    (void)env; (void)out; return -1;
+#endif
+}
+
 // [TL2] Button icons (hle_tl2_icons.c): the HUD action bar's slot icons as the game drew them. nativeTl2IconSerial() = change counter
 // (-1 = off); nativeTl2Icons(int[8*64*64] argb, int[8*4] meta) fills both (meta per slot: button code 1 A / 3 B / 2 X / 0 Y / 8 R / 9 ZR /
 // 10 L / 11 ZL, state 0 not yet / 1 icon / 2 nothing bound, 0, 0) and returns the serial.

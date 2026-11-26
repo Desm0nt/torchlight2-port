@@ -126,6 +126,7 @@
     <string name="folder_set_now">Папка игры: %1$s</string>
     <string name="folder_unavailable">Выбранную папку игры %1$s нельзя использовать (%2$s). Вместо неё найдена автоматически: %3$s</string>
     <string name="tl2_gear_display">Экран</string>
+    <string name="tl2_orb_numbers">Цифры здоровья и маны</string>
     <string name="tl2_gear_perf">Производительность</string>
     <string name="tl2_gear_controls">Управление</string>
     <string name="tl2_gear_game">Игра и система</string>

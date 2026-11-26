@@ -60,6 +60,7 @@ public class DmActivity extends Activity implements SurfaceHolder.Callback, Disp
     private DoomPadView doomPad;
     private D3PadView d3Pad;   // [D3] its own on-screen controls (touch / gamepad layouts) instead of doomPad
     private Tl2Textures textures; private boolean texturesAsked;   // [TL2] the on-phone ASTC texture cache (docs/tl2/ASTC_CACHE.md)
+    private Tl2OrbNumbers orbNumbers;   // [TL2] HP / MP numbers beside the HUD orb (issue #31, hle_tl2_orbs.c)
     static native int nativeStart(String filesDir, String extDir, String romfsSrc, String lang);
     // [TL2 stutter] Pipeline warm-up seeds: APK assets warm-seed/<gpu family>.bin (dm/android/tl2/warm-seed, put in by tools/build_apk.ps1) are
     // copied to files/warm-seed before the native start, where the engine merges the one of this GPU family into the phone's own warm-up list
@@ -695,6 +696,10 @@ public class DmActivity extends Activity implements SurfaceHolder.Callback, Disp
             showStartError(resource == 0 ? getString(R.string.dmAndroidStartFailed, result) : (D3 ? d3Ui() : this).getString(resource)); return;
         }
         started = true;
+        if (TL2 && orbNumbers == null) {   // [TL2] right above the game picture, under the pad and the menus (Tl2OrbNumbers; gear row on the Display page)
+            orbNumbers = new Tl2OrbNumbers(this, view, doomPrefs());
+            gameFrame.addView(orbNumbers, gameFrame.indexOfChild(view) + 1, new FrameLayout.LayoutParams(-1, -1));
+        }
         GameStateHint.install(this, resumed);   // [game-state] GameManager.setGameState from the native loading / scene state (API 33)
         PaceVote.install(this, resumed);        // [pace-vote] the window's display mode follows the frame cap (30 -> 60 Hz)
         if (touchOverlay != null) touchOverlay.setInputEnabled(true);

@@ -22,6 +22,7 @@ import java.util.List;
 //   mode            Switch mode = render size (pref handheld, DM_OPMODE 1 / 0; labels show the size for the picked picture shape)   next launch
 //   picture shape   GearPages.pictureShape: 16:9 bars / stretched / widescreen (pref aspect, default 2; DM_TL2_WIDE=<W> from the display)
 //   loading stretch widescreen loading screens stretched (pref tl2_stretch_loading, default off; DM_TL2_WIDE_LOADSTRETCH)            next launch
+//   HP / MP numbers beside the HUD orb (Tl2OrbNumbers, pref tl2_orb_numbers, default on; native kill switch DM_TL2_ORB_NUMBERS=0)      immediately
 //   mods            Tl2Mods: the .MOD list, its own dialog with its own Save (pref tl2_mods; converted at the next start)
 //   layout          D3PadView / Tl2Touch layouts tl2 / tl2_side / gamepad (pad d3_layout, applies when picked) + skill icons (tl2_icons)
 //   touch           Tl2Touch: diagonal correction, second-set modifier, the optional extras (pad tl2_iso / tl2_mod / tl2_tap / tl2_hold_walk /
@@ -49,7 +50,7 @@ final class Tl2Gear {
             // [TL2] four category pages (GearSettings.page: a button per page, its own dialog with Save / Cancel; each section's env() still runs at the start)
             GearSettings.Section shape = GearPages.pictureShape(new String[] {g.str(R.string.d3_aspect_bars), g.str(R.string.d3_aspect_stretch), g.str(R.string.d3_aspect_wide)},
                 DmActivity.D3_ASPECT_DEFAULT, g.str(R.string.d3_aspect_wide_note), a::applyAspectLayout, (s, v) -> aspectEnv(a, v), mode::relabel);
-            l.add(page(g.str(R.string.tl2_gear_display), shape, stretchLoading(), GearPages.sharpen(), GearPages.sceneScale(), GearPages.aniso(), GearPages.fpsCounter()));
+            l.add(page(g.str(R.string.tl2_gear_display), shape, stretchLoading(), GearPages.sharpen(), GearPages.sceneScale(), GearPages.aniso(), GearPages.fpsCounter(), orbNumbers()));
             List<GearSettings.Section> perf = new ArrayList<>();
             perf.add(GearPages.fpsLimit(FPS_LIMITS, 60)); perf.add(note(R.string.d3_fps_note)); perf.add(GearPages.lowLatency());
             if (a.drivers() != null) { perf.add(GearPages.driver(a.drivers())); perf.add(note(R.string.d3_driver_note)); }
@@ -212,6 +213,16 @@ final class Tl2Gear {
                 String on = g.gamePrefs().getBoolean(DmActivity.STRETCH_LOADING_KEY, DmActivity.STRETCH_LOADING_DEFAULT) ? "1" : "0";
                 Os.setenv(TL2 ? "DM_TL2_WIDE_LOADSTRETCH" : "DM_D3_WIDE_STRETCH_LOADING", on, true);
             }
+        };
+    }
+
+    // ---- [TL2] HP / MP numbers beside the HUD orb (Tl2OrbNumbers, issue #31): game pref tl2_orb_numbers, default on, applies at once (the view
+    // reads the pref on every poll). DM_TL2_ORB_NUMBERS=0 in dm/env turns the native side off instead (no hook at all).
+    static GearSettings.Section orbNumbers() {
+        return new GearSettings.Section() {
+            CheckBox c;
+            public void build(GearSettings g, LinearLayout box) { c = g.check(box, g.when(g.str(R.string.tl2_orb_numbers), true), g.gamePrefs().getBoolean(Tl2OrbNumbers.PREF, Tl2OrbNumbers.PREF_DEFAULT)); }
+            public void save(GearSettings g, SharedPreferences.Editor game, SharedPreferences.Editor pad) { game.putBoolean(Tl2OrbNumbers.PREF, c.isChecked()); }
         };
     }
 
