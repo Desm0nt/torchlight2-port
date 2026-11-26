@@ -1322,6 +1322,13 @@ extern uint64_t guest_barriers_skipped,storage_chained,storage_merges,barriers_a
 // 3D 画面加亮的读数（定义在 dispatch 前的 namespace bright）
 // Readings of the 3D picture brightening (defined in namespace bright before dispatch)
 namespace bright{extern bool enabled;extern uint64_t applied;extern float last_k;}
+#ifdef DM_GAME_TL2
+// [TL2] DM_GFX_SCENE_SCALE (namespace sscale, defined after namespace bright): the hooks below in the Image struct, prepare_read,
+// scissor, the pass begins and the draw viewport. on_: the switch is set (50..99); with it unset every hook returns at once.
+struct Image;struct Pass;
+namespace sscale{extern bool on_,disabled;extern int pct;extern uint64_t expands,shrinks;void transfer_use(Image &im,VkCommandBuffer cmd,VkImageLayout next);void read_use(Image &im,bool storage);
+    VkExtent2D begin(const Pass &p,VkCommandBuffer cmd,uint32_t cleared);bool is_scene(const Pass &p);VkRect2D rect(const VkRect2D &r,const Pass &p);void viewport(VkViewport &v,const Pass &p);}
+#endif
 namespace astccache{void frame();void perf();}   // [TL2] ASTC texture cache: committed lazy entries join the index once a frame; PERF line
 void perf_frame(){
     astccache::frame();
@@ -1361,6 +1368,9 @@ void perf_frame(){
      pc_deferred=pc_carried=pc_folded=0;for(auto &x:pc_flush_why)x=0;sh_atts=sh_dead=sh_vdead=sh_poisoned=sh_transient_cand=sh_transient_px=msaa_passes=resolve_ops=tile_frag_barriers=tile_war_barriers=0;}
     xbg_logf("NVN PERF snapfront front_hits=%.1f map_hits=%.1f invalidations=%.1f erased=%.1f",snap_front_hits/f,snap_map_hits/f,snap_invalidations/f,snap_invalidated/f);xbg_logf("NVN PERF textures bc_native=%llu bc_decoded=%llu live_images=%.1fMB bc_images=%.1fMB bc_payload=%.1fMB",(unsigned long long)native_bc_images,(unsigned long long)decoded_bc_images,image_bytes_live/1048576.0,bc_image_bytes_live/1048576.0,bc_data_bytes_live/1048576.0);snap_front_hits=snap_map_hits=snap_invalidations=snap_invalidated=0;
     if(bright::enabled){xbg_logf("NVN PERF bright applied=%.2f k=%.2f",bright::applied/f,bright::last_k);bright::applied=0;}
+#ifdef DM_GAME_TL2
+    if(sscale::on_){xbg_logf("NVN PERF scene_scale expands=%.2f shrinks=%.2f off=%d",sscale::expands/f,sscale::shrinks/f,int(sscale::disabled));sscale::expands=sscale::shrinks=0;}   // [TL2] DM_GFX_SCENE_SCALE, per present
+#endif
     if(tex_dirty){xbg_logf("NVN PERF texdirty tracked=%.1f checks=%.1f changed=%.1f",tex_dirty_tracked/f,tex_dirty_checks/f,tex_dirty_changed/f);tex_dirty_tracked=tex_dirty_checks=tex_dirty_changed=0;}{char buf[512];int at=0;std::vector<std::pair<uint64_t,int>> v;for(auto &e:pass_end_lines)v.push_back({e.second,e.first});std::sort(v.rbegin(),v.rend());for(size_t i=0;i<v.size() && i<8;i++)at+=snprintf(buf+at,sizeof buf-at," L%d=%.1f",v[i].second,v[i].first/f);pass_end_lines.clear();xbg_logf("NVN PERF pass_end_lines%s read_break layout/written/attach=%.1f/%.1f/%.1f/%.1f depth_feedback_reads=%.1f",at?buf:"",read_break_why[1]/f,read_break_why[2]/f,read_break_why[4]/f,(read_break_why[3]+read_break_why[5]+read_break_why[6]+read_break_why[7])/f,depth_feedback_reads/f);memset(read_break_why,0,sizeof read_break_why);depth_feedback_reads=0;}xbg_logf("NVN PERF hash_sites MB/calls other=%.2f/%.0f texcheck=%.2f/%.0f texel=%.2f/%.0f upload=%.2f/%.0f",hash_site_bytes[0]/f/1048576,hash_site_calls[0]/f,hash_site_bytes[1]/f/1048576,hash_site_calls[1]/f,hash_site_bytes[2]/f/1048576,hash_site_calls[2]/f,hash_site_bytes[3]/f/1048576,hash_site_calls[3]/f);memset(hash_site_bytes,0,sizeof hash_site_bytes);memset(hash_site_calls,0,sizeof hash_site_calls);if(zc::enabled>0){xbg_logf("NVN PERF zerocopy hits=%.1f sticky_miss=%.1f align_miss=%.1f pending_miss=%.1f mapped=%.0fMB chunks=%d retired=%llu",zc::hits/f,zc::sticky_misses/f,zc::align_misses/f,zc::pending_misses/f,zc::mapped_bytes/1048576.0,zc::live_chunks,(unsigned long long)zc::retired);zc::hits=zc::sticky_misses=zc::align_misses=zc::pending_misses=0;}if(storage_chained || guest_barriers_skipped){xbg_logf("NVN PERF storage-chain reused=%.1f gpu_merges=%.1f prologue_copies=%.1f guest_barriers_skipped=%.1f barriers_avoided=%.1f",storage_chained/f,storage_merges/f,pro_copies/f,guest_barriers_skipped/f,barriers_avoided/f);storage_chained=storage_merges=pro_copies=guest_barriers_skipped=barriers_avoided=0;}if(gpu_indirect_draws || gpu_indirect_fallbacks){xbg_logf("NVN PERF gpu-indirect draws=%.1f fallbacks=%.1f cpu=%.1f",gpu_indirect_draws/f,gpu_indirect_fallbacks/f,gpu_indirect_cpu/f);gpu_indirect_draws=gpu_indirect_fallbacks=gpu_indirect_cpu=0;}if(partial_uploads){xbg_logf("NVN PERF partial-tex uploads=%.1f blocks=%.1f KB=%.1f",partial_uploads/f,partial_blocks/f,partial_bytes/f/1024);partial_uploads=partial_blocks=partial_bytes=0;}
     if(vcache::enabled){xbg_logf("NVN PERF vcache hits=%.1f (%.2fMB) fills=%.1f (%.2fMB) refills=%.2f volatile=%llu untracked=%llu flushes=%llu entries=%zu arena=%.1fMB pools=%d",vcache::hits/f,vcache::hit_bytes/1048576.0/f,vcache::fills/f,vcache::fill_bytes/1048576.0/f,vcache::refills/f,(unsigned long long)vcache::volatiles,(unsigned long long)vcache::untracked,(unsigned long long)vcache::flushes,vcache::live(),vcache::arena_bytes()/1048576.0,[]{int live=0,used=0;uint64_t adds=0;if(nvn_dirty_slot_stats)nvn_dirty_slot_stats(&live,&used,&adds);return used;}());vcache::hits=vcache::hit_bytes=vcache::fills=vcache::fill_bytes=vcache::refills=0;}
     {static uint64_t pm=0,pe=0;xbg_logf("NVN PERF pipelines_new=%llu evicted=%llu warm_hits=%llu created=%llu create_ms=%.1f create_max_ms=%.1f warm_built=%llu warm_failed=%llu warm_ms=%.0f async_skips=%llu async_built=%llu",(unsigned long long)(pipeline_counts.misses-pm),(unsigned long long)(pipeline_counts.evictions-pe),(unsigned long long)warm::hits,(unsigned long long)warm::creates,warm::create_ns/1e6,warm::create_max_ns/1e6,(unsigned long long)warm::built.load(),(unsigned long long)warm::failed.load(),warm::build_ns.load()/1e6,(unsigned long long)warm::async_skips.exchange(0),(unsigned long long)warm::async_built.load());warm::hits=warm::creates=warm::create_ns=warm::create_max_ns=0;pm=pipeline_counts.misses;pe=pipeline_counts.evictions;}
@@ -1963,12 +1973,18 @@ struct Image {
     uint64_t slot_use=0;
     uint64_t dirty_stamp=0,dirty_seen=0;   // tex_dirty: the tracker stamp of the checked content (0: not tracked yet) and the tracker generation last checked
     XbgTargetAge rt_age;   // [TL2 stutter] DM_GFX_ASYNC_PIPELINES=2: presents in a row this image was drawn into, draws per present (xbg_async_policy.h)
+#ifdef DM_GAME_TL2
+    uint8_t ss_role=0;bool ss_small=false;   // [TL2] DM_GFX_SCENE_SCALE: scene member (1 colour, 2 depth; sticky, 0 with the switch unset); small: valid content is the top-left s*W x s*H only
+#endif
 #ifdef DM_GAME_ETERNAL
     uint64_t sparse_gen=0,sparse_stamp=0;bool sparse=false;   // [ETERNAL] storage in a virtual pool: mapping generation and dirty stamp of the checked content (sparse_check)
 #endif
     std::map<std::array<uint32_t,8>,VkImageView> views;std::vector<std::vector<uint64_t>> fb_keys; // fb_keys: persistent framebuffers using these views
     ~Image(){if(pclear_n)pclear_forget(this);image_bytes_live-=mem_bytes;bc_image_bytes_live-=bc_bytes;astc_ov_bytes_live-=subst_bytes;astc_cache_bytes_live-=pack_bytes;astc_cache_rgba_live-=pack_rgba;bc_data_bytes_live-=bc_data;decoded_bytes_live-=dec_bytes;decoded_native_live-=dec_native;forget_framebuffers(*this);for(auto &v:views)vkDestroyImageView(cfg.device,v.second,nullptr);if(image)vkDestroyImage(cfg.device,image,nullptr);if(memory)vkFreeMemory(cfg.device,memory,nullptr);}
     void transition(VkCommandBuffer cmd,VkImageLayout next){
+#ifdef DM_GAME_TL2
+        if(ss_role)sscale::transfer_use(*this,cmd,next);   // [TL2] DM_GFX_SCENE_SCALE: a copy / blit / resolve / clear of a small member expands it first (may change layout)
+#endif
         if(next==VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL && hist_on)hist_note_read(*this,'t');   // [tile] copy / blit / resolve / readback / present source
         VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};b.oldLayout=layout;b.newLayout=next;b.image=image;b.srcQueueFamilyIndex=b.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
         b.subresourceRange={aspects,0,levels,0,layers};b.srcAccessMask=layout==VK_IMAGE_LAYOUT_UNDEFINED?0:VK_ACCESS_MEMORY_WRITE_BIT|VK_ACCESS_MEMORY_READ_BIT;b.dstAccessMask=VK_ACCESS_MEMORY_READ_BIT|VK_ACCESS_MEMORY_WRITE_BIT;
@@ -2114,9 +2130,13 @@ void pass_prof_read(const Image &im){Slot &s=slots[slot_index];if(!s.prof || !im
 // draw_reads: images this draw's descriptors read (first_draw_covers refuses a pass whose first draw samples its own colour attachment).
 bool read_frag_only=false;std::vector<Image*> draw_reads;bool draw_reads_on=false,draw_reads_overflow=false;
 void pclear_flush_image(Image &im,int why);
-void image_read_hook(Image &im){if(pclear_n)pclear_flush_image(im,0);if(hist_on)hist_note_read(im,'s');}
+void image_read_hook(Image &im,bool storage=false){if(pclear_n)pclear_flush_image(im,0);if(hist_on)hist_note_read(im,'s');
+#ifdef DM_GAME_TL2
+    if(im.ss_role)sscale::read_use(im,storage);   // [TL2] DM_GFX_SCENE_SCALE: a small member is expanded before it is sampled
+#endif
+}
 void prepare_read(Image &im,VkCommandBuffer cmd,int storage=-1){
-    image_read_hook(im);if(draw_reads_on){if(draw_reads.size()<32)draw_reads.push_back(&im);else draw_reads_overflow=true;}
+    image_read_hook(im,storage>0);if(draw_reads_on){if(draw_reads.size()<32)draw_reads.push_back(&im);else draw_reads_overflow=true;}
     pass_prof_read(im);
     bool in_open=open_pass.cmd && std::find(open_pass.images.begin(),open_pass.images.end(),&im)!=open_pass.images.end();
     const bool as_storage=storage<0?!im.sampled_ever:storage!=0;
@@ -4225,6 +4245,27 @@ VkSampler sampler_slow(const samp_par &p,Image &im,VkFormat viewed,bool integer_
         if(!strict){static std::set<int> told;if(told.insert(int(viewed)).second)xbg_logf("NVN sampler: format %u (NVN %#x) has no linear filtering on this device: its samplers use NEAREST (min=%u mag=%u mip=%u compare=%u)",unsigned(viewed),im.source.d.format,p.minf,p.magf,unsigned(s.mipmapMode),p.cmp_mode);
             s.minFilter=s.magFilter=VK_FILTER_NEAREST;s.mipmapMode=VK_SAMPLER_MIPMAP_MODE_NEAREST;s.anisotropyEnable=VK_FALSE;s.maxAnisotropy=1;}}
     if((s.minFilter==VK_FILTER_LINEAR || s.magFilter==VK_FILTER_LINEAR) && !(fp.optimalTilingFeatures&VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT))xbg_fatalf("NVN sampler linear filtering unsupported min=%u mag=%u compare=%u/%u format=%#x vk=%u optimalFeatures=%#x texture=%llu decoded=%d imfmt=%u",p.minf,p.magf,p.cmp_mode,p.cmp_func,im.source.d.format,unsigned(viewed),fp.optimalTilingFeatures,(unsigned long long)im.source.serial,int(im.decoded),unsigned(im.fmt));
+    // [TL2] DM_GFX_ANISO = 2 / 4 / 8 / 16 (unset or any other value: the game's own setting, nothing changes): forced anisotropic
+    // filtering on trilinear, non-compare samplers of repeating textures (U or V REPEAT /
+    // MIRRORED_REPEAT: ground, walls; clamped render-target and UI samplers stay as they are). Only with samplerAnisotropy enabled
+    // (without it DM_GFX_ANISO_FALLBACK above has already turned the game's own anisotropy off), at most maxSamplerAnisotropy and
+    // never below the game's value. The sampler cache key below includes maxAnisotropy. Logged once at the first sampler.
+    {static const int force=[]{const char *e=getenv("DM_GFX_ANISO");const int n=e?atoi(e):0;const int v=(n==2 || n==4 || n==8 || n==16)?n:0;
+         if(v){xbg_logf("NVN aniso override: %d (device max %g)",v,double(properties.limits.maxSamplerAnisotropy));}return v;}();
+     if(force && cfg.enabled_core.samplerAnisotropy && s.minFilter==VK_FILTER_LINEAR && s.mipmapMode==VK_SAMPLER_MIPMAP_MODE_LINEAR && !s.compareEnable
+        && (s.addressModeU==VK_SAMPLER_ADDRESS_MODE_REPEAT || s.addressModeU==VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT || s.addressModeV==VK_SAMPLER_ADDRESS_MODE_REPEAT || s.addressModeV==VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT)){
+         const float game=s.anisotropyEnable?s.maxAnisotropy:1.0f;const float want=std::max(game,std::min(float(force),properties.limits.maxSamplerAnisotropy));
+         if(want>1.0f){s.anisotropyEnable=VK_TRUE;s.maxAnisotropy=want;}}}
+#ifdef DM_GAME_TL2
+    // [TL2] DM_GFX_SCENE_SCALE: the scene renders at pct% and FSR 1 upscales it, so the GPU picks smaller mips than at full size and
+    // textures look soft. Mipmapped, non-compare samplers get a mip LOD bias of log2(pct/100) (75%: -0.415, 50%: -1.0), clamped to
+    // +-maxSamplerLodBias. sscale::init runs in the device init before any sampler exists, so pct and on_ are valid here. Known limit:
+    // samplers are cached, so after a runtime sscale disable the samplers already created keep the bias (slightly sharper at full size, harmless).
+    if(sscale::on_ && !s.compareEnable && (s.mipmapMode==VK_SAMPLER_MIPMAP_MODE_LINEAR || s.maxLod>0.25f)){
+        const float lim=properties.limits.maxSamplerLodBias;const float bias=log2f(float(sscale::pct)/100.f);
+        static bool told=false;if(!told){told=true;xbg_logf("NVN scene scale: texture LOD bias %.2f (DM_GFX_SCENE_SCALE=%d)",double(bias),sscale::pct);}
+        s.mipLodBias=std::max(-lim,std::min(lim,s.mipLodBias+bias));}
+#endif
     need(s.pNext==nullptr,"Unexpected sampler extension chain");
 #if defined(DM_GAME_XC2) || defined(DM_GAME_D3)
     // [XC2] a border-sampling wrap with a non-canonical colour: the real colour through VK_EXT_custom_border_color where the device has it
@@ -5376,7 +5417,11 @@ bool create_pass(Pass &p,Commands &c,int clear_color=-1,bool clear_depth=false,b
     if(plain_draw && persistent){last_pass.rt=state.rt;last_pass.pass=p;last_pass.valid=true;}else last_pass.valid=false;
     return true;
 }
-VkRect2D scissor(const Pass &p){VkRect2D r{};need(xbg_clear_rectangle(p.width,p.height,state.scissor.offset.x,state.scissor.offset.y,state.scissor.extent.width,state.scissor.extent.height,&r)==0,"Invalid scissor extent");return r;}
+VkRect2D scissor(const Pass &p){VkRect2D r{};need(xbg_clear_rectangle(p.width,p.height,state.scissor.offset.x,state.scissor.offset.y,state.scissor.extent.width,state.scissor.extent.height,&r)==0,"Invalid scissor extent");
+#ifdef DM_GAME_TL2
+    if(sscale::on_)r=sscale::rect(r,p);   // [TL2] DM_GFX_SCENE_SCALE: draw scissors and clear rects of a scene pass shrink by s
+#endif
+    return r;}
 // [nonadreno] NVN GVAL (DM_GFX_PASS_VALUES: unset or 1 = on whenever the pass profiler runs, DM_GFX_PASS_PROF / gfx-pass-profile;
 // 0 = off): what each profiled pass left in its attachments, as numbers in boot.log, no images. Why: a Mali-G57 (Helio G99, r32p1)
 // drew the level and monsters fully black with live HUD while all 288 draws of the main pass ran; something turns values black
@@ -5607,15 +5652,23 @@ void open_pass_marks(const Pass &p,uint32_t dead,uint32_t vdead){open_pass.dead_
 VkRenderPass lazy_twin(VkRenderPass base,uint32_t mask);
 void begin_pass(Pass &p,Commands &c){
     if(pclear_n)pclear_flush_pass(p);if(hist_on)for(auto *im:p.images)hist_note_read(*im,'b');   // [tile] passes begun here LOAD every attachment
-    lrz_touch_before(p,c.command);pass_prof_begin(p,c.command);VkRenderPassBeginInfo b{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};b.renderPass=p.pass;b.framebuffer=p.framebuffer;b.renderArea.extent={p.width,p.height};vkCmdBeginRenderPass(c.command,&b,VK_SUBPASS_CONTENTS_INLINE);}
+    VkExtent2D area{p.width,p.height};
+#ifdef DM_GAME_TL2
+    if(sscale::on_)area=sscale::begin(p,c.command,0);   // [TL2] DM_GFX_SCENE_SCALE: classify, expand / shrink members, scene render area s*W x s*H
+#endif
+    lrz_touch_before(p,c.command);pass_prof_begin(p,c.command);VkRenderPassBeginInfo b{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};b.renderPass=p.pass;b.framebuffer=p.framebuffer;b.renderArea.extent=area;vkCmdBeginRenderPass(c.command,&b,VK_SUBPASS_CONTENTS_INLINE);}
 // [tile] Begin the open pass of a draw / clear (open_pass is filled by the caller): pending clears that cannot fold land first;
 // DM_GFX_STORE_HIST picks the store twin; noload: the colour-DONT_CARE variant (first_draw_covers), bit-exact as before without STORE_HIST.
 void begin_open(Pass &p,Commands &c,bool noload=false){
     if(pclear_n)pclear_flush_pass(p);
     uint32_t vmask=0,store=hist_on?store_hist_mask(p,0,noload,vmask):0;VkRenderPass rp=noload?p.pass_noload:p.pass;
     if(store){VkRenderPass t=lazy_twin(p.pass,(store<<18)|(noload?1u<<27:0u));if(t)rp=t;else store=0;}
-    open_pass_marks(p,store,vmask);
-    lrz_touch_before(p,c.command);pass_prof_begin(p,c.command);VkRenderPassBeginInfo b{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};b.renderPass=rp;b.framebuffer=p.framebuffer;b.renderArea.extent={p.width,p.height};vkCmdBeginRenderPass(c.command,&b,VK_SUBPASS_CONTENTS_INLINE);}
+    open_pass_marks(p,store,vmask);VkExtent2D area{p.width,p.height};
+#ifdef DM_GAME_TL2
+    // [TL2] DM_GFX_SCENE_SCALE: noload = every colour attachment begins DONT_CARE, so a full-size member needs no shrink first
+    if(sscale::on_){uint32_t cl=0;if(noload)for(uint32_t k=0;k<p.images.size() && k<9;k++)if(p.att_slot[k]!=8)cl|=1u<<(2*k);area=sscale::begin(p,c.command,cl);open_pass.pw=area.width;open_pass.ph=area.height;}
+#endif
+    lrz_touch_before(p,c.command);pass_prof_begin(p,c.command);VkRenderPassBeginInfo b{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};b.renderPass=rp;b.framebuffer=p.framebuffer;b.renderArea.extent=area;vkCmdBeginRenderPass(c.command,&b,VK_SUBPASS_CONTENTS_INLINE);}
 // [d3-perf] DM_GFX_LAZY_CLEAR (DOOM round 3c, pipeline_audit.md 3.12). lazy_clear_open records the pass instead of beginning it; the
 // clears of the whole framebuffer that follow collect in lazy (later ones of the same aspect replace earlier ones). The next draw
 // in that pass (draw() matched open_pass, so nothing read or wrote the attachments in between: every other use ends the open pass)
@@ -5660,12 +5713,21 @@ bool lazy_begin_twin(VkCommandBuffer cmd){uint32_t mask=0;VkClearValue values[9]
     uint32_t vmask=0,store=hist_on?store_hist_mask(lazy.pass,mask,false,vmask):0;
     VkRenderPass twin=mask|store?lazy_twin(lazy.pass.pass,mask|(store<<18)):lazy.pass.pass;if(!twin && store){store=0;twin=mask?lazy_twin(lazy.pass.pass,mask):lazy.pass.pass;}
     if(!twin)return false;
-    lazy_pending=false;open_pass_marks(lazy.pass,store,vmask);lrz_touch_before(lazy.pass,cmd);pass_prof_begin(lazy.pass,cmd);VkRenderPassBeginInfo b{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};b.renderPass=twin;b.framebuffer=lazy.pass.framebuffer;b.renderArea.extent={lazy.pass.width,lazy.pass.height};b.clearValueCount=n;b.pClearValues=values;
+    lazy_pending=false;open_pass_marks(lazy.pass,store,vmask);VkExtent2D area{lazy.pass.width,lazy.pass.height};
+#ifdef DM_GAME_TL2
+    if(sscale::on_){area=sscale::begin(lazy.pass,cmd,mask);open_pass.pw=area.width;open_pass.ph=area.height;}   // [TL2] DM_GFX_SCENE_SCALE: mask bit 2k = attachment k cleared by the load op (no shrink)
+#endif
+    lrz_touch_before(lazy.pass,cmd);pass_prof_begin(lazy.pass,cmd);VkRenderPassBeginInfo b{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};b.renderPass=twin;b.framebuffer=lazy.pass.framebuffer;b.renderArea.extent=area;b.clearValueCount=n;b.pClearValues=values;
     vkCmdBeginRenderPass(cmd,&b,VK_SUBPASS_CONTENTS_INLINE);++lazy_folded;return true;}
 void lazy_clear_flush_old(){   // the former recording: begin the pass with its load ops, then the clears (pre-clears too)
     lazy_pending=false;VkCommandBuffer cmd=open_pass.cmd;if(hist_on){uint32_t m=0;VkClearValue v[9]{};if(!lazy_mask(m,v))m=0;hist_begin(lazy.pass,m,0,'f');}   // store-hist: LOAD, then the whole-framebuffer clears
-    lrz_touch_before(lazy.pass,cmd);pass_prof_begin(lazy.pass,cmd);VkRenderPassBeginInfo b{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};b.renderPass=lazy.pass.pass;b.framebuffer=lazy.pass.framebuffer;b.renderArea.extent={lazy.pass.width,lazy.pass.height};vkCmdBeginRenderPass(cmd,&b,VK_SUBPASS_CONTENTS_INLINE);
-    VkClearRect r{{{0,0},{lazy.pass.width,lazy.pass.height}},0,1};
+    VkExtent2D area{lazy.pass.width,lazy.pass.height};
+#ifdef DM_GAME_TL2
+    // [TL2] DM_GFX_SCENE_SCALE: the clears below cover what lazy_mask lists, so those attachments need no shrink; they clear the scaled area
+    if(sscale::on_){uint32_t m=0;VkClearValue v[9]{};if(!lazy_mask(m,v))m=0;area=sscale::begin(lazy.pass,cmd,m);}
+#endif
+    lrz_touch_before(lazy.pass,cmd);pass_prof_begin(lazy.pass,cmd);VkRenderPassBeginInfo b{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};b.renderPass=lazy.pass.pass;b.framebuffer=lazy.pass.framebuffer;b.renderArea.extent=area;vkCmdBeginRenderPass(cmd,&b,VK_SUBPASS_CONTENTS_INLINE);
+    VkClearRect r{{{0,0},area},0,1};
     if(r.rect.extent.width && r.rect.extent.height){
         for(uint32_t k=0;k<lazy.pass.images.size() && k<9;k++)if((lazy.pre_mask>>(2*k))&3u){VkClearAttachment a{};a.clearValue=lazy.pre_values[k];
             if(lazy.pass.att_slot[k]==8){if(lazy.pre_mask&(1u<<(2*k)))a.aspectMask|=VK_IMAGE_ASPECT_DEPTH_BIT;if(lazy.pre_mask&(2u<<(2*k)))a.aspectMask|=VK_IMAGE_ASPECT_STENCIL_BIT;a.aspectMask&=lazy.pass.images[k]->aspects;}
@@ -6243,6 +6305,9 @@ Pass p;create_pass(p,c);
         static bool told=false;if(!told){told=true;xbg_logf("NVN wide UI: 2D draws into the %ux%u window shifted right by %d",p.width,p.height,ui_shift);}}
 #endif
     if(taafix::viewport_ll()){viewport.y+=viewport.height;viewport.height=-viewport.height;}   // DM_GFX_TAA_FIX 2: NVN lower-left, NDC -1 -> row y
+#ifdef DM_GAME_TL2
+    if(sscale::on_)sscale::viewport(viewport,p);   // [TL2] DM_GFX_SCENE_SCALE: a scene pass draws into the top-left s*W x s*H (scissor: scissor(p))
+#endif
     need(viewport.width<=properties.limits.maxViewportDimensions[0] && std::fabs(viewport.height)<=properties.limits.maxViewportDimensions[1] && viewport.x>=properties.limits.viewportBoundsRange[0] && viewport.x+viewport.width<=properties.limits.viewportBoundsRange[1] && viewport.y>=properties.limits.viewportBoundsRange[0] && viewport.y<=properties.limits.viewportBoundsRange[1] && viewport.y+viewport.height>=properties.limits.viewportBoundsRange[0],"NVN viewport exceeds device bounds");
     if(!bc.has_vp || memcmp(&bc.vp,&viewport,sizeof viewport)){vkCmdSetViewport(c.command,0,1,&viewport);bc.vp=viewport;bc.has_vp=true;}else ++binds_skipped;
     VkRect2D sc=scissor(p);
@@ -6564,6 +6629,224 @@ void after_dispatch(Commands &c){
     ++applied;
 }
 }
+#ifdef DM_GAME_TL2
+#include "xbg_easu_spv.h"
+// [TL2] DM_GFX_SCENE_SCALE = 50..99 (percent; unset, 100 or anything else = off and nothing below runs): scene-only render scale.
+// TL2 draws its 3D scene into the window texture (NVN DISPLAY flag) with a W x H depth, runs its post chain (POSTBRIGHTPASS ...
+// POSTFXAA) on a copy, writes the composite back into the window and draws the HUD there (see is_scene for the frame rule).
+// Images keep their full size (no reallocation): a scene pass draws into the top-left s*W x s*H (viewport, scissor, clear rects and
+// render area scaled) and its colour images become "small". Before anything else reads, copies or attaches a small colour image,
+// FSR 1 EASU (xbg_easu.comp) expands that rectangle into a W x H RGBA16F temp, and a 1:1 NEAREST blit copies it back: readers that
+// sample with 0..1 UVs then see full-size content, no descriptor is substituted. A scene pass that LOADs a full-size colour member
+// shrinks it first (LINEAR blit through the temp), unless the pass clears it at begin. The scaled depth is never expanded: any
+// other use of it turns the feature off, as does every case below it cannot handle (disable: from the next pass, logged once with
+// the reason; small members are still expanded at their next use).
+// Scaled members (sticky): the attachments of a pass of the window's W x H with one sample and a depth image of the same size
+// (adopt). A scene pass: W x H, depth attached, every attachment a member (a depth-only pass included); with a window colour
+// attachment only before the post chain samples the window in this frame.
+// Hooks: Image::transition (transfer use), image_read_hook (sampled / storage), the four pass begins, scissor() and the draw viewport.
+namespace sscale {
+uint64_t win_read1=0;   // present count + 1 of the frame in which the post chain last sampled the window member (0: never)
+bool on_=false,disabled=false,off_next=false,told_scene=false,prepared=false;   // off_next: a disable was asked, it takes effect at the next pass begin
+int pct=100;uint32_t W=0,H=0,sw=0,sh=0;uint64_t expands=0,shrinks=0;unsigned draws_told=0;
+uint32_t con[16]{};   // FsrEasuCon con0..con3 as float bits: input viewport sw x sh, input size W x H, output W x H
+VkDescriptorSetLayout set_layout{};VkPipelineLayout layout{};VkPipeline pipeline{};VkSampler sampler{};VkDescriptorPool pool{};
+// 32 descriptor sets per frame slot (as namespace bright): one per expansion; a set recorded into a command buffer must not change before that submission completes
+constexpr unsigned SETS=32;VkDescriptorSet sets[2][SETS]{};unsigned used[2]{};uint64_t used_serial[2]{};
+VkImage tmp{};VkDeviceMemory tmp_memory{};VkImageView tmp_view{};bool tmp_general=false;
+void init(){
+    on_=disabled=off_next=told_scene=false;W=H=sw=sh=0;draws_told=0;expands=shrinks=0;
+    const char *e=getenv("DM_GFX_SCENE_SCALE");if(!e || !*e){return;}
+    char *end=nullptr;const long v=strtol(e,&end,10);
+    if(*end || v<50 || v>99){if(*end || v!=100){xbg_logf("NVN scene scale: off (DM_GFX_SCENE_SCALE=%s; 50..99 = percent of the scene resolution)",e);}return;}
+    pct=int(v);on_=true;xbg_logf("NVN scene scale: s=%.2f, window size pending (DM_GFX_SCENE_SCALE=%d)",pct/100.0,pct);
+}
+void disable(const char *why){if(off_next){return;}off_next=true;xbg_logf("NVN scene scale: off from the next pass (%s); small members are expanded at their next use (DM_GFX_SCENE_SCALE)",why);}
+void shutdown(){
+    if(tmp_view){vkDestroyImageView(cfg.device,tmp_view,nullptr);}if(tmp){vkDestroyImage(cfg.device,tmp,nullptr);}if(tmp_memory){vkFreeMemory(cfg.device,tmp_memory,nullptr);}
+    if(pipeline){vkDestroyPipeline(cfg.device,pipeline,nullptr);}if(layout){vkDestroyPipelineLayout(cfg.device,layout,nullptr);}if(pool){vkDestroyDescriptorPool(cfg.device,pool,nullptr);}
+    if(set_layout){vkDestroyDescriptorSetLayout(cfg.device,set_layout,nullptr);}if(sampler){vkDestroySampler(cfg.device,sampler,nullptr);}
+    tmp_view={};tmp={};tmp_memory={};tmp_general=false;pipeline={};layout={};pool={};set_layout={};sampler={};for(auto &s:sets){for(auto &x:s){x={};}}used[0]=used[1]=0;used_serial[0]=used_serial[1]=0;prepared=false;
+}
+// The EASU pipeline and the W x H RGBA16F temp, once (W x H known); false (feature off) when the device cannot
+bool prepare(){
+    if(prepared){return pipeline!=VK_NULL_HANDLE && tmp_view!=VK_NULL_HANDLE;}
+    prepared=true;
+    const VkFormatFeatureFlags want=VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT|VK_FORMAT_FEATURE_BLIT_SRC_BIT|VK_FORMAT_FEATURE_BLIT_DST_BIT;
+    if((format_properties(VK_FORMAT_R16G16B16A16_SFLOAT).optimalTilingFeatures&want)!=want){disable("RGBA16F lacks storage image / blit support");return false;}
+    VkSamplerCreateInfo si{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};si.magFilter=si.minFilter=VK_FILTER_LINEAR;si.mipmapMode=VK_SAMPLER_MIPMAP_MODE_NEAREST;si.addressModeU=si.addressModeV=si.addressModeW=VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    VK(vkCreateSampler(cfg.device,&si,nullptr,&sampler));
+    VkDescriptorSetLayoutBinding b[2]{};b[0]={0,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};b[1]={1,VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
+    VkDescriptorSetLayoutCreateInfo dl{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};dl.bindingCount=2;dl.pBindings=b;VK(vkCreateDescriptorSetLayout(cfg.device,&dl,nullptr,&set_layout));
+    VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT,0,sizeof con};VkPipelineLayoutCreateInfo li{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};li.setLayoutCount=1;li.pSetLayouts=&set_layout;li.pushConstantRangeCount=1;li.pPushConstantRanges=&push;
+    VK(vkCreatePipelineLayout(cfg.device,&li,nullptr,&layout));
+    VkDescriptorPoolSize sizes[2]{{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,2*SETS},{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,2*SETS}};VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};pi.maxSets=2*SETS;pi.poolSizeCount=2;pi.pPoolSizes=sizes;
+    VK(vkCreateDescriptorPool(cfg.device,&pi,nullptr,&pool));
+    VkDescriptorSetLayout layouts[2*SETS];for(auto &l:layouts){l=set_layout;}VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};ai.descriptorPool=pool;ai.descriptorSetCount=2*SETS;ai.pSetLayouts=layouts;
+    VK(vkAllocateDescriptorSets(cfg.device,&ai,&sets[0][0]));
+    VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};mi.codeSize=sizeof(xbg_easu_cs);mi.pCode=xbg_easu_cs;VkShaderModule module{};{gpguard::ModuleLock serial;VK(vkCreateShaderModule(cfg.device,&mi,nullptr,&module));}
+    VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};ci.stage={VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};ci.stage.stage=VK_SHADER_STAGE_COMPUTE_BIT;ci.stage.module=module;ci.stage.pName="main";ci.layout=layout;
+    VkResult r;{gpguard::Lock serial;r=vkCreateComputePipelines(cfg.device,pipeline_cache,1,&ci,nullptr,&pipeline);}vkDestroyShaderModule(cfg.device,module,nullptr);
+    if(r!=VK_SUCCESS){pipeline={};char why[64];snprintf(why,sizeof why,"EASU compute pipeline result=%d",int(r));disable(why);return false;}
+    VkImageCreateInfo ic{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};ic.imageType=VK_IMAGE_TYPE_2D;ic.format=VK_FORMAT_R16G16B16A16_SFLOAT;ic.extent={W,H,1};ic.mipLevels=1;ic.arrayLayers=1;ic.samples=VK_SAMPLE_COUNT_1_BIT;
+    ic.tiling=VK_IMAGE_TILING_OPTIMAL;ic.usage=VK_IMAGE_USAGE_STORAGE_BIT|VK_IMAGE_USAGE_TRANSFER_SRC_BIT|VK_IMAGE_USAGE_TRANSFER_DST_BIT;ic.initialLayout=VK_IMAGE_LAYOUT_UNDEFINED;
+    if(vkCreateImage(cfg.device,&ic,nullptr,&tmp)!=VK_SUCCESS){tmp={};disable("the RGBA16F temp image cannot be made");return false;}
+    VkMemoryRequirements mr;vkGetImageMemoryRequirements(cfg.device,tmp,&mr);VkMemoryAllocateInfo ma{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};ma.allocationSize=mr.size;ma.memoryTypeIndex=memory_type(mr.memoryTypeBits,VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};vi.image=tmp;vi.viewType=VK_IMAGE_VIEW_TYPE_2D;vi.format=VK_FORMAT_R16G16B16A16_SFLOAT;vi.subresourceRange={VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
+    if(vkAllocateMemory(cfg.device,&ma,nullptr,&tmp_memory)!=VK_SUCCESS || vkBindImageMemory(cfg.device,tmp,tmp_memory,0)!=VK_SUCCESS || vkCreateImageView(cfg.device,&vi,nullptr,&tmp_view)!=VK_SUCCESS){
+        if(tmp_view){vkDestroyImageView(cfg.device,tmp_view,nullptr);}vkDestroyImage(cfg.device,tmp,nullptr);if(tmp_memory){vkFreeMemory(cfg.device,tmp_memory,nullptr);}tmp={};tmp_view={};tmp_memory={};
+        disable("the RGBA16F temp image cannot be made");return false;}
+    xbg_logf("NVN scene scale: EASU ready, temp %ux%u RGBA16F (%.1f MB)",W,H,double(mr.size)/1048576.0);return true;
+}
+void tmp_to_general(VkCommandBuffer cmd){
+    if(tmp_general){return;}
+    VkImageMemoryBarrier t{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};t.oldLayout=VK_IMAGE_LAYOUT_UNDEFINED;t.newLayout=VK_IMAGE_LAYOUT_GENERAL;t.image=tmp;t.srcQueueFamilyIndex=t.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+    t.subresourceRange={VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};t.dstAccessMask=VK_ACCESS_MEMORY_READ_BIT|VK_ACCESS_MEMORY_WRITE_BIT;
+    vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,0,0,nullptr,0,nullptr,1,&t);tmp_general=true;
+}
+// Small -> full size: EASU from the top-left sw x sh into the temp, then a 1:1 blit back. Outside any render pass (callers end it).
+void expand(Image &im,VkCommandBuffer cmd){
+    im.ss_small=false;
+    if(!pipeline || !tmp_view){return;}
+    const unsigned si=unsigned(&recording_slot()-slots)&1;if(used_serial[si]!=slot_serial){used_serial[si]=slot_serial;used[si]=0;}
+    if(used[si]>=SETS){disable("more than 32 expansions in one submission");return;}
+    VkDescriptorSet set=sets[si][used[si]++];
+    full_barrier(cmd);
+    if(im.layout!=VK_IMAGE_LAYOUT_GENERAL){im.transition(cmd,VK_IMAGE_LAYOUT_GENERAL);}
+    tmp_to_general(cmd);
+    VkDescriptorImageInfo ii[2]{};ii[0]={sampler,im.view(nullptr),VK_IMAGE_LAYOUT_GENERAL};ii[1]={VK_NULL_HANDLE,tmp_view,VK_IMAGE_LAYOUT_GENERAL};
+    VkWriteDescriptorSet w[2]{};for(int i=0;i<2;i++){w[i].sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;w[i].dstSet=set;w[i].dstBinding=uint32_t(i);w[i].descriptorCount=1;w[i].descriptorType=i?VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;w[i].pImageInfo=&ii[i];}
+    vkUpdateDescriptorSets(cfg.device,2,w,0,nullptr);
+    vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,pipeline);vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,layout,0,1,&set,0,nullptr);vkCmdPushConstants(cmd,layout,VK_SHADER_STAGE_COMPUTE_BIT,0,sizeof con,con);
+    vkCmdDispatch(cmd,(W+7)/8,(H+7)/8,1);
+    full_barrier(cmd);
+    im.transition(cmd,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    VkImageBlit b{};b.srcSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};b.dstSubresource=b.srcSubresource;b.srcOffsets[1]={int32_t(W),int32_t(H),1};b.dstOffsets[1]=b.srcOffsets[1];
+    vkCmdBlitImage(cmd,tmp,VK_IMAGE_LAYOUT_GENERAL,im.image,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,1,&b,VK_FILTER_NEAREST);
+    im.transition(cmd,VK_IMAGE_LAYOUT_GENERAL);im.prior_write=im.last_write;im.last_write=++write_seq;im.gpu_written=true;full_barrier(cmd);
+    bind_cache_reset();++expands;   // push constants of another layout were set: the draw bind cache starts over
+}
+// Full size -> small, for a scene pass that LOADs the member: LINEAR blit W x H -> sw x sh into the temp, then 1:1 back to the top-left
+void shrink(Image &im,VkCommandBuffer cmd){
+    if(!tmp_view){return;}
+    full_barrier(cmd);tmp_to_general(cmd);
+    im.transition(cmd,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    VkImageBlit b{};b.srcSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};b.dstSubresource=b.srcSubresource;b.srcOffsets[1]={int32_t(W),int32_t(H),1};b.dstOffsets[1]={int32_t(sw),int32_t(sh),1};
+    vkCmdBlitImage(cmd,im.image,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,tmp,VK_IMAGE_LAYOUT_GENERAL,1,&b,VK_FILTER_LINEAR);
+    full_barrier(cmd);
+    im.transition(cmd,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);b.srcOffsets[1]=b.dstOffsets[1];
+    vkCmdBlitImage(cmd,tmp,VK_IMAGE_LAYOUT_GENERAL,im.image,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,1,&b,VK_FILTER_NEAREST);
+    im.transition(cmd,VK_IMAGE_LAYOUT_GENERAL);im.prior_write=im.last_write;im.last_write=++write_seq;full_barrier(cmd);++shrinks;
+}
+// W x H: the size of the window textures (NVN DISPLAY flag) seen as colour attachments; nothing is classified before the first one
+void learn_window(const Pass &p){
+    for(uint32_t k=0;k<p.images.size() && k<9;k++){const Image &im=*p.images[k];if(p.att_slot[k]==8 || !(im.source.d.flags&1)){continue;}
+        if(!W){W=im.width;H=im.height;sw=std::max(1u,(W*uint32_t(pct)+50)/100);sh=std::max(1u,(H*uint32_t(pct)+50)/100);
+            const float ivx=float(sw),ivy=float(sh),isx=float(W),isy=float(H);   // FsrEasuCon(inputViewport, inputSize, outputSize = inputSize)
+            const float c[16]={ivx/isx,ivy/isy,0.5f*ivx/isx-0.5f,0.5f*ivy/isy-0.5f, 1.0f/isx,1.0f/isy,1.0f/isx,-1.0f/isy, -1.0f/isx,2.0f/isy,1.0f/isx,2.0f/isy, 0.0f,4.0f/isy,0.0f,0.0f};
+            memcpy(con,c,sizeof con);
+            xbg_logf("NVN scene scale: s=%.2f %ux%u, scene drawn at %ux%u (DM_GFX_SCENE_SCALE)",pct/100.0,W,H,sw,sh);}
+        else if(im.width!=W || im.height!=H){disable("the window size changed");}}
+}
+// A pass matching the scene rule whose attachments are not all members yet: they become members (checks first, else off)
+bool adopt(const Pass &p){
+    bool colour=false;char list[160]="";int at=0;
+    for(uint32_t k=0;k<p.images.size();k++){const Image &im=*p.images[k];
+        if(at<int(sizeof list)-24){at+=snprintf(list+at,sizeof list-size_t(at)," %s:vk%d",p.att_slot[k]==8?"depth":"colour",int(im.fmt));}
+        if(p.att_slot[k]==8){continue;}
+        colour=true;
+        const VkFormatFeatureFlags want=VK_FORMAT_FEATURE_BLIT_SRC_BIT|VK_FORMAT_FEATURE_BLIT_DST_BIT|VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
+        const VkImageUsageFlags uwant=VK_IMAGE_USAGE_SAMPLED_BIT|VK_IMAGE_USAGE_TRANSFER_SRC_BIT|VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        if((format_properties(im.fmt).optimalTilingFeatures&want)!=want){char why[96];snprintf(why,sizeof why,"scene colour format vk%d lacks blit src / dst or linear filtering",int(im.fmt));disable(why);return false;}
+        if((im.usage&uwant)!=uwant || im.aspects!=VK_IMAGE_ASPECT_COLOR_BIT){char why[96];snprintf(why,sizeof why,"scene colour image usage %#x lacks sampled / transfer",unsigned(im.usage));disable(why);return false;}}
+    if(!colour || !prepare()){return false;}
+    for(uint32_t k=0;k<p.images.size();k++){Image &im=*p.images[k];if(!im.ss_role){im.ss_role=p.att_slot[k]==8?2:1;im.ss_small=false;}}
+    if(!told_scene){told_scene=true;xbg_logf("NVN scene scale: first scene pass %ux%u -> %ux%u,%s (DM_GFX_SCENE_SCALE)",W,H,sw,sh,list);}
+    else{static unsigned n=0;if(n++<8){xbg_logf("NVN scene scale: more scene members%s",list);}}
+    return true;
+}
+bool is_scene(const Pass &p){
+    if(!on_ || disabled || !W || p.samples!=VK_SAMPLE_COUNT_1_BIT || p.width!=W || p.height!=H || p.images.empty() || p.images.size()>9){return false;}
+    bool depth=false,all=true,win=false;
+    for(uint32_t k=0;k<p.images.size();k++){const Image &im=*p.images[k];
+        if(p.level[k] || p.layer[k] || im.width!=W || im.height!=H || im.samples!=VK_SAMPLE_COUNT_1_BIT || im.layers!=1){return false;}
+        if(p.att_slot[k]==8){depth=true;}else if(im.source.d.flags&1){win=true;}
+        if(!im.ss_role){all=false;}}
+    if(!depth){return false;}
+    // [TL2] Census 2026-11-24 (G2, Icedeep Caverns): the 3D world draws straight into the WINDOW texture with a W x H depth
+    // (passes 5-6, ~370 draws), the post chain then samples the window (pass 7 copy, FXAA, bloom 480x270..60x33), and the last pass
+    // writes the composite back into the window and draws the HUD on top. So a window + depth pass is the scene only before the
+    // window is sampled in this frame, and only when the previous frame sampled it too (a post chain runs: title and menu screens,
+    // which have none, stay full size). A window pass seen first only becomes a member, unscaled, so its reads are tracked.
+    if(win){const uint64_t cur=stats.presents.load()+1;
+        if(!all){if(!off_next){adopt(p);}return false;}
+        if(win_read1==cur || win_read1+1!=cur){return false;}}
+    return all || (!off_next && adopt(p));
+}
+// At every pass begin (outside a render pass, before vkCmdBeginRenderPass). cleared: bit 2k = attachment k is cleared by the begin
+// (no shrink needed). Returns the render area: sw x sh for a scene pass, else the full size.
+void census_pass(const Pass &p);
+VkExtent2D begin(const Pass &p,VkCommandBuffer cmd,uint32_t cleared){
+    if(off_next){disabled=true;}
+    learn_window(p);census_pass(p);
+    const bool scene=is_scene(p);
+    bool winpass=false;for(uint32_t k=0;k<p.images.size() && k<9;k++){if(p.att_slot[k]!=8 && (p.images[k]->source.d.flags&1)){winpass=true;}}
+    for(uint32_t k=0;k<p.images.size() && k<9;k++){Image &im=*p.images[k];if(!im.ss_role){continue;}
+        if(scene){if(im.ss_role==1 && !im.ss_small){if(!((cleared>>(2*k))&1u)){shrink(im,cmd);}im.ss_small=true;}}
+        else if(im.ss_role==1){if(im.ss_small){expand(im,cmd);}}
+        else if(!winpass){disable("a pass other than the scene attaches the scaled depth");}}   // the window's composite + HUD pass keeps the scene depth attached
+    return scene?VkExtent2D{sw,sh}:VkExtent2D{p.width,p.height};
+}
+VkRect2D rect(const VkRect2D &r,const Pass &p){
+    if(!is_scene(p)){return r;}
+    const uint64_t x=uint64_t(std::max(0,r.offset.x)),y=uint64_t(std::max(0,r.offset.y));
+    const uint64_t x0=x*sw/W,y0=y*sh/H,x1=std::min<uint64_t>(((x+r.extent.width)*sw+W-1)/W,sw),y1=std::min<uint64_t>(((y+r.extent.height)*sh+H-1)/H,sh);
+    VkRect2D o{};o.offset={int32_t(x0),int32_t(y0)};o.extent={uint32_t(x1>x0?x1-x0:0),uint32_t(y1>y0?y1-y0:0)};return o;
+}
+// [TL2] Diagnostic census (DM_GFX_SCENE_SCALE set): every pass of one frame at ~30 s / 60 s / 90 s of presents, so one device run
+// shows TL2's real pass graph (attachments, window flag, draws, first pixel shader) when no pass matches the scene rule.
+uint64_t census_frame=0;unsigned census_done=0,census_passes=0,census_draws=0;std::string census_ps;
+bool census_live(){return census_frame && stats.presents.load()==census_frame;}
+void census_flush(){if(census_live() && census_passes){xbg_logf("NVN census   draws=%u first_ps=%s",census_draws,census_ps.c_str());}census_draws=0;census_ps.clear();}
+void census_pass(const Pass &p){
+    const uint64_t f=stats.presents.load();
+    if(census_frame && f>census_frame){census_flush();xbg_logf("NVN census #%u end: %u passes in frame %llu",census_done+1,census_passes,(unsigned long long)census_frame);census_frame=0;census_passes=0;++census_done;}
+    if(!census_frame && census_done<3 && f>=1800ull*(census_done+1)){census_frame=f+1;}
+    if(!census_live()){return;}
+    census_flush();
+    char list[400];int at=0;
+    for(uint32_t k=0;k<p.images.size() && k<9 && at<int(sizeof list)-60;k++){const Image &im=*p.images[k];
+        at+=snprintf(list+at,sizeof list-size_t(at)," [%s vk%d %ux%u%s s%llu lv%u]",p.att_slot[k]==8?"depth":"colour",int(im.fmt),im.width,im.height,(im.source.d.flags&1)?" WINDOW":"",(unsigned long long)im.source.serial,p.level[k]);}
+    xbg_logf("NVN census pass %u: %ux%u samples=%d%s",census_passes++,p.width,p.height,int(p.samples),list);
+}
+void viewport(VkViewport &v,const Pass &p){
+    if(census_live()){if(!census_draws++ && state.shader[4]){census_ps=state.shader[4]->key.substr(0,16);}}
+    if(!is_scene(p)){return;}
+    const float fx=float(sw)/float(W),fy=float(sh)/float(H);v.x*=fx;v.y*=fy;v.width*=fx;v.height*=fy;
+    // Blindspot self-check (plan): the shaders of the first scaled draws, so one device run shows whether the HUD landed in a scene pass
+    if(draws_told<12){++draws_told;xbg_logf("NVN scene scale: scaled draw %u vs=%s ps=%s",draws_told,state.shader[0]?state.shader[0]->key.c_str():"none",state.shader[4]?state.shader[4]->key.c_str():"none");}
+}
+// Image::transition to a transfer layout: a small colour member is expanded first; the scaled depth as a transfer source turns the feature off
+void transfer_use(Image &im,VkCommandBuffer cmd,VkImageLayout next){
+    if(next!=VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL && next!=VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL){return;}
+    if(im.ss_role==2){if(next==VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL){disable("the scaled depth is a copy / blit / resolve source");}return;}
+    if(im.ss_small){expand(im,cmd);}
+}
+// image_read_hook: a sampled read of a small colour member expands it (the open pass ends first, as pclear_land does)
+void read_use(Image &im,bool storage){
+    if(storage){disable("a storage image bind targets a scaled member");}
+    if(im.ss_role==1 && (im.source.d.flags&1)){win_read1=stats.presents.load()+1;}   // the post chain sampled the window this frame
+    if(im.ss_role==2){if(!(state.rt.depth && state.rt.depth->serial==im.source.serial)){disable("a pass other than the scene samples the scaled depth");}return;}
+    if(!im.ss_small){return;}
+    end_open_pass();expand(im,recording_slot().cmd);
+}
+}
+#define SSCALE_INIT() sscale::init()
+#define SSCALE_SHUTDOWN() sscale::shutdown()
+#else
+#define SSCALE_INIT() ((void)0)
+#define SSCALE_SHUTDOWN() ((void)0)
+#endif
 const Buffer *dispatch_indirect=nullptr;   // [DOOM] DispatchComputeIndirect whose arguments are pending GPU results (see gpu_indirect_try)
 void dispatch(const p_dispatch &p){
     if(skip_unusable("compute dispatch"))return;
@@ -7558,6 +7841,7 @@ extern "C" int xbg_game_initialize(const xbg_game_config *c,char *error,size_t b
      {astc_ov_mask=xbg_astc_formats_mask(getenv("DM_GFX_ASTC_FORMATS"));   // [nonadreno] ASTC overlay: set by the boot choice (vulkan_present.cpp) only when mounted
       if(astc_ov_mask){char fm[64];xbg_astc_formats_str(astc_ov_mask,fm,sizeof fm);xbg_logf("NVN astc overlay: engine substitutes %s (DM_GFX_ASTC_FORMATS; rom overlay %s)",fm,getenv("DM_ROMFS_OVERLAY")?getenv("DM_ROMFS_OVERLAY"):"-");}}
      {FILE *b=fopen(((cut==std::string::npos?dir:dir.substr(0,cut))+"/gfx-noload").c_str(),"rb");noload_enabled=false;if(b){noload_enabled=fgetc(b)!='0';fclose(b);}else{const char *e=getenv("DM_GFX_NOLOAD");noload_enabled=e&&*e?atoi(e)!=0:xbg_noload_default(gpu_policy);}draw_reads_on=noload_enabled;lean_usage_on=xbg_env_or(getenv("DM_GFX_LEAN_USAGE"),xbg_lean_usage_default(gpu_policy));lean_dropped_images=lean_upgrades=0;xbg_logf("NVN proven full-overwrite first draws skip the color load=%d (marker gfx-noload / DM_GFX_NOLOAD; default on Mali / PowerVR, policy family %s; A/B target noload)",int(noload_enabled),xbg_gpu_family_name(gpu_policy));}{FILE *q=fopen(((cut==std::string::npos?dir:dir.substr(0,cut))+"/gfx-bright").c_str(),"rb");bright::enabled=true;if(q){bright::enabled=fgetc(q)!='0';fclose(q);}else if(const char *e=getenv("DM_GFX_BRIGHT"))bright::enabled=atoi(e)!=0;xbg_logf("NVN 3D brightening=%d (marker gfx-bright; A/B target bright)",int(bright::enabled));}{FILE *m=fopen(((cut==std::string::npos?dir:dir.substr(0,cut))+"/gfx-perf-sample").c_str(),"rb");perf_sample=32;if(m){if(fscanf(m,"%u",&perf_sample)!=1)perf_sample=32;fclose(m);}else if(const char *e=getenv("DM_GFX_PERF_SAMPLE"))perf_sample=unsigned(atoi(e));perf_frame_timed=perf_sample!=0;perf_timed_frames=0;xbg_logf("NVN perf timing every %u frames (marker gfx-perf-sample; 0 = off)",perf_sample);}}
+    SSCALE_INIT();   // [TL2] DM_GFX_SCENE_SCALE (namespace sscale): read once; unset = off
     for(auto &sl:slots)sl=Slot{};slot_index=0;pass_prof_enabled=false;pass_prof_next=300;pass_prof_period=600;pass_prof_until=UINT64_MAX;pass_prof_frame=UINT64_MAX;pass_prof_draws=0;pass_prof_queries=pass_prof_slots=pass_prof_skipped_slots=0;perf=Perf{};for(auto &c:perf_timing_before)c=XbgCpuTiming::Counter{};static_arena.cached=false;support_static.clear();format_property_cache.clear();for(auto &k:format_flat_known)k=false;
     VkPhysicalDeviceShaderDrawParametersFeatures draw_parameters{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_DRAW_PARAMETERS_FEATURES};VkPhysicalDeviceFeatures2 features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};features.pNext=&draw_parameters;vkGetPhysicalDeviceFeatures2(cfg.physical,&features);if(cfg.enabled_shader_draw_parameters && !draw_parameters.shaderDrawParameters){if(error&&bytes)snprintf(error,bytes,"shaderDrawParameters unsupported");return -1;}
     VkCommandPoolCreateInfo cp{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};cp.queueFamilyIndex=cfg.queue_family;cp.flags=VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;VkResult r=vkCreateCommandPool(cfg.device,&cp,nullptr,&command_pool);if(r!=VK_SUCCESS){if(error&&bytes)snprintf(error,bytes,"vkCreateCommandPool=%d",r);return r;}
@@ -7786,7 +8070,7 @@ extern "C" int xbg_game_profile_cpu(uint64_t first_frame,uint32_t frame_count){
     xbg_logf("NVN CPU_TIMING armed first=%llu count=%u maxSeconds=60 clock=steady elapsed-not-thread-cpu",(unsigned long long)first_frame,frame_count);
     if(first_frame==1)timing_start();return 0;
 }
-extern "C" int xbg_game_shutdown(){gfx_drain();gfx_async_stop();std::lock_guard<std::recursive_mutex> lock(mutex);if(!initialized)return 0;timing_report("shutdown-partial");provenance_close("SHUTDOWN");resolve_pending();submit_slots(true);save_pipeline_cache();pending_writebacks.clear();pending_reports.clear();pending_events.clear();recording_events.clear();epochs.clear();ptq::drain();VkResult r=ptq::wait_idle(cfg.queue);if(r!=VK_SUCCESS)return r;wtrack::release();destroy_slots();clear_pipeline_objects();cache_save_join();warm::shutdown();bright::shutdown();passval::shutdown();
+extern "C" int xbg_game_shutdown(){gfx_drain();gfx_async_stop();std::lock_guard<std::recursive_mutex> lock(mutex);if(!initialized)return 0;timing_report("shutdown-partial");provenance_close("SHUTDOWN");resolve_pending();submit_slots(true);save_pipeline_cache();pending_writebacks.clear();pending_reports.clear();pending_events.clear();recording_events.clear();epochs.clear();ptq::drain();VkResult r=ptq::wait_idle(cfg.queue);if(r!=VK_SUCCESS)return r;wtrack::release();destroy_slots();clear_pipeline_objects();cache_save_join();warm::shutdown();bright::shutdown();SSCALE_SHUTDOWN();passval::shutdown();
 #ifdef DM_GAME_ETERNAL
     bindless::destroy();
 #endif

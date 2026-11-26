@@ -45,6 +45,23 @@ final class Tl2Gear {
         Mode mode = new Mode(a);
         List<GearSettings.Section> l = new ArrayList<>();
         l.add(startEnv(a));
+        if (TL2) {
+            // [TL2] four category pages (GearSettings.page: a button per page, its own dialog with Save / Cancel; each section's env() still runs at the start)
+            GearSettings.Section shape = GearPages.pictureShape(new String[] {g.str(R.string.d3_aspect_bars), g.str(R.string.d3_aspect_stretch), g.str(R.string.d3_aspect_wide)},
+                DmActivity.D3_ASPECT_DEFAULT, g.str(R.string.d3_aspect_wide_note), a::applyAspectLayout, (s, v) -> aspectEnv(a, v), mode::relabel);
+            l.add(page(g.str(R.string.tl2_gear_display), shape, stretchLoading(), GearPages.sharpen(), GearPages.sceneScale(), GearPages.aniso(), GearPages.fpsCounter()));
+            List<GearSettings.Section> perf = new ArrayList<>();
+            perf.add(GearPages.fpsLimit(FPS_LIMITS, 60)); perf.add(note(R.string.d3_fps_note)); perf.add(GearPages.lowLatency());
+            if (a.drivers() != null) { perf.add(GearPages.driver(a.drivers())); perf.add(note(R.string.d3_driver_note)); }
+            l.add(page(g.str(R.string.tl2_gear_perf), perf.toArray(new GearSettings.Section[0])));
+            l.add(page(g.str(R.string.tl2_gear_controls), new Layout(), editLeavesGear(GearPages.padControls()), GearPages.deadzone(), new TouchRows(), GearPages.rumble(), GearPages.gearButton()));
+            List<GearSettings.Section> game = new ArrayList<>();
+            game.add(menuLanguageInPage()); game.add(GearPages.gameLanguage(LANG_CODES, LANG_LABELS, false)); game.add(note(R.string.d3_game_lang_note));
+            game.add(mode); game.add(localPlay()); game.add(folder(a));
+            if (a.updateNotice() != null) game.add(GearPages.updates(a.updateNotice()));
+            l.add(page(g.str(R.string.tl2_gear_game), game.toArray(new GearSettings.Section[0])));
+            return l;
+        }
         l.add(GearPages.menuLanguage());
         l.add(GearPages.gameLanguage(LANG_CODES, LANG_LABELS, false));
         l.add(note(R.string.d3_game_lang_note));
@@ -54,6 +71,9 @@ final class Tl2Gear {
         l.add(stretchLoading());
         // TL2 mods: their own row in the pause menu (DmActivity.portRows -> Tl2Gear.showMods), not a gear section
         l.add(GearPages.sharpen());
+        l.add(GearPages.sceneScale());   // 3D resolution, DM_GFX_SCENE_SCALE (next launch)
+        l.add(GearPages.aniso());   // texture filtering, DM_GFX_ANISO (next launch)
+        l.add(GearPages.lowLatency());   // DM_LOWLAT (next launch)
         l.add(GearPages.fpsLimit(FPS_LIMITS, 60));
         l.add(note(R.string.d3_fps_note));
         if (a.drivers() != null) { l.add(GearPages.driver(a.drivers())); l.add(note(R.string.d3_driver_note)); }
@@ -68,6 +88,45 @@ final class Tl2Gear {
         l.add(GearPages.gearButton());
         if (a.updateNotice() != null) l.add(GearPages.updates(a.updateNotice()));   // the app version + "Check for new versions at start" (UpdateNotice)
         return l;
+    }
+
+    // ---- [TL2] pages. GearSettings.page opens a page as a GearSettings of its own while the main dialog stays open underneath; a section
+    // that leaves or reopens the gear from inside a page (menu language, "Edit the layout...") must close that main dialog too, or it ends up
+    // stacked / covering the pad editor. top = the main dialog's GearSettings, remembered when its page buttons are built.
+    private static GearSettings top;
+    static GearSettings.Section page(String title, GearSettings.Section... in) {
+        GearSettings.Section p = GearSettings.page(title, in);
+        return new GearSettings.Section() {
+            public void build(GearSettings g, LinearLayout box) { top = g; p.build(g, box); }
+            public void env(GearSettings g) throws ErrnoException { p.env(g); }
+        };
+    }
+    static void closeTop() { if (top != null) top.dismiss(); }
+    // the menu language reopens the gear in the new language (GearSettings.reopen closes only the page): close the old main dialog as well
+    static GearSettings.Section menuLanguageInPage() {
+        GearSettings.Section in = GearPages.menuLanguage();
+        return new GearSettings.Section() {
+            public void build(GearSettings g, LinearLayout box) { in.build(g, box); }
+            public void after(GearSettings g) {
+                String was = g.a.getSharedPreferences(Ui.PREFS, android.content.Context.MODE_PRIVATE).getString("ui_lang", "");
+                GearSettings old = top;   // reopen() builds a new main dialog, which becomes top
+                in.after(g);
+                if (old != null && !was.equals(g.a.getSharedPreferences(Ui.PREFS, android.content.Context.MODE_PRIVATE).getString("ui_lang", ""))) old.dismiss();
+            }
+        };
+    }
+    // "Edit the layout..." (the two buttons under the sliders: edit, reset) closes the page, and here the main dialog too, so the pad shows
+    static GearSettings.Section editLeavesGear(GearSettings.Section in) {
+        return new GearSettings.Section() {
+            public void build(GearSettings s, LinearLayout box) {
+                in.build(s, box);
+                ((Button) box.getChildAt(box.getChildCount() - 2)).setOnClickListener(v -> {
+                    s.dismiss(); closeTop();
+                    FrontMenu f = s.host.front(); FrontMenu.Pad p = s.host.pad();
+                    if (f != null) f.edit(); else if (p != null) p.startEdit(null);
+                });
+            }
+        };
     }
 
     // ---- [mp] local wireless play over the LAN (hle_ldn.c; pref "mp_lan", on by default -> DM_LDN): the game's own local multiplayer (Pia over
@@ -187,8 +246,16 @@ final class Tl2Gear {
         g.note(box, g.str(R.string.tl2_mods_folder, Tl2Mods.modsDir(g.a).getAbsolutePath()));
         final LinearLayout rows = g.vbox(box);
         final Runnable[] fill = new Runnable[1];
+        // [TL2] overlap report: the .MOD manifests are read once on a background thread (Tl2Mods.entries), fill[0] then only reads the cache
+        final java.util.function.BiFunction<java.util.Map<Tl2Mods.Mod, Integer>, Integer, String> who = (mp, res) -> {
+            StringBuilder s = new StringBuilder(); int shown = 0, total = 0;
+            for (java.util.Map.Entry<Tl2Mods.Mod, Integer> e : mp.entrySet()) { total += e.getValue(); if (shown++ < 3) { s.append(shown > 1 ? ", " : "").append(Tl2Mods.describe(e.getKey())); } }
+            if (shown > 3) { s.append(" +").append(shown - 3); }
+            return g.str(res, total, s.toString());
+        };
         fill[0] = () -> {
             rows.removeAllViews();
+            final java.util.Map<Tl2Mods.Mod, Tl2Mods.Overlap> ov = Tl2Mods.overlaps(mods);
             if (mods.isEmpty()) { TextView t = g.text(rows, g.str(R.string.tl2_mods_none)); t.setPadding(0, 24, 0, 24); }
             for (int i = 0; i < mods.size(); i++) {
                 final int at = i; final Tl2Mods.Mod m = mods.get(i);
@@ -196,8 +263,11 @@ final class Tl2Gear {
                 CheckBox c = new CheckBox(g.a);
                 String sub = m.info == null ? g.str(R.string.tl2_mods_bad, m.error)
                     : g.str(R.string.tl2_mods_line, (m.info.author.isEmpty() ? "" : m.info.author + " · ") + m.file.getName(), m.info.modver);
+                Tl2Mods.Overlap o = ov.get(m);
+                if (o != null && !o.overrides.isEmpty()) { sub += "\n" + who.apply(o.overrides, R.string.tl2_mods_overrides); }
+                if (o != null && !o.overridden.isEmpty()) { sub += "\n" + who.apply(o.overridden, R.string.tl2_mods_overridden); }
                 c.setText(Tl2Mods.describe(m) + "\n" + sub); c.setEnabled(m.info != null); c.setChecked(m.on && m.info != null);
-                c.setOnCheckedChangeListener((b, on) -> m.on = on);
+                c.setOnCheckedChangeListener((b, on) -> { m.on = on; fill[0].run(); });
                 row.addView(c, new LinearLayout.LayoutParams(0, -2, 1f));
                 Button up = new Button(g.a), down = new Button(g.a);
                 up.setText("▲"); down.setText("▼"); up.setEnabled(i > 0); down.setEnabled(i < mods.size() - 1);
@@ -208,6 +278,11 @@ final class Tl2Gear {
             }
         };
         fill[0].run();
+        final List<java.io.File> modFiles = new ArrayList<>(); for (Tl2Mods.Mod m : mods) { if (m.info != null) { modFiles.add(m.file); } }
+        new Thread(() -> {
+            for (java.io.File f : modFiles) { try { Tl2Mods.entries(f); } catch (java.io.IOException | RuntimeException | OutOfMemoryError e) { /* skipped in the report */ } }
+            g.a.runOnUiThread(() -> fill[0].run());
+        }).start();
         g.note(box, g.str(R.string.tl2_mods_restart));
         android.widget.ScrollView scroll = new android.widget.ScrollView(g.a); scroll.addView(box);
         new AlertDialog.Builder(g.a).setTitle(g.str(R.string.tl2_mods_title)).setView(scroll)

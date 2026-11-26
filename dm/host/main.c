@@ -164,6 +164,9 @@ static void host_preload(int argc, char **argv) {
     if (i < argc && !strcmp(argv[i], "--")) for (i++; i < argc && g_argc < 63; i++) g_argv[g_argc++] = argv[i];
     if (!n) { names[n++] = "main"; names[n++] = "sdk"; }
     load_modules(argv[1], names, n);
+#ifdef DM_GAME_TL2
+    dm_exefs_patch_apply();   // [TL2] Download/Torchlight2Mobile/exefs_patches (IPS / IPS32 / pchtxt, hle_exefs_patch.c): no folder = returns at once
+#endif
 #ifdef DM_GAME_XC2
     { void dm_xc2_wide_install(void); dm_xc2_wide_install(); }   // [XC2] DM_XC2_WIDE: widen the NVN window before the guest runs (hle_xc2.c)
 #endif

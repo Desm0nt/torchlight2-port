@@ -15,6 +15,8 @@
 // Hooks: dm_stall_present() per present on the presenting thread (perf_android.c dm_aperf_present, first line: also under a translation layer),
 // dm_stall_watch_start() after the host thread starts and dm_stall_quiet() on the pause menu / background (jni_android.c).
 #include "../host/dm.h"
+#include <errno.h>
+#include <sys/stat.h>
 #include <dirent.h>
 #include <dlfcn.h>
 #include <fcntl.h>
@@ -41,6 +43,78 @@ void dm_stall_quiet(int bit, int on) {
     if (!on && (was & bit)) atomic_store(&g_unquiet_at, mono_ns());   // a hold is not a stall: the gap counts from here
 }
 
+// [TL2] Stutter flight recorder, DM_FLIGHT=1 (default off), DM_FLIGHT_SPIKE_MS (default 100). A ring of 600 presents, each with the present interval
+// (this file's clock, taken on the presenting thread), the game thread's acquire wait, its CPU time for the frame and its draw count (hle_nvn.c feeds
+// those three through dm_flight_note, the game thread's latest present: it runs a little ahead of the presenting thread, which is good enough to
+// read a spike). A present interval >= the spike limit arms the dump: 30 more presents are recorded, then the ring is copied into a static buffer and a
+// background thread (dm-flight) writes <data folder>/logs/flight-<n>.tsv (DM_RUNTIME_DIR when the logs folder is missing); at most one dump per 10 s.
+// No thumbnails. No allocation per frame: the ring, the dump copy and the pending values are static.
+enum { FL_RING = 600, FL_AFTER = 30 };
+typedef struct { float iv_ms, acq_ms, cpu_ms; uint32_t draws; uint64_t seq; } fl_rec;
+static fl_rec g_fl[FL_RING], g_fl_dump[FL_RING]; static uint64_t g_fl_n, g_fl_dump_n, g_fl_dump_spike; static int64_t g_fl_prev, g_fl_last_dump; static int g_fl_after, g_fl_spike_ms = 100;
+static _Atomic int g_fl_on = -1, g_fl_busy; static _Atomic int32_t g_fl_acq_us, g_fl_cpu_us; static _Atomic uint32_t g_fl_draws;
+static pthread_mutex_t g_fl_mu = PTHREAD_MUTEX_INITIALIZER; static pthread_cond_t g_fl_cv = PTHREAD_COND_INITIALIZER; static int g_fl_go;
+static uint64_t g_fl_spike_seq;
+
+int dm_flight_on(void) {
+    int s = atomic_load_explicit(&g_fl_on, memory_order_relaxed);
+    if (s < 0) {
+        const char *e = getenv("DM_FLIGHT"); s = e && *e == '1'; g_fl_spike_ms = env_int("DM_FLIGHT_SPIKE_MS", 100); if (g_fl_spike_ms < 1) g_fl_spike_ms = 100;
+        if (s) LOG("[flight] on (DM_FLIGHT=1): ring of %d presents, dump after a present interval >= %d ms (DM_FLIGHT_SPIKE_MS), %d presents later", FL_RING, g_fl_spike_ms, FL_AFTER);
+        atomic_store(&g_fl_on, s);
+    }
+    return s;
+}
+void dm_flight_note(double acq_wait_ms, double cpu_ms, unsigned draws) {
+    atomic_store_explicit(&g_fl_acq_us, (int32_t)(acq_wait_ms * 1000), memory_order_relaxed);
+    atomic_store_explicit(&g_fl_cpu_us, (int32_t)(cpu_ms * 1000), memory_order_relaxed);
+    atomic_store_explicit(&g_fl_draws, draws, memory_order_relaxed);
+}
+static void *flight_writer(void *unused) {
+    (void)unused;
+    for (;;) {
+        pthread_mutex_lock(&g_fl_mu); while (!g_fl_go) pthread_cond_wait(&g_fl_cv, &g_fl_mu); g_fl_go = 0; pthread_mutex_unlock(&g_fl_mu);
+        static unsigned n; char dir[1100], path[1200]; const char *d = getenv("DM_ASTC_DATA_DIR"), *rt = getenv("DM_RUNTIME_DIR"); struct stat st;
+        snprintf(dir, sizeof dir, "%s/logs", d && *d ? d : ".");
+        if (!d || !*d || stat(dir, &st) || !S_ISDIR(st.st_mode)) snprintf(dir, sizeof dir, "%s", rt && *rt ? rt : ".");
+        snprintf(path, sizeof path, "%s/flight-%u.tsv", dir, ++n);
+        FILE *f = fopen(path, "w");
+        if (!f) LOG("[flight] cannot write %s (errno %d)", path, errno);
+        else {
+            fprintf(f, "# stutter flight recorder: %llu presents ending at present #%llu, spike at #%llu (>= %d ms)\npresent\tinterval_ms\tacquire_wait_ms\tguest_cpu_ms\tdraws\n",
+                    (unsigned long long)(g_fl_dump_n < FL_RING ? g_fl_dump_n : FL_RING), (unsigned long long)g_fl_dump_n, (unsigned long long)g_fl_dump_spike, g_fl_spike_ms);
+            uint64_t cnt = g_fl_dump_n < FL_RING ? g_fl_dump_n : FL_RING;
+            for (uint64_t i = 0; i < cnt; i++) {
+                const fl_rec *r = &g_fl_dump[(g_fl_dump_n - cnt + i) % FL_RING];
+                fprintf(f, "%llu\t%.2f\t%.2f\t%.2f\t%u\n", (unsigned long long)r->seq, r->iv_ms, r->acq_ms, r->cpu_ms, r->draws);
+            }
+            fclose(f);
+            LOG("[flight] spike at present #%llu: %llu presents written to %s", (unsigned long long)g_fl_dump_spike, (unsigned long long)cnt, path);
+        }
+        atomic_store(&g_fl_busy, 0);
+    }
+    return NULL;
+}
+static void flight_present(int64_t t) {   // the presenting thread, once per present
+    int64_t prev = g_fl_prev; g_fl_prev = t;
+    if (!prev) return;
+    fl_rec *r = &g_fl[g_fl_n % FL_RING];
+    r->seq = g_fl_n; r->iv_ms = (float)((t - prev) / 1e6); r->acq_ms = atomic_load_explicit(&g_fl_acq_us, memory_order_relaxed) / 1000.0f;
+    r->cpu_ms = atomic_load_explicit(&g_fl_cpu_us, memory_order_relaxed) / 1000.0f; r->draws = atomic_load_explicit(&g_fl_draws, memory_order_relaxed);
+    g_fl_n++;
+    if (g_fl_after > 0) {
+        if (--g_fl_after == 0 && !atomic_load(&g_fl_busy)) {   // the 30 presents after the spike are in: hand the ring to the writer
+            memcpy(g_fl_dump, g_fl, sizeof g_fl); g_fl_dump_n = g_fl_n; g_fl_dump_spike = g_fl_spike_seq; g_fl_last_dump = t;
+            atomic_store(&g_fl_busy, 1);
+            static int started; if (!started) { pthread_t th; if (!pthread_create(&th, NULL, flight_writer, NULL)) { pthread_setname_np(th, "dm-flight"); pthread_detach(th); started = 1; } }
+            if (started) { pthread_mutex_lock(&g_fl_mu); g_fl_go = 1; pthread_cond_signal(&g_fl_cv); pthread_mutex_unlock(&g_fl_mu); } else atomic_store(&g_fl_busy, 0);
+        }
+    } else if (r->iv_ms >= (float)g_fl_spike_ms && !atomic_load(&g_fl_busy) && (!g_fl_last_dump || t - g_fl_last_dump >= 10000000000ll)) {
+        g_fl_after = FL_AFTER; g_fl_spike_seq = r->seq;
+        LOG("[flight] spike: present #%llu came %.1f ms after the previous one (acquire wait %.1f ms, guest CPU %.1f ms, %u draws); recording %d more", (unsigned long long)r->seq, r->iv_ms, r->acq_ms, r->cpu_ms, r->draws, FL_AFTER);
+    }
+}
+
 void dm_stall_present(void) {
     static int test_ms = -1, after_s, every_s; static int64_t first, next;
     if (test_ms < 0) {
@@ -60,6 +134,7 @@ void dm_stall_present(void) {
     atomic_store(&g_present_tid, (int)gettid());
     atomic_fetch_add(&g_presents, 1);
     atomic_store(&g_last_present, mono_ns());
+    if (dm_flight_on()) flight_present(mono_ns());   // [TL2] DM_FLIGHT: the flight recorder (above), off = one atomic read
 }
 
 // ---- per-thread state

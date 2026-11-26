@@ -29,7 +29,7 @@ import java.util.Set;
 final class Tl2Mods {
     private Tl2Mods() {}
     static final String PREF = "tl2_mods";
-    static final int CONVERTER_VERSION = 4;   // 2: + MEDIA/PORT/SKILLTREES.TXT (issue #6); 3: + skill icon atlases ZMODICONS_*; 4: skill panes found without the SkillPane<N> name (issue #25). Bump when Tl2ModConv's output changes: every pack is converted again
+    static final int CONVERTER_VERSION = 5;   // 2: + MEDIA/PORT/SKILLTREES.TXT (issue #6); 3: + skill icon atlases ZMODICONS_*; 4: skill panes found without the SkillPane<N> name (issue #25); 5: item icons (ICON of MEDIA/UNITS/ITEMS DATs) join the ZMODICONS atlases. Bump when Tl2ModConv's output changes: every pack is converted again
 
     // [TL2] <game folder>/mods (GameFolder: the internal storage, an SD card or the folder the player chose). The converted packs stay in
     // workDir on internal storage, so no conversion writes reach a card.
@@ -148,5 +148,41 @@ final class Tl2Mods {
         try (FileOutputStream o = new FileOutputStream(t)) { o.write(s.toString().getBytes(StandardCharsets.UTF_8)); } catch (IOException e) { return; }
         if (!t.renameTo(f)) { f.delete(); t.renameTo(f); }
     }
+
+    // [TL2] mod overlap report: two enabled mods holding the same game file with different bytes (crc), the later in load order wins.
+    // entries() reads a .MOD's MAN (background thread only) into ENTRIES, keyed by name + size + mtime; overlaps() only looks at the cache.
+    private static final Map<String, List<Tl2ModConv.Entry>> ENTRIES = new HashMap<>();
+    private static String entriesKey(File f) { return f.getName() + "\t" + f.length() + "\t" + f.lastModified(); }
+    static List<Tl2ModConv.Entry> cachedEntries(File f) { synchronized (ENTRIES) { return ENTRIES.get(entriesKey(f)); } }
+    static List<Tl2ModConv.Entry> entries(File f) throws IOException {
+        List<Tl2ModConv.Entry> e = cachedEntries(f); if (e != null) return e;
+        e = Tl2ModConv.readEntries(f); synchronized (ENTRIES) { ENTRIES.put(entriesKey(f), e); } return e;
+    }
+
+    static final class Overlap { final Map<Mod, Integer> overrides = new java.util.LinkedHashMap<>(), overridden = new java.util.LinkedHashMap<>(); }
+
+    /** Per enabled mod: files it replaces from earlier mods / files later mods replace; mods whose entries are not cached yet are left out. */
+    static Map<Mod, Overlap> overlaps(List<Mod> mods) {
+        Map<Mod, Overlap> out = new java.util.IdentityHashMap<>(); Map<String, List<Object[]>> paths = new HashMap<>();
+        for (Mod m : mods) {
+            List<Tl2ModConv.Entry> es = m.on && m.info != null ? cachedEntries(m.file) : null; if (es == null) continue;
+            out.put(m, new Overlap());
+            for (Tl2ModConv.Entry e : es) {
+                if (e.type == 7 || (e.off == 0 && e.size == 0)) continue;
+                String key = (e.dir + e.name).toUpperCase(Locale.ROOT); List<Object[]> l = paths.get(key); if (l == null) { l = new ArrayList<>(); paths.put(key, l); }
+                if (!l.isEmpty() && l.get(l.size() - 1)[0] == m) l.remove(l.size() - 1);
+                l.add(new Object[] {m, e.crc});
+            }
+        }
+        for (List<Object[]> l : paths.values()) {
+            for (int b = 1; b < l.size(); b++) for (int a = 0; a < b; a++) {
+                if (((Integer) l.get(a)[1]).intValue() == ((Integer) l.get(b)[1]).intValue()) { continue; }
+                Mod early = (Mod) l.get(a)[0], late = (Mod) l.get(b)[0];
+                out.get(late).overrides.merge(early, 1, Integer::sum); out.get(early).overridden.merge(late, 1, Integer::sum);
+            }
+        }
+        return out;
+    }
+
     static String describe(Mod m) { return m.info == null ? m.file.getName() : (m.info.title.isEmpty() ? m.file.getName() : m.info.title); }
 }

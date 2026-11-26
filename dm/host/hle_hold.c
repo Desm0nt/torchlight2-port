@@ -15,6 +15,9 @@
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdlib.h>
+#ifdef DM_GAME_DOOM
+#include "hle_haptics.h"
+#endif
 void dm_gfx_suspend(int on);
 void dm_audio_suspend(int on);
 void guest_clock_freeze_for(int reason, int on);
@@ -30,6 +33,13 @@ static void apply_locked(void) {
     int gfx = g_bg_gfx || g_menu, audio = g_bg_audio || g_menu || g_quit;   // the quit lets the game run on (a save to finish) without sound
     if (gfx != g_on_gfx) { dm_gfx_suspend(gfx); g_on_gfx = gfx; }
     if (audio != g_on_audio) { dm_audio_suspend(audio); g_on_audio = audio; }
+#ifdef DM_GAME_DOOM
+    // [TL2] [hold] The pause menu used to leave the last rumble value running (the game is frozen, nothing writes a stop): suspending the haptics
+    // under a HOLD reason clears every motor (hle_haptics.c dm_haptics_suspend, on a change of the mask) and drops the game's writes until the release.
+    // Idempotent: an unchanged mask does nothing. Bug fix, always on.
+    { static int rumble_held = -1; int want = gfx || audio;
+      if (want != rumble_held) { dm_haptics_suspend(DM_HAPTICS_HOLD, want); if (rumble_held >= 0 || want) LOG("[hold] rumble %s (menu / background hold)", want ? "stopped" : "allowed again"); rumble_held = want; } }
+#endif
 }
 void dm_hold_bg_audio(int on) { pthread_mutex_lock(&g_apply); g_bg_audio = on != 0; apply_locked(); pthread_mutex_unlock(&g_apply); }
 void dm_hold_bg_graphics(int on) { pthread_mutex_lock(&g_apply); g_bg_gfx = on != 0; apply_locked(); pthread_mutex_unlock(&g_apply); }
