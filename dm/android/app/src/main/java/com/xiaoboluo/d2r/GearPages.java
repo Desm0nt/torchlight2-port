@@ -25,7 +25,7 @@ import java.util.ArrayList;
 //   pictureShape   16:9 with bars / stretched / the game's widescreen (pref "aspect"; GearDisplay.fitSurface + the port's env)      both
 //   look           look sensitivity (pad "look")                                                                                   immediately
 //   deadzone       move stick dead-zone compensation (pad "move_dz")                                                               immediately
-//   fpsCounter     the FPS / frame time counter (pad "fps")                                                                        immediately
+//   fpsCounter     the FPS / frame time counter (pad "fps") + the throttle dot beside it (pad "fps_dot"; FpsOverlay)           immediately
 //   gearButton     the menu (gear) button: normal / faded + the faded opacity slider (pad "gear_mode", "gear_alpha")               immediately
 //   padControls    the on-screen controls' opacity and size (live sliders), "Edit the layout…", "Reset the layout"                 immediately
 //   menuLanguage   the menu language (front ui_lang: this dialog, the pause menu, the pad dialogs; reopens in it)                   immediately
@@ -255,9 +255,16 @@ final class GearPages {
     }
     static GearSettings.Section fpsCounter() {
         return new GearSettings.Section() {
-            CheckBox c;
-            public void build(GearSettings s, LinearLayout box) { c = s.check(box, s.whenKey("gear_fps_counter", true), s.padPrefs().getBoolean("fps", true)); }
-            public void save(GearSettings s, SharedPreferences.Editor game, SharedPreferences.Editor pad) { pad.putBoolean("fps", c.isChecked()); }
+            CheckBox c, d;
+            public void build(GearSettings s, LinearLayout box) {
+                c = s.check(box, s.whenKey("gear_fps_counter", true), s.padPrefs().getBoolean("fps", true));
+                d = s.check(box, s.whenKey("gear_fps_dot", true), s.padPrefs().getBoolean(FpsOverlay.PREF_DOT, true));
+                int in = Math.round(28 * s.a.getResources().getDisplayMetrics().density);
+                ((LinearLayout.LayoutParams) d.getLayoutParams()).leftMargin = in;
+                final TextView n = s.text(box, s.s("gear_fps_dot_note")); ((LinearLayout.LayoutParams) n.getLayoutParams()).leftMargin = in;
+                d.setEnabled(c.isChecked()); n.setEnabled(c.isChecked()); c.setOnCheckedChangeListener((v, on) -> { d.setEnabled(on); n.setEnabled(on); });
+            }
+            public void save(GearSettings s, SharedPreferences.Editor game, SharedPreferences.Editor pad) { pad.putBoolean("fps", c.isChecked()).putBoolean(FpsOverlay.PREF_DOT, d.isChecked()); }
         };
     }
     // the menu (settings) button (DoomPadView.GEAR_*): normal / faded, with the faded opacity slider below (1..100 % of the usual alpha; saved and

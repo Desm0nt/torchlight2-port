@@ -136,6 +136,7 @@ public class D3PadView extends View implements FrontMenu.Pad {
         text.setTextAlign(Paint.Align.CENTER);
         icons = c instanceof DmActivity && !DmActivity.TL2 ? new D3SkillIcons((DmActivity) c, this::invalidate) : null;   // [TL2] D3SkillIcons reads D3's HUD slots: not TL2's
         tl2Icons = DmActivity.TL2 ? new Tl2Icons(this) : null;
+        fpsView = new FpsOverlay(this, DmActivity::nativeFrameStats, this::legacyFps, () -> false);   // [front] drawn on the window: a small View
         reloadSettings();
     }
 
@@ -194,7 +195,7 @@ public class D3PadView extends View implements FrontMenu.Pad {
         menuLabel = ui.getString(R.string.d3_pad_menu); editHint = ui.getString(R.string.d3_pad_edit_hint);
         resetLabel = ui.getString(R.string.d3_pad_reset); doneLabel = ui.getString(R.string.d3_pad_done);
         deadzone = p.getFloat("move_dz", 0f);
-        boolean fps = p.getBoolean("fps", true); if (fps && !showFps) postDelayed(fpsTick, 500); showFps = fps;
+        showFps = p.getBoolean("fps", true); fpsView.set(showFps, p.getBoolean(FpsOverlay.PREF_DOT, true));
         gearMode = p.getInt("gear_mode", GEAR_NORMAL) == GEAR_NORMAL ? GEAR_NORMAL : GEAR_FADED;
         gearAlpha = clamp(p.getInt("gear_alpha", DoomPadView.GEAR_ALPHA_DEFAULT), 1, 100);
         op = clamp(p.getInt("d3_opacity", OPACITY_DEFAULT), OPACITY_MIN, OPACITY_MAX) / 100f;
@@ -229,9 +230,9 @@ public class D3PadView extends View implements FrontMenu.Pad {
     private void iconGate() { if (icons != null && !tl2()) icons.setGate(iconsOn && padVisible && hostResumed && !menuMode && !controllerMode && !editMode); }
     // DmActivity.onResume / onPause: no read-back of a surface that is going away; a resume samples again soon.
     void setHostResumed(boolean on) { hostResumed = on; iconGate(); }
-    @Override public void onVisibilityAggregated(boolean visible) { super.onVisibilityAggregated(visible); padVisible = visible; iconGate(); }
-    @Override protected void onAttachedToWindow() { super.onAttachedToWindow(); if (icons != null) { icons.start(); iconGate(); } }
-    @Override protected void onDetachedFromWindow() { if (icons != null) icons.stop(); super.onDetachedFromWindow(); }
+    @Override public void onVisibilityAggregated(boolean visible) { super.onVisibilityAggregated(visible); padVisible = visible; iconGate(); fpsShown(); }
+    @Override protected void onAttachedToWindow() { super.onAttachedToWindow(); if (icons != null) { icons.start(); iconGate(); } fpsView.sync(); }
+    @Override protected void onDetachedFromWindow() { if (icons != null) icons.stop(); super.onDetachedFromWindow(); fpsView.sync(); }
     private static int clamp(int v, int lo, int hi) { return Math.max(lo, Math.min(hi, v)); }
     private static float clampF(float v) { return Math.max(0f, Math.min(1f, v)); }
 
@@ -432,8 +433,8 @@ public class D3PadView extends View implements FrontMenu.Pad {
     // ---------------- edit mode ----------------
     private int editPtr = -1; private Ctl editCtl; private float editAx, editAy, editX0, editY0;
     private final RectF resetRect = new RectF(), doneRect = new RectF(), panelRect = new RectF();
-    void startEdit() { if (tl2()) { tl2.startEdit(null); return; } releaseAll(); editMode = true; iconGate(); invalidate(); }
-    private void endEdit() { editPtr = -1; editMode = false; iconGate(); invalidate(); Runnable d = editDone; editDone = null; if (d != null) d.run(); }
+    void startEdit() { if (tl2()) { tl2.startEdit(null); fpsShown(); return; } releaseAll(); editMode = true; iconGate(); fpsShown(); invalidate(); }
+    private void endEdit() { editPtr = -1; editMode = false; iconGate(); fpsShown(); invalidate(); Runnable d = editDone; editDone = null; if (d != null) d.run(); }
     private void resetPlaces() {
         SharedPreferences.Editor e = getContext().getSharedPreferences("doom_controls", Context.MODE_PRIVATE).edit();
         for (Ctl k : all()) e.remove(posKey(k.group));
@@ -472,12 +473,14 @@ public class D3PadView extends View implements FrontMenu.Pad {
 
     // ---------------- touches ----------------
     @Override public boolean onTouchEvent(MotionEvent e) {
-        if (tl2()) return tl2.onTouch(e);   // [TL2]
+        if (tl2()) { fpsPress(e); return tl2.onTouch(e); }   // [TL2] (fpsPress: a long press on the counter's own spot only, the touch still goes on)
         int a = e.getActionMasked(), i = e.getActionIndex(), id = e.getPointerId(i);
         float x = e.getX(i), y = e.getY(i);
         if (editMode) { editTouch(e, a, id, x, y); return true; }
         if (controllerMode) {   // a real controller drives the game: only the settings button, and no axes from this pad
-            if (a == MotionEvent.ACTION_DOWN || a == MotionEvent.ACTION_POINTER_DOWN) { Btn b = hit(x, y); if (b != null && b.key == SETTINGS) openSettings(); }
+            if (a == MotionEvent.ACTION_DOWN || a == MotionEvent.ACTION_POINTER_DOWN) { Btn b = hit(x, y); if (b != null && b.key == SETTINGS) openSettings(); else if (b == null) fpsView.pressDown(id, x, y); }
+            else if (a == MotionEvent.ACTION_MOVE) fpsView.pressMove(e);
+            else if (a == MotionEvent.ACTION_UP || a == MotionEvent.ACTION_POINTER_UP || a == MotionEvent.ACTION_CANCEL) fpsView.pressUp(id, a != MotionEvent.ACTION_POINTER_UP);
             return true;
         }
         switch (a) {
@@ -489,9 +492,11 @@ public class D3PadView extends View implements FrontMenu.Pad {
             else if (menuMode) { if (menuPtr < 0) menuStart(id, x, y); }
             else if (tl2Pad() && uiPtr < 0 && Tl2Pointer.waits(this, x, y)) { uiPtr = id; uiX0 = x; uiY0 = y; uiT0 = SystemClock.uptimeMillis(); uiDrag = false; }   // [TL2] menu / map finger
             else freeDown(id, x, y);
+            if (b == null && id != left.pointer && (right == null || id != right.pointer) && id != uiPtr && id != menuPtr && id != worldPtr) fpsView.pressDown(id, x, y);   // [front] long press on the counter: the dot's explanation
             break;
         }
         case MotionEvent.ACTION_MOVE:
+            fpsView.pressMove(e);
             for (int k = 0; k < e.getPointerCount(); k++) {
                 int pid = e.getPointerId(k); float px = e.getX(k), py = e.getY(k);
                 if (pid == uiPtr) uiMove(pid, px, py);   // first: a finger that stops waiting becomes a stick below
@@ -503,6 +508,7 @@ public class D3PadView extends View implements FrontMenu.Pad {
             break;
         case MotionEvent.ACTION_UP: case MotionEvent.ACTION_POINTER_UP: case MotionEvent.ACTION_CANCEL: {
             boolean all = a != MotionEvent.ACTION_POINTER_UP, cancel = a == MotionEvent.ACTION_CANCEL;
+            fpsView.pressUp(id, all);
             for (Btn b : btns) if (b.pointer >= 0 && (b.pointer == id || all)) { key(b.key, false); b.pointer = -1; }
             if (left.pointer >= 0 && (id == left.pointer || all)) release(left, !cancel);
             if (right != null && right.pointer >= 0 && (id == right.pointer || all)) release(right, !cancel);
@@ -541,10 +547,23 @@ public class D3PadView extends View implements FrontMenu.Pad {
     }
 
     // ---------------- drawing ----------------
-    private boolean showFps; private final float[] fstats = new float[4];
-    private final Runnable fpsTick = new Runnable() { public void run() { if (!showFps) return; DmActivity.nativeFrameStats(fstats); invalidate(); postDelayed(this, 500); } };
+    // [front] The counter and the throttle dot are drawn by FpsOverlay in a small view of their own (frontend-common, PNH-C04: this full-screen
+    // view is no longer recorded and drawn again twice a second for them; same text and place as before). drawFps below is the old way, used
+    // only when FpsOverlay hands the numbers over (DM_FPS_VIEW=0 for A/B runs, or a parent that is not a FrameLayout).
+    private boolean showFps, legacyFps; private final float[] fstats = new float[4];
+    private final FpsOverlay fpsView;
+    private void legacyFps(float[] s) { legacyFps = s != null; if (s != null) System.arraycopy(s, 0, fstats, 0, 4); invalidate(); }   // UI thread
+    // hidden while a layout editor is open (ours or Tl2Touch's; onDraw calls it too, as Tl2Touch's editor redraws the pad when it opens / closes)
+    private void fpsShown() { fpsView.shown(padVisible && !editMode && !(tl2() && tl2.editing())); }
+    // [TL2] Tl2Touch takes every touch: hand the counter the presses (pressDown starts only on the counter itself, with the dot shown)
+    private void fpsPress(MotionEvent e) {
+        int a = e.getActionMasked(), i = e.getActionIndex(), id = e.getPointerId(i);
+        if (a == MotionEvent.ACTION_DOWN || a == MotionEvent.ACTION_POINTER_DOWN) { if (!tl2.editing()) fpsView.pressDown(id, e.getX(i), e.getY(i)); }
+        else if (a == MotionEvent.ACTION_MOVE) fpsView.pressMove(e);
+        else if (a == MotionEvent.ACTION_UP || a == MotionEvent.ACTION_POINTER_UP || a == MotionEvent.ACTION_CANCEL) fpsView.pressUp(id, a != MotionEvent.ACTION_POINTER_UP);
+    }
     private void drawFps(Canvas c) {
-        if (!showFps || fstats[0] <= 0) return;
+        if (!showFps || !legacyFps || fstats[0] <= 0) return;
         String t = String.format(Locale.ROOT, "%.0f fps  %.1f ms (max %.0f)%s", fstats[0], fstats[1], fstats[2],
             fstats[3] >= 0 ? String.format(Locale.ROOT, "  GPU %.1f", fstats[3]) : "");
         text.setTextSize(15 * dp); text.setColor(0xd0ffffff);
@@ -555,6 +574,7 @@ public class D3PadView extends View implements FrontMenu.Pad {
 
     @Override protected void onDraw(Canvas c) {
         super.onDraw(c);
+        fpsShown();
         drawFps(c);
         if (tl2()) { tl2.draw(c); return; }   // [TL2]
         if (tl2Icons != null) { tl2Icons.poll(); tl2Icons.drawn(!editMode && !controllerMode); }   // [TL2] gamepad layout: the HUD slot icons
