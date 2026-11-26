@@ -1020,3 +1020,9 @@ tree layout(s), 22 class name(s)`.
   драйвере TILE_BARRIER + CLEAR_FOLD, `DM_GFX_STOCK_TILE=1`), vk-enc-thread (`ee707e4`, поток `dm-venc`, `DM_GFX_VENC`, выкл. на PowerVR),
   счётчик кадров FpsOverlay + точка нагрева (`4a52d84`, `DM_FPS_VIEW=0` — старый).
 - Хост-тесты всех модулей проходят; обе APK собраны. Код peanuts — GPL-3.0+ (`longframe_diag.h`, `gpu_floor.c` и др.).
+- **Прогоны 26.11 (Mi 14 Ultra, Храмовые степи + бой, вход в игру тапами):**
+  - pn1 Turnip, холодный кэш пайплайнов, лимит 30: всё `applied`, ровно 30 fps (33,3 мс), экран голосует 60 Гц, venc `xlat_ms=3.72`
+    `enc_ms=1.25`, дыр в картинке нет. **gpu-floor auto держит пол 100 % времени** при GPU 3,6–4 мс на кадр (late 20/300) — лишний расход.
+  - pn2 сток + `DM_GFX_TILE_POISON=1`: stock-tile `applied`, маджента нет, 60 fps, device-fault `enabled`; gpu-floor снова 100 % (late 114/600).
+  - pn3 `DM_GFX_SIM_GPU=mali DM_GFX_BC_ASTC=1 DM_PRESENT_MAX_HZ=120`: bc-astc не сработал (Adreno сэмплирует BC, GPU-декода нет —
+    проверять только на настоящем Mali); 120 Гц: голос 120 Гц есть, но такт показа выбран при инициализации окна по экрану 60 Гц → 60 fps.
