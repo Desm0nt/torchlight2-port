@@ -29,6 +29,8 @@ extern "C" int xbg_completion_wait_selftest(char *report,size_t bytes);
 #include "xbg_blit.h"
 #include "xbg_adreno_policy.h"
 #include "xbg_async_policy.h"   // [TL2 stutter] DM_GFX_ASYNC_PIPELINES rule, render-target age, warm-up list reader
+#include "xbg_async_guard.h"   // [async-pipe-guard] draws never left out for their pipeline, the background builds' gate
+extern "C" void pc_note(const char *id,int applied,const char *fmt,...);   // [pc] dm/host/pc.h
 #include "xbg_bc_policy.h"
 #include "xbg_astc_overlay.h"
 #include "xbg_astc_cache.h"   // [TL2] D3AC pack / journal format of the ASTC texture cache (pure functions)
@@ -647,6 +649,7 @@ extern uint64_t memo_front_hits;extern uint64_t desc_memo_hits,desc_memo_misses,
 namespace warm{extern uint64_t hits,creates,create_ns,create_max_ns;extern std::atomic<uint64_t> built,failed,build_ns,async_built,async_skips,compiled;extern bool async_on;void flush();void register_module(VkShaderModule m,const std::string &key);
     extern bool keep_rewritten;bool take_rewritten(const std::string &key,std::vector<uint32_t> &out);}
 namespace warm{extern int async_mode;extern std::atomic<uint64_t> async2_skips,async2_first,async2_young;}   // [TL2 stutter] DM_GFX_ASYNC_PIPELINES=2 (xbg_async_policy.h)
+namespace warm{extern int guard_mode;extern std::atomic<uint64_t> guard_n[3],guard_total[3],guard_ns,guard_back;extern XbgPipeGate gate;}   // [async-pipe-guard] (xbg_async_guard.h)
 // [TL2 stutter] VK_EXT_pipeline_creation_feedback (DM_GFX_PIPE_FEEDBACK; vulkan_present.cpp enables the extension when the GPU is
 // not an Adreno or DM_GFX_SIM_GPU is set, and says so in dm_vk_pipe_feedback): each pipeline creation asks the driver whether it
 // came from the application's pipeline cache and how long the driver itself worked. Summed per kind for the NVN PERF
@@ -1337,6 +1340,12 @@ void perf_frame(){
     if(tex_dirty){xbg_logf("NVN PERF texdirty tracked=%.1f checks=%.1f changed=%.1f",tex_dirty_tracked/f,tex_dirty_checks/f,tex_dirty_changed/f);tex_dirty_tracked=tex_dirty_checks=tex_dirty_changed=0;}{char buf[512];int at=0;std::vector<std::pair<uint64_t,int>> v;for(auto &e:pass_end_lines)v.push_back({e.second,e.first});std::sort(v.rbegin(),v.rend());for(size_t i=0;i<v.size() && i<8;i++)at+=snprintf(buf+at,sizeof buf-at," L%d=%.1f",v[i].second,v[i].first/f);pass_end_lines.clear();xbg_logf("NVN PERF pass_end_lines%s read_break layout/written/attach=%.1f/%.1f/%.1f/%.1f depth_feedback_reads=%.1f",at?buf:"",read_break_why[1]/f,read_break_why[2]/f,read_break_why[4]/f,(read_break_why[3]+read_break_why[5]+read_break_why[6]+read_break_why[7])/f,depth_feedback_reads/f);memset(read_break_why,0,sizeof read_break_why);depth_feedback_reads=0;}xbg_logf("NVN PERF hash_sites MB/calls other=%.2f/%.0f texcheck=%.2f/%.0f texel=%.2f/%.0f upload=%.2f/%.0f",hash_site_bytes[0]/f/1048576,hash_site_calls[0]/f,hash_site_bytes[1]/f/1048576,hash_site_calls[1]/f,hash_site_bytes[2]/f/1048576,hash_site_calls[2]/f,hash_site_bytes[3]/f/1048576,hash_site_calls[3]/f);memset(hash_site_bytes,0,sizeof hash_site_bytes);memset(hash_site_calls,0,sizeof hash_site_calls);if(zc::enabled>0){xbg_logf("NVN PERF zerocopy hits=%.1f sticky_miss=%.1f align_miss=%.1f pending_miss=%.1f mapped=%.0fMB chunks=%d retired=%llu",zc::hits/f,zc::sticky_misses/f,zc::align_misses/f,zc::pending_misses/f,zc::mapped_bytes/1048576.0,zc::live_chunks,(unsigned long long)zc::retired);zc::hits=zc::sticky_misses=zc::align_misses=zc::pending_misses=0;}if(storage_chained || guest_barriers_skipped){xbg_logf("NVN PERF storage-chain reused=%.1f gpu_merges=%.1f prologue_copies=%.1f guest_barriers_skipped=%.1f barriers_avoided=%.1f",storage_chained/f,storage_merges/f,pro_copies/f,guest_barriers_skipped/f,barriers_avoided/f);storage_chained=storage_merges=pro_copies=guest_barriers_skipped=barriers_avoided=0;}if(gpu_indirect_draws || gpu_indirect_fallbacks){xbg_logf("NVN PERF gpu-indirect draws=%.1f fallbacks=%.1f cpu=%.1f",gpu_indirect_draws/f,gpu_indirect_fallbacks/f,gpu_indirect_cpu/f);gpu_indirect_draws=gpu_indirect_fallbacks=gpu_indirect_cpu=0;}if(partial_uploads){xbg_logf("NVN PERF partial-tex uploads=%.1f blocks=%.1f KB=%.1f",partial_uploads/f,partial_blocks/f,partial_bytes/f/1024);partial_uploads=partial_blocks=partial_bytes=0;}
     if(vcache::enabled){xbg_logf("NVN PERF vcache hits=%.1f (%.2fMB) fills=%.1f (%.2fMB) refills=%.2f volatile=%llu untracked=%llu flushes=%llu entries=%zu arena=%.1fMB pools=%d",vcache::hits/f,vcache::hit_bytes/1048576.0/f,vcache::fills/f,vcache::fill_bytes/1048576.0/f,vcache::refills/f,(unsigned long long)vcache::volatiles,(unsigned long long)vcache::untracked,(unsigned long long)vcache::flushes,vcache::live(),vcache::arena_bytes()/1048576.0,[]{int live=0,used=0;uint64_t adds=0;if(nvn_dirty_slot_stats)nvn_dirty_slot_stats(&live,&used,&adds);return used;}());vcache::hits=vcache::hit_bytes=vcache::fills=vcache::fill_bytes=vcache::refills=0;}
     {static uint64_t pm=0,pe=0;xbg_logf("NVN PERF pipelines_new=%llu evicted=%llu warm_hits=%llu created=%llu create_ms=%.1f create_max_ms=%.1f warm_built=%llu warm_failed=%llu warm_ms=%.0f async_skips=%llu async_built=%llu",(unsigned long long)(pipeline_counts.misses-pm),(unsigned long long)(pipeline_counts.evictions-pe),(unsigned long long)warm::hits,(unsigned long long)warm::creates,warm::create_ns/1e6,warm::create_max_ns/1e6,(unsigned long long)warm::built.load(),(unsigned long long)warm::failed.load(),warm::build_ns.load()/1e6,(unsigned long long)warm::async_skips.exchange(0),(unsigned long long)warm::async_built.load());warm::hits=warm::creates=warm::create_ns=warm::create_max_ns=0;pm=pipeline_counts.misses;pe=pipeline_counts.evictions;}
+    // [async-pipe-guard] small / writes: draws the async rule would have left out, built in the frame instead (this window; total since
+    // start); gate: builds that went through it since start (async = a draw waits, warm = speculative), waits and their time, most at once
+    {const uint64_t s=warm::guard_n[XBG_AG_SMALL].exchange(0),w=warm::guard_n[XBG_AG_WRITES].exchange(0);const uint64_t gw=warm::gate.waits[0].load()+warm::gate.waits[1].load();static uint64_t gw_prev=~0ull;
+     if(s || w || gw!=gw_prev){gw_prev=gw;xbg_logf("NVN PERF async_guard small=%llu writes=%llu (total %llu / %llu, built in %.1f ms, %llu taken back from the queue) gate slots=%d peak=%d builds async/warm=%llu/%llu waits async=%llu (%.1f ms) warm=%llu (%.1f ms)",
+        (unsigned long long)s,(unsigned long long)w,(unsigned long long)warm::guard_total[XBG_AG_SMALL].load(),(unsigned long long)warm::guard_total[XBG_AG_WRITES].load(),warm::guard_ns.load()/1e6,(unsigned long long)warm::guard_back.load(),
+        warm::gate.slots,warm::gate.peak.load(),(unsigned long long)warm::gate.builds[1].load(),(unsigned long long)warm::gate.builds[0].load(),(unsigned long long)warm::gate.waits[1].load(),warm::gate.wait_ns[1].load()/1e6,(unsigned long long)warm::gate.waits[0].load(),warm::gate.wait_ns[0].load()/1e6);}}
     // [TL2 stutter] only with DM_GFX_ASYNC_PIPELINES=2 or pipeline creation feedback on (neither on Adreno by default). opaque_skips: draws
     // left out under the mode-2 rule; sync_first / sync_young: draws that would have qualified but begin a pass / go to a target not drawn
     // every present (built at once). fb_*: pipelines the driver reported on, how many it took from the pipeline cache, its own time.
@@ -3787,10 +3796,15 @@ void leave_creator_cores(){
     cpu_set_t w;CPU_ZERO(&w);for(long c=0;c<n && c<CPU_SETSIZE;c++)if(!CPU_ISSET(c,&s))CPU_SET(c,&w);
     sched_setaffinity(0,sizeof w,&w);
 }
+// [async-pipe-guard] (xbg_async_guard.h) guard_mode: DM_GFX_ASYNC_GUARD; guard_why / guard_w / guard_h: set by async_skippable when it
+// refused to leave a draw out only because of the guard, read and cleared by pipeline_lookup (graphics thread only); guard_n: such draws
+// whose pipeline was then built in the frame, per reason, since the last NVN PERF line (guard_total since start, guard_ns their build time,
+// guard_back: jobs taken back from the async queue for it). gate: every warm-up / async build passes it (DM_GFX_PIPE_BG_SLOTS).
+int guard_mode=XBG_AG_ALL,guard_why=0;uint32_t guard_w=0,guard_h=0;std::atomic<uint64_t> guard_n[3]{},guard_total[3]{},guard_ns{0},guard_back{0};XbgPipeGate gate;
 void worker(){
     setpriority(PRIO_PROCESS,0,5); // below the game and graphics threads
     leave_creator_cores();
-    for(;;){if(stop.load())return;size_t i=next.fetch_add(1);if(i>=recs.size())return;uint64_t t0=timing_clock();if(build(recs[i]))++built;else ++failed;build_ns+=timing_clock()-t0;}
+    for(;;){if(stop.load())return;size_t i=next.fetch_add(1);if(i>=recs.size())return;XbgPipeGate::Hold slot(gate,false);if(stop.load())return;uint64_t t0=timing_clock();if(build(recs[i]))++built;else ++failed;build_ns+=timing_clock()-t0;}   // [async-pipe-guard] speculative: after the async builds
 }
 // Runtime builds for draws that may be skipped (gfx-async-pipelines): a blended draw that writes no depth, stencil or
 // storage and counts no samples the game reads is skipped while one background thread builds its pipeline from the
@@ -3807,7 +3821,7 @@ void async_worker(){
     setpriority(PRIO_PROCESS,0,5);
     leave_creator_cores();
     for(;;){Rec r;{std::unique_lock<std::mutex> l(mu);async_cv.wait(l,[]{return stop.load() || !async_q.empty();});if(stop.load())return;r=std::move(async_q.front());async_q.pop_front();}
-        bool ok=build(r);if(ok)++async_built;else ++failed;
+        bool ok;{XbgPipeGate::Hold slot(gate,true);ok=build(r);}if(ok)++async_built;else ++failed;   // [async-pipe-guard] a draw waits for it: first through the gate
         std::string bytes(reinterpret_cast<const char*>(r.words.data()),r.words.size()*4);std::lock_guard<std::mutex> l(mu);async_pending.erase(bytes);if(!ok)async_failed.insert(bytes);}
 }
 // Queue the build of this draw's pipeline (once); false when the caller should build it now: a module without a bundle key,
@@ -3819,6 +3833,20 @@ bool async_request(const VkGraphicsPipelineCreateInfo &ci,const XbgPipelineKey &
     if(!async_thread.joinable())async_thread=std::thread(async_worker);
     if(async_mode==2 && !async_thread2.joinable() && std::thread::hardware_concurrency()>=6)async_thread2=std::thread(async_worker);
     async_cv.notify_all();record(ci,key);return true;
+}
+// [async-pipe-guard] A draw the guard keeps whose pipeline an earlier, skippable draw queued: its job leaves the queue (the frame builds it
+// now); one a builder has already taken is built twice, the background copy ends in `ready` unused. true = taken back.
+bool async_take_back(const std::string &bytes){
+    std::lock_guard<std::mutex> l(mu);if(!async_pending.count(bytes))return false;
+    for(auto it=async_q.begin();it!=async_q.end();++it)if(it->words.size()*4==bytes.size() && !memcmp(it->words.data(),bytes.data(),bytes.size())){async_q.erase(it);async_pending.erase(bytes);++guard_back;return true;}
+    return false;
+}
+// [async-pipe-guard] Count a guarded draw's frame build; the first of each reason gets a line with its shaders and target.
+void guard_note(int why,uint64_t ns,bool back){
+    if(why<1 || why>2)return;++guard_n[why];++guard_total[why];guard_ns+=ns;
+    static bool told[3];if(told[why])return;told[why]=true;std::string sh;for(unsigned st=0;st<5;st++)if(state.shader[st]){if(!sh.empty())sh+='+';sh+=state.shader[st]->key;}
+    xbg_logf("NVN async-pipe-guard: a draw not left out, its pipeline built in the frame (%s; first of this kind): shaders %s target %ux%u %.1f ms%s",
+             xbg_ag_name(why),sh.c_str(),guard_w,guard_h,ns/1e6,back?", its queued background job taken back":"");
 }
 // [TL2 stutter] The warm-up list is the device's own list (every pipeline it ever built, in the order met) with the seeds of its GPU
 // family merged in behind it. A seed is a list made on other devices of the same family (dm/android/tools/merge_warm_lists.py) and shipped
@@ -3977,6 +4005,7 @@ void gend(){if(!fmark::clear(gmpath()))remove(gpath().c_str());}
 }
 void pipeline_lookup(PipelineLease &out,const XbgPipelineKey &key,bool cacheable,const VkGraphicsPipelineCreateInfo *graphics,const VkComputePipelineCreateInfo *compute,bool may_skip=false){
     static std::string bytes;bytes.clear();   // reused key buffer (graphics thread only)
+    const int guard_why=warm::guard_why;warm::guard_why=0;   // [async-pipe-guard] set by async_skippable for this lookup only
     if(cacheable){
         bytes.assign(reinterpret_cast<const char*>(key.words),size_t(key.count)*4);
         auto found=pipeline_objects.find(bytes);
@@ -3987,6 +4016,7 @@ void pipeline_lookup(PipelineLease &out,const XbgPipelineKey &key,bool cacheable
     // A draw that may be skipped gets no pipeline while its build is queued (warm::async_request); it is not cached.
     else if(graphics && cacheable && may_skip && warm::async_request(*graphics,key,bytes)){out.pipeline=VK_NULL_HANDLE;out.transient=true;++warm::async_skips;return;}
     else if(graphics){uint64_t t0=timing_clock();VkGraphicsPipelineCreateInfo g=*graphics;if(pipe_stats)g.flags|=VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR;
+        const bool guard_back=guard_why && cacheable && warm::async_take_back(bytes);   // [async-pipe-guard]
 #if defined(DM_GAME_ETERNAL) || defined(DM_GAME_XC2) || defined(DM_GAME_D3)
         {const std::string *ks[5];for(unsigned i=0;i<5;i++)ks[i]=state.shader[i]?&state.shader[i]->key:nullptr;pipeguard::gbegin(pipeguard::gkey(ks,5));}
 #endif
@@ -4005,7 +4035,8 @@ void pipeline_lookup(PipelineLease &out,const XbgPipelineKey &key,bool cacheable
         pipeguard::gend();
 #endif
         if(!gpguard::built(made,out.pipeline)){if(out.pipeline)vkDestroyPipeline(cfg.device,out.pipeline,nullptr);gpguard::record(warm::stage_combo(*graphics),made);out.pipeline=VK_NULL_HANDLE;out.transient=true;return;}
-if(pipe_stats)pstat_log(out.pipeline);uint64_t dt=timing_clock()-t0;if(dt>=compile_ns)++pipelines_unsaved;++warm::creates;warm::create_ns+=dt;++hud::pipelines;hud::pipeline_ns+=dt;warm::create_max_ns=std::max(warm::create_max_ns,dt);if(cacheable)warm::record(*graphics,key);}
+if(pipe_stats)pstat_log(out.pipeline);uint64_t dt=timing_clock()-t0;if(dt>=compile_ns)++pipelines_unsaved;++warm::creates;warm::create_ns+=dt;++hud::pipelines;hud::pipeline_ns+=dt;warm::create_max_ns=std::max(warm::create_max_ns,dt);if(cacheable)warm::record(*graphics,key);
+        if(guard_why)warm::guard_note(guard_why,dt,guard_back);}   // [async-pipe-guard]
     else{uint64_t t0=timing_clock();VkComputePipelineCreateInfo cc=*compute;if(pipe_stats)cc.flags|=VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR;const std::string &shader_key=state.shader[5]->key;pipeguard::begin(shader_key);VkResult made;{gpguard::Lock serial;made=vkCreateComputePipelines(cfg.device,pipeline_cache,1,&cc,nullptr,&out.pipeline);}if(made==VK_INCOMPLETE && out.pipeline)made=VK_SUCCESS;pipeguard::end(shader_key,made==VK_SUCCESS);if(made!=VK_SUCCESS){if(out.pipeline)vkDestroyPipeline(cfg.device,out.pipeline,nullptr);char why[64];snprintf(why,sizeof why,"failed to build (result=%d)",int(made));pipeguard::record(shader_key,why);out.pipeline=VK_NULL_HANDLE;out.transient=true;return;}++pipelines_unsaved;++hud::pipelines;hud::pipeline_ns+=timing_clock()-t0;if(pipe_stats)pstat_log(out.pipeline);}
     if(!cacheable){out.transient=true;return;}
     if(pipeline_objects.size()==pipeline_object_limit){
@@ -5861,17 +5892,28 @@ bool first_draw_covers(const Pass &p,int prim,int first,int count,const p_draw_i
 // later draws test), storage writes, rasterizer discard, captures, counted samples the game reads. So a scene object, a
 // shadow caster or a UI element appears a few presents late, while one-shot targets (portraits, the minimap), full-screen
 // post-processing passes and the first draw after a clear always build at once.
+// [async-pipe-guard] A draw the rule above would leave out that must be built in the frame (xbg_async_guard.h xbg_ag_why): a target of at
+// most 64x64 (luminance / exposure / lookup tables: the game keeps them), or memory writes (here also storage texel buffers, which the
+// rule above does not look at) or rasterizer discard. Sets warm::guard_why / guard_w / guard_h for pipeline_lookup's counters.
+bool async_guarded(const XbgAsyncDraw &d,const Pass &p){
+    if(!warm::guard_mode)return false;
+    bool texel=false;for(unsigned i=0;i<5 && !texel;i++)if(state.shader[i])for(auto &b:state.shader[i]->bindings)if(b.type==VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER){texel=true;break;}
+    const xbg_ag_draw g{p.width,p.height,int(d.storage_writes || texel),int(d.raster_discard)};
+    const int why=xbg_ag_why(warm::guard_mode,&g);if(!why)return false;
+    warm::guard_why=why;warm::guard_w=p.width;warm::guard_h=p.height;return true;
+}
 bool async_skippable(const std::vector<VkPipelineColorBlendAttachmentState> &att,const VkPipelineDepthStencilStateCreateInfo &ds,const VkPipelineRasterizationStateCreateInfo &rs,const Pass &p,VkCommandBuffer cmd,bool quad){
     if(!warm::async_on)return false;
     XbgAsyncDraw d;d.capture=capture.active;d.samples_reported=state.count_samples && samples_report_seen;d.depth_write=ds.depthWriteEnable!=0;
     d.stencil_write=ds.stencilTestEnable && (ds.front.writeMask || ds.back.writeMask);d.raster_discard=rs.rasterizerDiscardEnable!=0;d.quad=quad;
     d.blends_all=true;for(auto &a:att)if(a.colorWriteMask){d.color_write=true;if(!a.blendEnable || a.dstColorBlendFactor==VK_BLEND_FACTOR_ZERO)d.blends_all=false;}
     for(unsigned i=0;i<5 && !d.storage_writes;i++)if(state.shader[i]){if(!state.shader[i]->storage_writes.empty())d.storage_writes=true;for(auto &b:state.shader[i]->bindings)if(b.type==VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)d.storage_writes=true;}
-    if(warm::async_mode<2)return xbg_async_may_skip(1,d);
+    if(warm::async_mode<2)return xbg_async_may_skip(1,d) && !async_guarded(d,p);
     d.pass_open=open_pass.cmd==cmd && open_pass.pass==p.pass && open_pass.framebuffer==p.framebuffer && !lazy_pending;
     const uint64_t frame=stats.presents.load(std::memory_order_relaxed);d.targets_steady=p.images.n>0;
     for(const Image *im:p.images)if(!xbg_target_age_steady(im->rt_age,frame))d.targets_steady=false;
     const bool skip=xbg_async_may_skip(2,d);
+    if(skip && async_guarded(d,p))return false;   // [async-pipe-guard] before the mode-2 counters: not one of their skips
     // NVN PERF pipelines_bg: opaque_skips (mode 2 alone left it out), sync_young / sync_first (only the target's age / the pass start made it build at once)
     if(skip){if(!xbg_async_may_skip(1,d))++warm::async2_skips;}
     else{XbgAsyncDraw e=d;e.pass_open=e.targets_steady=true;if(xbg_async_may_skip(2,e)){if(!d.targets_steady)++warm::async2_young;else ++warm::async2_first;}}
@@ -7465,6 +7507,13 @@ extern "C" int xbg_game_initialize(const xbg_game_config *c,char *error,size_t b
      ubo_dynamic_on=xbg_env_or(getenv("DM_GFX_UBO_DYNAMIC"),xbg_ubo_dynamic_default(gpu_policy));noout_mask_on=xbg_env_or(getenv("DM_GFX_NOOUT_MASK"),xbg_noout_mask_default(gpu_policy));
      xbg_logf("NVN gpu policy: pipe_serial=%d pipe_guard=%d ubo_dynamic=%d noout_mask=%d zero-copy default=%d (DM_GFX_PIPE_SERIAL / PIPE_GUARD / UBO_DYNAMIC / NOOUT_MASK / ZEROCOPY)",
               int(gpguard::serial),int(gpguard::guard),int(ubo_dynamic_on),int(noout_mask_on),int(xbg_zero_copy_default(gpu_policy)));}
+    // [async-pipe-guard] (xbg_async_guard.h) before warm::start: the warm-up threads pass the gate from their first build
+    {VkPhysicalDeviceDriverProperties dp{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};VkPhysicalDeviceProperties2 p2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};p2.pNext=&dp;vkGetPhysicalDeviceProperties2(cfg.physical,&p2);
+     const bool turnip=dp.driverID==VK_DRIVER_ID_MESA_TURNIP;warm::guard_mode=xbg_ag_mode(getenv("DM_GFX_ASYNC_GUARD"));warm::gate.slots=xbg_pg_slots(getenv("DM_GFX_PIPE_BG_SLOTS"),turnip);
+     xbg_logf("NVN async-pipe-guard: DM_GFX_ASYNC_GUARD=%d (1 = a draw into a target of at most %dx%d, 2 = a draw writing memory or with rasterizer discard: built in the frame, never left out; 0 = the old rule) "
+              "DM_GFX_PIPE_BG_SLOTS=%d (warm-up / async builds at once, async ones first; 0 = no gate; default 1 on Turnip, %d elsewhere) driverID=%d turnip=%d",
+              warm::guard_mode,XBG_AG_SMALL_PX,XBG_AG_SMALL_PX,warm::gate.slots,XBG_PG_CAP,int(dp.driverID),int(turnip));
+     pc_note("async-pipe-guard",warm::guard_mode || warm::gate.slots,"guard=%d slots=%d%s; PNH-B-07",warm::guard_mode,warm::gate.slots,turnip?" (Turnip)":"");}   // [pc]
     {const auto &l=properties.limits;VkDeviceSize a=256;for(VkDeviceSize x:{l.minUniformBufferOffsetAlignment,l.minStorageBufferOffsetAlignment,l.minTexelBufferOffsetAlignment,l.optimalBufferCopyOffsetAlignment,l.nonCoherentAtomSize,VkDeviceSize(16)})while(a<x)a<<=1;arena_alignment=a;}
     {std::string dir=cfg.shader_directory;size_t cut=dir.find_last_of('/');std::string marker=(cut==std::string::npos?dir:dir.substr(0,cut))+"/gfx-sync-mode";FILE *m=fopen(marker.c_str(),"rb");sync_mode=false;if(m){sync_mode=fgetc(m)=='1';fclose(m);}}
      {std::string dir=cfg.shader_directory;size_t cut=dir.find_last_of('/');FILE *m=fopen(((cut==std::string::npos?dir:dir.substr(0,cut))+"/gfx-defer-events").c_str(),"rb");defer_events=0;if(m){int c=fgetc(m);defer_events=c=='1'?1:c=='2'?2:0;fclose(m);}else if(const char *e=getenv("DM_GFX_DEFER_EVENTS")){int v=atoi(e);defer_events=v==1?1:v==2?2:0;}xbg_logf("NVN defer events=%d (marker gfx-defer-events)",int(defer_events));

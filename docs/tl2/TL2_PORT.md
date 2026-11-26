@@ -993,3 +993,20 @@ tree layout(s), 22 class name(s)`.
   выравнивания после функции (`main+0x1345e8`, два udf #0), а adrp/add ветки EN_US становятся `adr x1, main+0x1345e8` / nop; сверка
   байтов сборки a0c6c2d2. Строка `[pc] tl2-lang: applied`. Остальные языки не трогаются.
 - ⚙ «Язык игры»: у TL2 свой список из 11 языков игры (`Tl2Gear.LANG_CODES`), а не список D3 (ru / en-US / en-GB).
+
+## 26.11 Фоновые пайплайны: draw, которые нельзя пропускать, и ворота сборок (port-common `async-pipe-guard`, KB PNH-B-07)
+- Зачем: при фоновой сборке (`DM_GFX_ASYNC_PIPELINES` 1 / 2) draw без пайплайна пропускается. У peanuts-native (Super Mario Odyssey,
+  первый запуск без кэша) так навсегда остался чёрный экран: пропущенный draw писал в крошечную цель, которую игра смешивает сама с собой
+  каждый кадр (адаптация яркости). Наше правило режима 1 («смешиваемые draw») пропускало ровно такие draw.
+- Правило (`xbg_async_guard.h` `xbg_ag_why`, `async_guarded` в `xbg_game.cpp`) поверх нашего, не вместо: draw в цель не больше 64×64 и
+  draw с записью в память (storage-буфер / image / texel buffer) или с rasterizer discard строятся в кадре. Задание из фоновой очереди
+  забирается назад. `DM_GFX_ASYNC_GUARD=3` по умолчанию, `=0` — старое правило без изменений.
+- Ворота (`XbgPipeGate`): все сборки потоков прогрева и async проходят ворота; async (draw ждёт) первыми, прогрев — только когда async не
+  ждёт; одновременно не больше `DM_GFX_PIPE_BG_SLOTS` (по умолчанию 1 на Turnip, 4 на прочих; `=2` — наше прежнее число на Turnip,
+  `=0` — без ворот, как раньше). Сборка в кадре (поток транслятора) и BC-прогрев ворот не проходят. Довод peanuts — Turnip Gen8 (Adreno
+  830 / 840): потеря устройства при 4 сборках разом и переполнение `vm.max_map_count`; на наших Adreno 7xx такого не видели.
+- Лог: `NVN async-pipe-guard: DM_GFX_ASYNC_GUARD=... DM_GFX_PIPE_BG_SLOTS=... driverID=... turnip=...`, `[pc] async-pipe-guard: applied`,
+  первый случай каждого вида `... a draw not left out, its pipeline built in the frame (small target|writes memory ...)`, периодически
+  `NVN PERF async_guard small= writes= (total ...) gate slots= peak= builds async/warm= waits async= (ms) warm= (ms)`.
+- Проверено: сборка `libdm.so` (NDK 29, Release), хост-тест `tests/async_guard_test.cpp` (ASan / UBSan, потоки), `async_policy_test` прежний.
+  Не проверено на телефоне.
