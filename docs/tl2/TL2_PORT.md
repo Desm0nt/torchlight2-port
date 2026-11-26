@@ -1010,3 +1010,13 @@ tree layout(s), 22 class name(s)`.
   `NVN PERF async_guard small= writes= (total ...) gate slots= peak= builds async/warm= waits async= (ms) warm= (ms)`.
 - Проверено: сборка `libdm.so` (NDK 29, Release), хост-тест `tests/async_guard_test.cpp` (ASan / UBSan, потоки), `async_policy_test` прежний.
   Не проверено на телефоне.
+
+## 26.11 Модули GameNative и peanuts-native в main (собрано, на телефоне не проверено)
+- GameNative (`1a33489`): device-fault (FN-64), pvr-cb-barrier (FN-63, `DM_GFX_PVR_CB_BARRIER` умолч. 0), bc-astc-gpu (TEX-18,
+  `DM_GFX_BC_ASTC` auto; кэш astcenc важнее GPU-ASTC).
+- peanuts-native: async-pipe-guard (`99cf91a`, `DM_GFX_ASYNC_GUARD`, `DM_GFX_PIPE_BG_SLOTS`), fence-flush (`24cb94e`,
+  `DM_NVN_FENCE_FLUSH_GUARD=1`), gpu-floor (`358e491`, `DM_GPU_FLOOR=auto`), pace-vote (`33d9f74`, лимит 30 → экран 60 Гц, лимит в ⚙ на ходу),
+  longframe-diag (`fc5bb08`, `DM_LONGFRAME=1`, выкл.), turnip-ubwc-hint (`af72a52`, только Adreno 740), stock-tile (`0fd0b9b`, на стоковом
+  драйвере TILE_BARRIER + CLEAR_FOLD, `DM_GFX_STOCK_TILE=1`), vk-enc-thread (`ee707e4`, поток `dm-venc`, `DM_GFX_VENC`, выкл. на PowerVR),
+  счётчик кадров FpsOverlay + точка нагрева (`4a52d84`, `DM_FPS_VIEW=0` — старый).
+- Хост-тесты всех модулей проходят; обе APK собраны. Код peanuts — GPL-3.0+ (`longframe_diag.h`, `gpu_floor.c` и др.).
