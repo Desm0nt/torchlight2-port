@@ -278,7 +278,7 @@ a copy you own.
 
 ## License
 
-MIT — see [LICENSE](LICENSE). The d2r-mobile copyright notice is kept; third-party components keep their own licenses.
+MIT — see [LICENSE](LICENSE). The d2r-mobile copyright notice is kept; third-party components keep their own licenses. Some files are GPL-3.0-or-later (from peanuts-native: `dm/android/gpu_floor.c`, `pace_vote.h`, `vk_enc.c`/`.h`, `dm/gfx/nvn/longframe_diag.h`, `FpsOverlay.java`, `PaceVote.java` and parts of `perf_android.c`; see their headers), so the APK as a whole is distributed under GPL-3.0-or-later.
 
 ---
 
