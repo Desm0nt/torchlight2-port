@@ -135,6 +135,7 @@ extern "C" int mtl_addr(uint64_t addr,uint64_t len,void **buf,uint64_t *off);   
 #include <algorithm>
 
 #include "xbg_present_thread.inc"   // [present-thread] PERF-D07 DM_GFX_PRESENT_THREAD: the queue lock and the present hand-off (namespace ptq)
+#include "xbg_venc.inc"   // [vk-enc-thread] PNH-A-01 DM_GFX_VENC: the translation window around xbg_submit_now (VencWindow)
 #include "xbg_vendor_policy.h"
 #include "xbg_stock_tile.h"   // [stock-tile] PNH-B-01: the exact tile rules on Qualcomm's stock driver (port-common stock-tile)
 // [stock-tile] the device's VkDriverId / driverName (0 / "" when it reports none) and the module's decision (initialize)
@@ -7841,6 +7842,7 @@ void submit_chunk(uint64_t spent_ns){
     submit_slots(false);seen_submits=perf.submits;acc_ns=0;
 }
 static void xbg_submit_now(int n,const uint64_t *handles){std::lock_guard<std::recursive_mutex> lock(mutex);
+    VencWindow venc_window;   // [vk-enc-thread] DM_GFX_VENC: vkCmd* of this submission go to dm-venc; destroyed before the lock, it hands them all over
     if(deferred_live_profile && !timing.top){uint64_t current=stats.presents.load();timing=XbgCpuTiming(timing_clock);timing_first=current+2;timing_last=timing_first+deferred_live_profile-1;deferred_live_profile=0;}
    TimingRoot timing_root;CPU_SCOPE(Other);need(initialized && !failed,"Game Vulkan backend not initialized/healthy");uint64_t begin=timing_clock();zcubo::check();snapshot_reset();uint64_t budget=0;for(int i=0;i<n;i++)execute(reinterpret_cast<const uint8_t*>(handles[i]),0,budget);if(vt_fix_mask()&1)cpu_visible_flush();++stats.submissions;++submitted;if(sync_mode)complete_all();const uint64_t spent=timing_clock()-begin;perf.submit_cpu_ns+=spent;overlap::translate_ns+=spent;submit_chunk(spent);}
 // [TL2 #4] DM_NVN_FENCE_FLUSH (hle_nvn.c nvnQueueFenceSync with FLUSH_FOR_CPU): as a Switch queue flush, the translated work starts on
