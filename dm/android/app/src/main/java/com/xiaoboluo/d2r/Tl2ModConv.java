@@ -668,6 +668,7 @@ final class Tl2ModConv {
             String base = String.format(Locale.ROOT, "ZMODICONS_%016X_%d", modid, k);
             String xml = "\ufeff<?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n<atlas texture=\"" + base + ".DDS\" padding=\"2\">\r\n    <entries>\r\n" + ents + "    </entries>\r\n</atlas>";
             out.add(new Gen(ATLAS_DIR, base + ".ATLAS", 26, xml.getBytes(StandardCharsets.UTF_8)));
+            for (int i = 0; i < page.length; i += 4) { byte r = page[i]; page[i] = page[i + 2]; page[i + 2] = r; }
             out.add(new Gen(ATLAS_DIR, base + ".DDS", 4, xtxBuild(new byte[][] {page}, W, H, RGBA8, -1)));
         }
         return out;

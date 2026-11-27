@@ -180,7 +180,7 @@ def ic_check(atlas, page, src, want, modid):
     for n, px, kind, sw, sx, sy, w, h in want:
         for yy in range(h):
             for xx in range(w):
-                a = img[4 * ((2 + yy) * 256 + px + xx):][:4]; b = src[kind][4 * ((sy + yy) * sw + sx + xx):][:4]
+                a = img[4 * ((2 + yy) * 256 + px + xx):][:4]; a = bytes((a[2], a[1], a[0], a[3])); b = src[kind][4 * ((sy + yy) * sw + sx + xx):][:4]
                 dmax = max(abs(a[i] - b[i]) for i in range(4))
                 if kind.startswith('DXT'): worst = max(worst, dmax)
                 elif dmax: print(f'  icon {n} pixel {xx},{yy}: {list(a)} != {list(b)}'); return False
