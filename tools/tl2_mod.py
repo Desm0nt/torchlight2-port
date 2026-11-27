@@ -650,6 +650,7 @@ def icon_atlases(files, tex_get, modid):
         xml = '\ufeff<?xml version="1.0" encoding="utf-8"?>\r\n<atlas texture="' + base + '.DDS" padding="2">\r\n    <entries>\r\n' + ''.join(
             f'        <entry name="{esc(nm)}" x="{px}" y="{py}" w="{w}" h="{h}" />\r\n' for nm, px, py, w, h in ents) + '    </entries>\r\n</atlas>'
         out.append((ATLAS_DIR, base + '.ATLAS', 26, xml.encode('utf-8')))
+        img[0::4], img[2::4] = img[2::4], img[0::4]   # the console UI atlases hold B,G,R,A (PR #37 bc0e617 by danjaniell)
         out.append((ATLAS_DIR, base + '.DDS', 4, xtx_build([bytes(img)], W, H, 0x25)))
     return out, n, notes
 

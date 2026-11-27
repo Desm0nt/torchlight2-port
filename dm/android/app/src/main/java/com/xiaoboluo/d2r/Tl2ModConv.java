@@ -757,6 +757,9 @@ final class Tl2ModConv {
             String base = String.format(Locale.ROOT, "ZMODICONS_%016X_%d", modid, k);
             String xml = "﻿<?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n<atlas texture=\"" + base + ".DDS\" padding=\"2\">\r\n    <entries>\r\n" + ents + "    </entries>\r\n</atlas>";
             sink.put(ATLAS_DIR, base + ".ATLAS", 26, xml.getBytes(StandardCharsets.UTF_8));
+            // the console UI atlases hold B,G,R,A: swap red and blue (from danjaniell's PR #37 bc0e617: L / R showed Gregor's Goods leaves
+            // with red and blue swapped); converter version 7
+            for (int i = 0; i < page.length; i += 4) { byte r = page[i]; page[i] = page[i + 2]; page[i + 2] = r; }
             byte[] dds = xtxBuild(new byte[][] {page}, W, H, RGBA8, -1); page = null;
             sink.put(ATLAS_DIR, base + ".DDS", 4, dds);
         }
