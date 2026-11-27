@@ -111,6 +111,7 @@ final class Tl2Mods {
                 next.put(m.file.getName(), new String[] {r.pack, stamp(m.file)}); out.packs++;
                 out.log.add(String.format(Locale.ROOT, "converted %s -> %s: %d files, %d textures (%d converted), %d deleted, %d failed, %d skill-tree classes, %d skill icons, %.1f s",
                     m.file.getName(), r.pack, r.files, r.textures, r.converted, r.deleted, r.failed.size(), r.skilltrees, r.icons, (System.nanoTime() - t0) / 1e9));
+                if (r.iconError != null) out.log.add("  icons skipped: " + r.iconError);
                 for (int k = 0; k < Math.min(20, r.failed.size()); k++) out.log.add("  texture kept as PC bytes: " + r.failed.get(k));
             } catch (IOException | RuntimeException | OutOfMemoryError e) {
                 out.failed.add(m.file.getName() + ": " + e.getMessage()); out.log.add("FAILED " + m.file.getName() + ": " + e);

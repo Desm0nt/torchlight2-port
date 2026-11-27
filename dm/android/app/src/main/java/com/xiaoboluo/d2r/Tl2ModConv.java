@@ -35,7 +35,7 @@ final class Tl2ModConv {
         long offData, offMan;
     }
     static final class Entry { String dir, name; int type; long off, size; int crc; long ft; Entry(String d, String n, int t, long o, long s, int c, long f) { dir = d; name = n; type = t; off = o; size = s; crc = c; ft = f; } }
-    static final class Result { String pack; int files, textures, converted, deleted, skilltrees, icons; final List<String> failed = new ArrayList<>(), iconNotes = new ArrayList<>(); }
+    static final class Result { String pack; int files, textures, converted, deleted, skilltrees, icons; String iconError; final List<String> failed = new ArrayList<>(), iconNotes = new ArrayList<>(); }
 
     // ------------------------------------------------------------ little-endian reader over a byte[]
     private static final class Rd {
@@ -737,7 +737,9 @@ final class Tl2ModConv {
                     long dl = le32(h8, 0) & 0xffffffffL, cl = le32(h8, 4) & 0xffffffffL; byte[] raw = new byte[(int) (cl != 0 ? cl : dl)]; in.readFully(raw);
                     return cl != 0 && cl != dl ? inflate(raw, (int) dl) : raw;
                 };
-                int[] nic = new int[1]; List<Gen> ic = iconAtlases(stf, srcTex, info.modid, img, nic, res.iconNotes); res.icons = nic[0];
+                int[] nic = new int[1]; List<Gen> ic = java.util.Collections.emptyList();
+                try { ic = iconAtlases(stf, srcTex, info.modid, img, nic, res.iconNotes); res.icons = nic[0]; }
+                catch (IOException | RuntimeException | OutOfMemoryError e) { ic = java.util.Collections.emptyList(); res.icons = 0; res.iconError = String.valueOf(e); res.iconNotes.add("icons skipped: " + res.iconError); }
                 if (!ic.isEmpty()) {   // directory records MEDIA/UICONSOLE/ and its ATLASES/ unless the mod has them, then the atlas pages (stored)
                     java.util.HashSet<String> have = new java.util.HashSet<>(); for (Entry e : ents) if (e.type == 7) have.add(e.dir + e.name);
                     if (!have.contains("MEDIA/UICONSOLE/")) out.add(new Entry("MEDIA/", "UICONSOLE/", 7, 0, 0, 0, 0));
