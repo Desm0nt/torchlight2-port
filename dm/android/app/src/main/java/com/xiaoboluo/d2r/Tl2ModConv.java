@@ -629,7 +629,7 @@ final class Tl2ModConv {
             if (defs.containsKey(w.getKey()) || !iconIsPath(first)) continue;
             String tp = norm(first); byte[] d = src.get(tp); if (d == null) continue;
             Tex t;
-            try { t = new Tex(tp, d, img); texs.put(tp, t); } catch (IOException | RuntimeException ex) { bad.add(tp); notes.add(tp + ": " + ex.getMessage()); continue; }
+            try { t = new Tex(tp, d, img); } catch (IOException | RuntimeException ex) { bad.add(tp); notes.add(tp + ": " + ex.getMessage()); continue; }
             if (t.w > 512 || t.h > 512) { notes.add(first + ": texture " + t.w + "x" + t.h + " larger than 512x512 skipped"); continue; }
             if (t.w >= 1 && t.h >= 1) defs.put(w.getKey(), new Def(first, tp, 0, 0, t.w, t.h));
         }
@@ -644,6 +644,7 @@ final class Tl2ModConv {
             cur.add(new int[] {i, x + 2, y + 2}); x += cw; rowh = Math.max(rowh, ch);
         }
         pages.add(cur);
+        Map<String, Integer> left = new java.util.HashMap<>(); for (Def e : items) left.merge(e.tex, 1, Integer::sum);
         for (int k = 0; k < pages.size(); k++) {
             int W = 64, H = 64;
             for (int[] c : pages.get(k)) { Def e = items.get(c[0]); W = Math.max(W, c[1] + e.w + 2); H = Math.max(H, c[2] + e.h + 2); }
@@ -656,6 +657,7 @@ final class Tl2ModConv {
                     try { if (d != null) texs.put(e.tex, new Tex(e.tex, d, img)); else bad.add(e.tex); } catch (IOException | RuntimeException ex) { bad.add(e.tex); notes.add(e.tex + ": " + ex.getMessage()); }
                 }
                 Tex t = texs.get(e.tex);
+                if (left.merge(e.tex, -1, Integer::sum) == 0) texs.remove(e.tex);
                 if (t == null) { notes.add(e.name + ": texture " + e.tex + " not in the mod"); continue; }
                 for (int yy = 0; yy < e.h; yy++) for (int xx = 0; xx < e.w; xx++) t.px(e.x + xx, e.y + yy, page, 4 * ((c[2] + yy) * W + c[1] + xx));
                 java.util.TreeSet<String> sp = new java.util.TreeSet<>(want.get(up(e.name))); sp.add(e.name);
