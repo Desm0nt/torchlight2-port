@@ -35,7 +35,7 @@ final class Tl2ModConv {
         long offData, offMan;
     }
     static final class Entry { String dir, name; int type; long off, size; int crc; long ft; Entry(String d, String n, int t, long o, long s, int c, long f) { dir = d; name = n; type = t; off = o; size = s; crc = c; ft = f; } }
-    static final class Result { String pack; int files, textures, converted, deleted, skilltrees, icons; final List<String> failed = new ArrayList<>(), iconNotes = new ArrayList<>(); }
+    static final class Result { String pack; int files, textures, converted, deleted, skilltrees, icons, skillIcons, itemIcons; final List<String> failed = new ArrayList<>(), iconNotes = new ArrayList<>(); }
 
     // ------------------------------------------------------------ little-endian reader over a byte[]
     private static final class Rd {
@@ -141,21 +141,27 @@ final class Tl2ModConv {
             }
         }
     }
-    private static byte[] blk(int type, int gid, byte[] p) { return new Wr().raw(new byte[] {'H', 'B', 'v', 'N'}).u32(0x24).u64(p.length).u64(0x24).u32(type).u32(gid).u32(0).raw(p).bytes(); }
+    private static Wr blkHead(Wr w, int type, int gid, long len) { return w.raw(new byte[] {'H', 'B', 'v', 'N'}).u32(0x24).u64(len).u64(0x24).u32(type).u32(gid).u32(0); }
     /** levels: linear data of each mip level (block rows, tightly packed); pf = the Ogre pixel format block (-1 = default) */
-    static byte[] xtxBuild(byte[][] lv, int w, int h, int f, int pf) {
+    static byte[] xtxBuild(byte[][] lv, int w, int h, int f, int pf) { return xtxBuild(lv, new int[lv.length], lv[0].length, w, h, f, pf); }
+    /** the same with level i at lv[i][off[i]...] (no copies of the levels); the result is built in place in one array of its exact size,
+     *  so the peak is the source + the result (an atlas page of 16 MB used to cost ~100 MB here, issues #34 / #36) */
+    static byte[] xtxBuild(byte[][] lv, int[] off, int len0, int w, int h, int f, int pf) {   // len0: bytes of level 0 the default pf looks at
+        int[][] L = levels(w, h, f, lv.length); int total = L[lv.length][0];
         if (pf < 0) {
             if (f == BC1) pf = 17; else if (f == BC2) pf = 19; else if (f == BC3) pf = 21;
-            else { pf = 11; byte[] a = lv[0]; for (int i = 3; i < a.length; i += 4) if ((a[i] & 0xff) != 255) { pf = 12; break; } }
+            else { pf = 11; byte[] a = lv[0]; for (int i = off[0] + 3; i < off[0] + len0; i += 4) if ((a[i] & 0xff) != 255) { pf = 12; break; } }
         }
-        int[][] L = levels(w, h, f, lv.length); int total = L[lv.length][0]; byte[] img = new byte[total];
-        for (int i = 0; i < lv.length; i++) swizzle(lv[i], 0, img, L[i][0], L[i][2] * bpb(f), L[i][3], L[i][4]);
         Wr info = new Wr().u64(total).u32(0x200).u32(w).u32(h).u32(1).u32(1).u32(f).u32(lv.length).u32(total);
         for (int i = 0; i < 17; i++) info.u32(i < lv.length ? L[i][0] : 0);
         info.u32(Integer.numberOfTrailingZeros(L[0][4])).u32(0x10007).u32(0);
-        byte[] tail = new Wr().u64(0).u32(1).u32(1).u32(1).u32(0).bytes();
-        return new Wr().raw(new byte[] {'D', 'F', 'v', 'N'}).u32(0x10).u32(1).u32(1).raw(blk(2, 0, info.bytes())).raw(blk(3, 1, img))
-            .raw(blk(4, 2, new Wr().u32(pf).bytes())).raw(blk(5, 3, tail)).bytes();
+        byte[] ib = info.bytes(), tail = new Wr().u64(0).u32(1).u32(1).u32(1).u32(0).bytes();
+        byte[] head = blkHead(blkHead(new Wr().raw(new byte[] {'D', 'F', 'v', 'N'}).u32(0x10).u32(1).u32(1), 2, 0, ib.length).raw(ib), 3, 1, total).bytes();
+        byte[] end = blkHead(blkHead(new Wr(), 4, 2, 4).u32(pf), 5, 3, tail.length).raw(tail).bytes();
+        byte[] out = new byte[head.length + total + end.length];
+        System.arraycopy(head, 0, out, 0, head.length); System.arraycopy(end, 0, out, head.length + total, end.length);
+        for (int i = 0; i < lv.length; i++) swizzle(lv[i], off[i], out, head.length + L[i][0], L[i][2] * bpb(f), L[i][3], L[i][4]);
+        return out;
     }
 
     static byte[] ddsToXtx(byte[] b) throws IOException {
@@ -176,14 +182,17 @@ final class Tl2ModConv {
             int n = (b.length - 128) / bpp; data = new byte[n * 4]; dataOff = 0;
             for (int i = 0; i < n; i++) { int s = 128 + i * bpp; data[i * 4] = b[s + ri]; data[i * 4 + 1] = b[s + gi]; data[i * 4 + 2] = b[s + bi]; data[i * 4 + 3] = al ? b[s + ai] : (byte) 255; }
         } else throw new IOException("DDS pixel format flags 0x" + Integer.toHexString(pff) + " / " + bits + " bits not supported");
-        int bp = bpb(f), bs = bsz(f); List<byte[]> lv = new ArrayList<>(); int o = dataOff;
+        int bp = bpb(f), bs = bsz(f), k = 0, o = dataOff, n0 = 0; int[] offs = new int[Math.min(mips, 32)];   // the levels are read where they are, not copied
         for (int i = 0; i < mips; i++) {
             int n = cdiv(Math.max(1, w >> i), bs) * cdiv(Math.max(1, h >> i), bs) * bp;
             if (o + n > data.length) break;
-            lv.add(java.util.Arrays.copyOfRange(data, o, o + n)); o += n;
+            if (k == 0) n0 = n;
+            if (k == offs.length) offs = java.util.Arrays.copyOf(offs, 2 * k);
+            offs[k++] = o; o += n;
         }
-        if (lv.isEmpty()) throw new IOException("DDS data truncated");
-        return xtxBuild(lv.toArray(new byte[0][]), w, h, f, -1);
+        if (k == 0) throw new IOException("DDS data truncated");
+        byte[][] lv = new byte[k][]; java.util.Arrays.fill(lv, data);
+        return xtxBuild(lv, java.util.Arrays.copyOf(offs, k), n0, w, h, f, -1);
     }
     private static int mbyte(int m) { return m == 0xff ? 0 : m == 0xff00 ? 1 : m == 0xff0000 ? 2 : m == 0xff000000 ? 3 : -1; }
 
@@ -239,6 +248,7 @@ final class Tl2ModConv {
         if (p == null) throw new IOException("image not decodable");
         int w = p[0], h = p[1]; byte[] px = new byte[w * h * 4];
         for (int i = 0; i < w * h; i++) { int c = p[2 + i]; px[i * 4] = (byte) (c >> 16); px[i * 4 + 1] = (byte) (c >> 8); px[i * 4 + 2] = (byte) c; px[i * 4 + 3] = (byte) (c >>> 24); }
+        p = null;   // the int pixels are not needed by the XTX build: a big PNG costs its pixels + the XTX, not three copies at once
         return xtxBuild(new byte[][] {px}, w, h, RGBA8, -1);
     }
 
@@ -463,8 +473,8 @@ final class Tl2ModConv {
     /** files: UPPER path -> bytes (player DATs, UI layouts) -> MEDIA/PORT/SKILLTREES.TXT, or null */
     static byte[] skilltreesText(Map<String, byte[]> files) {
         java.util.TreeMap<String, Map<Long, String>> dats = new java.util.TreeMap<>();
-        for (Map.Entry<String, byte[]> f : files.entrySet())
-            if (f.getKey().startsWith("MEDIA/UNITS/PLAYERS/") && f.getKey().endsWith(".DAT")) { Map<Long, String> t = datTop(f.getValue()); if (t != null) dats.put(f.getKey(), t); }
+        for (String k : files.keySet())   // (keys, then get: files may be a LazyFiles)
+            if (k.startsWith("MEDIA/UNITS/PLAYERS/") && k.endsWith(".DAT")) { Map<Long, String> t = datTop(files.get(k)); if (t != null) dats.put(k, t); }
         Map<String, Trees> lays = new java.util.HashMap<>(); List<String[]> units = new ArrayList<>();
         for (Map.Entry<String, Map<Long, String>> d : dats.entrySet()) {
             Map<Long, String> t = d.getValue(); String name = t.getOrDefault(K_NAME, ""), tree = ""; int seen = 0;
@@ -505,6 +515,18 @@ final class Tl2ModConv {
     static final long K_ITEM_ICON = tl2Hash("ICON");
     static final String ATLAS_DIR = "MEDIA/UICONSOLE/ATLASES/"; static final int ATLAS_MAX = 2048;
     interface TexSource { byte[] get(String upperPath) throws IOException; }
+    interface At { byte[] at(long off) throws IOException; }   // a file of the .MOD by its offset (its {size, packed} header) -> plain bytes
+    /** UPPER path -> bytes, read from the .MOD when asked (skilltreesText, the imagesets of iconAtlases): none of them stays in memory */
+    static final class LazyFiles extends java.util.AbstractMap<String, byte[]> {
+        final Map<String, Long> off = new java.util.HashMap<>(); final At at;
+        LazyFiles(At at) { this.at = at; }
+        byte[] read(String p) throws IOException { Long o = off.get(p); return o == null ? null : at.at(o); }
+        @Override public boolean containsKey(Object k) { return off.containsKey(k); }
+        @Override public byte[] get(Object k) { try { return k instanceof String ? read((String) k) : null; } catch (IOException e) { throw new java.io.UncheckedIOException(e); } }
+        @Override public java.util.Set<String> keySet() { return off.keySet(); }
+        @Override public int size() { return off.size(); }
+        @Override public java.util.Set<Map.Entry<String, byte[]>> entrySet() { throw new UnsupportedOperationException("would read every file"); }
+    }
     static final class Gen { final String dir, name; final int type; final byte[] data; Gen(String d, String n, int t, byte[] b) { dir = d; name = n; type = t; data = b; } }
 
     private static String text(byte[] b) {
@@ -561,9 +583,10 @@ final class Tl2ModConv {
         }
         return px;
     }
-    /** level 0 of a PC texture read pixel by pixel (tools/tl2_mod.py _Tex) */
+    /** level 0 of a PC texture read pixel by pixel (tools/tl2_mod.py _Tex). DDS stays as its file bytes (BC blocks are decoded as the icons
+     *  need them, nothing cached); PNG / JPG keep the decoder's ARGB ints, TGA its RGBA rows: one copy of the pixels each. */
     static final class Tex {
-        int w, h, bc, bpp; int[] idx; byte[] d, rgba; final Map<Long, int[][]> cache = new java.util.HashMap<>();
+        int w, h, bc, bpp; int[] idx, argb; byte[] d, rgba;
         Tex(String name, byte[] d, ImageDecoder img) throws IOException {
             if (d.length >= 4 && le32(d, 0) == 0x20534444) {
                 if (d.length < 128) throw new IOException("DDS truncated");
@@ -579,51 +602,93 @@ final class Tl2ModConv {
             } else {
                 boolean png = d.length >= 8 && (d[0] & 0xff) == 0x89 && d[1] == 'P' && d[2] == 'N' && d[3] == 'G', jpg = d.length >= 3 && (d[0] & 0xff) == 0xff && (d[1] & 0xff) == 0xd8 && (d[2] & 0xff) == 0xff;
                 if (name.toUpperCase(Locale.ROOT).endsWith(".TGA") && !png && !jpg) { int[] wh = new int[2]; rgba = tgaDecode(d, wh); w = wh[0]; h = wh[1]; }
-                else {
-                    int[] p = img == null ? null : img.decode(d); if (p == null) throw new IOException("image not decodable");
-                    w = p[0]; h = p[1]; rgba = new byte[w * h * 4];
-                    for (int i = 0; i < w * h; i++) { int c = p[2 + i]; rgba[i * 4] = (byte) (c >> 16); rgba[i * 4 + 1] = (byte) (c >> 8); rgba[i * 4 + 2] = (byte) c; rgba[i * 4 + 3] = (byte) (c >>> 24); }
-                }
+                else { int[] p = img == null ? null : img.decode(d); if (p == null) throw new IOException("image not decodable"); w = p[0]; h = p[1]; argb = p; }
             }
         }
-        void px(int x, int y, byte[] dst, int o) {
+        /** bytes this texture holds (the keep budget of iconAtlases) */
+        long bytes() { return d != null ? d.length : rgba != null ? rgba.length : 4L * argb.length; }
+        /** {w, h} from the header of a texture file as Tex reads it (DDS 12 / 16, PNG IHDR, TGA 12 / 14), or null (JPG, too short) */
+        static int[] dims(String name, byte[] d) {
+            if (d.length >= 4 && le32(d, 0) == 0x20534444) return d.length < 128 ? null : new int[] {le32(d, 16), le32(d, 12)};
+            boolean png = d.length >= 8 && (d[0] & 0xff) == 0x89 && d[1] == 'P' && d[2] == 'N' && d[3] == 'G', jpg = d.length >= 3 && (d[0] & 0xff) == 0xff && (d[1] & 0xff) == 0xd8 && (d[2] & 0xff) == 0xff;
+            if (name.toUpperCase(Locale.ROOT).endsWith(".TGA") && !png && !jpg) return d.length < 18 ? null : new int[] {(d[12] & 0xff) | (d[13] & 0xff) << 8, (d[14] & 0xff) | (d[15] & 0xff) << 8};
+            if (png && d.length >= 24 && d[12] == 'I' && d[13] == 'H' && d[14] == 'D' && d[15] == 'R') {
+                long pw = (d[16] & 0xffL) << 24 | (d[17] & 0xff) << 16 | (d[18] & 0xff) << 8 | (d[19] & 0xff), ph = (d[20] & 0xffL) << 24 | (d[21] & 0xff) << 16 | (d[22] & 0xff) << 8 | (d[23] & 0xff);
+                return new int[] {(int) Math.min(pw, Integer.MAX_VALUE), (int) Math.min(ph, Integer.MAX_VALUE)};
+            }
+            return null;
+        }
+        private void px(int x, int y, byte[] dst, int o) {   // not BC
             if (x < 0 || y < 0 || x >= w || y >= h) { dst[o] = dst[o + 1] = dst[o + 2] = dst[o + 3] = 0; return; }
             if (rgba != null) { System.arraycopy(rgba, 4 * (y * w + x), dst, o, 4); return; }
-            if (bc == 0) {
-                long s = 128L + (long) bpp * ((long) y * w + x);
-                if (s + bpp > d.length) { dst[o] = dst[o + 1] = dst[o + 2] = dst[o + 3] = 0; return; }
-                int q = (int) s; dst[o] = d[q + idx[0]]; dst[o + 1] = d[q + idx[1]]; dst[o + 2] = d[q + idx[2]]; dst[o + 3] = idx[3] >= 0 ? d[q + idx[3]] : (byte) 255; return;
-            }
-            int bx = x >> 2, by = y >> 2; long k = (long) by << 32 | bx; int[][] blk = cache.get(k);
-            if (blk == null) {
-                int bs = bc == BC1 ? 8 : 16; long s = 128L + ((long) by * ((w + 3) >> 2) + bx) * bs;
-                if (s + bs <= d.length) blk = bcBlock(d, (int) s, bc);
-                else { blk = new int[16][]; for (int i = 0; i < 16; i++) blk[i] = new int[4]; }
-                cache.put(k, blk);
-            }
-            int[] p = blk[(y & 3) * 4 + (x & 3)]; dst[o] = (byte) p[0]; dst[o + 1] = (byte) p[1]; dst[o + 2] = (byte) p[2]; dst[o + 3] = (byte) p[3];
+            if (argb != null) { int c = argb[2 + y * w + x]; dst[o] = (byte) (c >> 16); dst[o + 1] = (byte) (c >> 8); dst[o + 2] = (byte) c; dst[o + 3] = (byte) (c >>> 24); return; }
+            long s = 128L + (long) bpp * ((long) y * w + x);
+            if (s + bpp > d.length) { dst[o] = dst[o + 1] = dst[o + 2] = dst[o + 3] = 0; return; }
+            int q = (int) s; dst[o] = d[q + idx[0]]; dst[o + 1] = d[q + idx[1]]; dst[o + 2] = d[q + idx[2]]; dst[o + 3] = idx[3] >= 0 ? d[q + idx[3]] : (byte) 255;
+        }
+        /** the rectangle (sx, sy, cw, ch) of the texture -> dst (RGBA rows of width W) at (dx, dy); outside the texture = 0 */
+        void blit(int sx, int sy, int cw, int ch, byte[] dst, int W, int dx, int dy) {
+            if (bc == 0) { for (int yy = 0; yy < ch; yy++) for (int xx = 0; xx < cw; xx++) px(sx + xx, sy + yy, dst, 4 * ((dy + yy) * W + dx + xx)); return; }
+            int bs = bc == BC1 ? 8 : 16, bw = (w + 3) >> 2; int[][] zero = new int[16][]; for (int i = 0; i < 16; i++) zero[i] = new int[4];
+            for (int by = Math.floorDiv(sy, 4); by <= Math.floorDiv(sy + ch - 1, 4); by++)
+                for (int bx = Math.floorDiv(sx, 4); bx <= Math.floorDiv(sx + cw - 1, 4); bx++) {   // each 4x4 block decoded once
+                    int[][] blk = zero;
+                    if (bx >= 0 && by >= 0) { long s = 128L + ((long) by * bw + bx) * bs; if (s + bs <= d.length) blk = bcBlock(d, (int) s, bc); }
+                    for (int j = 0; j < 4; j++) {
+                        int y = by * 4 + j; if (y < sy || y >= sy + ch) continue;
+                        for (int i = 0; i < 4; i++) {
+                            int x = bx * 4 + i; if (x < sx || x >= sx + cw) continue;
+                            int o = 4 * ((dy + y - sy) * W + dx + x - sx);
+                            if (x < 0 || y < 0 || x >= w || y >= h) { dst[o] = dst[o + 1] = dst[o + 2] = dst[o + 3] = 0; continue; }
+                            int[] p = blk[j * 4 + i]; dst[o] = (byte) p[0]; dst[o + 1] = (byte) p[1]; dst[o + 2] = (byte) p[2]; dst[o + 3] = (byte) p[3];
+                        }
+                    }
+                }
         }
     }
     private static final class Def { final String name, tex; final int x, y, w, h; Def(String n, String t, int x, int y, int w, int h) { name = n; tex = t; this.x = x; this.y = y; this.w = w; this.h = h; } }
     private static boolean iconIsPath(String v) { String u = up(v); return (v.indexOf('/') >= 0 || v.indexOf('\\') >= 0) && (u.endsWith(".DDS") || u.endsWith(".PNG") || u.endsWith(".TGA")); }
-    /** files: UPPER path -> bytes (skill DATs, item DATs, imagesets); an item ICON that is a texture path exports the whole texture (up to 512x512); -> generated files (atlas + texture per page); counts icons in n[0] */
-    static List<Gen> iconAtlases(Map<String, byte[]> files, TexSource src, long modid, ImageDecoder img, int[] n, List<String> notes) throws IOException {
-        return iconAtlases(files, src, modid, img, n, notes, true);
+    static boolean isSkillDat(String up) { return up.startsWith("MEDIA/SKILLS/") && up.endsWith(".DAT"); }
+    static boolean isItemDat(String up) { return up.startsWith("MEDIA/UNITS/ITEMS/") && up.endsWith(".DAT"); }
+    /** the icon names of a skill DAT (SKILL_ICON, SKILL_ICON_INACTIVE) or an item DAT (ICON), or null when it is no DAT v2; read once while
+     *  the mod is copied, so only these strings are kept, not the DATs (CLASSES_FULL has thousands of item DATs) */
+    static String[] datIcons(String upperPath, byte[] dat) {
+        Map<Long, String> t = datTop(dat); if (t == null) return null;
+        List<String> v = new ArrayList<>();
+        for (long k : isSkillDat(upperPath) ? K_ICONS : new long[] {K_ITEM_ICON}) { String s = t.get(k); if (s != null && !s.isEmpty()) v.add(s); }
+        return v.toArray(new String[0]);
     }
-    /** withItems = false: skill icons only (the fallback when the item icons cannot be built, issues #34 / #36) */
-    static List<Gen> iconAtlases(Map<String, byte[]> files, TexSource src, long modid, ImageDecoder img, int[] n, List<String> notes, boolean withItems) throws IOException {
+    interface PageSink { void put(String dir, String name, int type, byte[] data) throws IOException; }
+    /** files: UPPER path -> bytes (skill DATs, item DATs, imagesets); an item ICON that is a texture path exports the whole texture (up to
+     *  512x512); -> generated files (atlas + texture per page); counts icons in n[0] (n[1] skill icons, n[2] item icons when n has them) */
+    static List<Gen> iconAtlases(Map<String, byte[]> files, TexSource src, long modid, ImageDecoder img, int[] n, List<String> notes) throws IOException {
+        Map<String, String[]> skill = new java.util.HashMap<>(), item = new java.util.HashMap<>(); java.util.TreeMap<String, byte[]> sets = new java.util.TreeMap<>();
+        for (Map.Entry<String, byte[]> f : files.entrySet()) {
+            String p = f.getKey();
+            if (isSkillDat(p) || isItemDat(p)) { String[] v = datIcons(p, f.getValue()); if (v != null) (isSkillDat(p) ? skill : item).put(p, v); }
+            else if (p.endsWith(".IMAGESET")) sets.put(p, f.getValue());
+        }
+        List<Gen> out = new ArrayList<>();
+        iconAtlases(skill.values(), item.values(), sets.keySet(), sets::get, src, modid, img, n, notes, (d, nm, t, b) -> out.add(new Gen(d, nm, t, b)));
+        return out;
+    }
+    /** The bounded form (issues #34 / #36: CLASSES_FULL, 1473 icons, ran out of a 256 MB heap). skillIcons / itemIcons: datIcons of each
+     *  DAT (itemIcons null = skill icons only); imagesets: UPPER paths in sorted order, read through sets one at a time. Pages are packed as
+     *  before (same bytes), then built and handed to sink ONE AT A TIME: a page decodes only the textures it uses, one texture at a time, and
+     *  keeps a decoded texture for a later page only while the kept ones fit in max heap / 8 (each is dropped after its last page).
+     *  Texture-path icons: the header gives the size, anything over 512x512 is skipped without decoding it. */
+    static void iconAtlases(java.util.Collection<String[]> skillIcons, java.util.Collection<String[]> itemIcons, Iterable<String> imagesets, TexSource sets,
+                            TexSource src, long modid, ImageDecoder img, int[] n, List<String> notes, PageSink sink) throws IOException {
         java.util.TreeMap<String, java.util.TreeSet<String>> want = new java.util.TreeMap<>();
-        for (String p : new java.util.TreeSet<>(files.keySet())) {
-            boolean skill = p.startsWith("MEDIA/SKILLS/") && p.endsWith(".DAT");
-            if (!skill && !(withItems && p.startsWith("MEDIA/UNITS/ITEMS/") && p.endsWith(".DAT"))) continue;
-            Map<Long, String> t = datTop(files.get(p)); if (t == null) continue;
-            for (long k : skill ? K_ICONS : new long[] {K_ITEM_ICON}) { String v = t.get(k); if (v != null && !v.isEmpty()) want.computeIfAbsent(up(v), q -> new java.util.TreeSet<>()).add(v); }
+        java.util.HashSet<String> wantSkill = new java.util.HashSet<>(), wantItem = new java.util.HashSet<>();
+        for (int g = 0; g < 2; g++) {
+            java.util.Collection<String[]> c = g == 0 ? skillIcons : itemIcons; if (c == null) continue;
+            for (String[] vs : c) for (String v : vs) { String u = up(v); want.computeIfAbsent(u, q -> new java.util.TreeSet<>()).add(v); (g == 0 ? wantSkill : wantItem).add(u); }
         }
         Map<String, Def> defs = new java.util.HashMap<>();
-        Map<String, Tex> texs = new java.util.HashMap<>(); java.util.HashSet<String> bad = new java.util.HashSet<>();
-        for (String p : new java.util.TreeSet<>(files.keySet())) {
-            if (!p.endsWith(".IMAGESET")) continue;
-            Object[] r = imagesetParse(files.get(p)); if (r == null || ((String) r[0]).isEmpty()) continue;
+        for (String p : imagesets) {
+            byte[] b = sets.get(p); if (b == null) continue;
+            Object[] r = imagesetParse(b); b = null; if (r == null || ((String) r[0]).isEmpty()) continue;
             String tp = norm((String) r[0]);
             @SuppressWarnings("unchecked") List<Img> ims = (List<Img>) r[1];
             for (Img i : ims) { String u = up(i.name); if (want.containsKey(u) && !defs.containsKey(u)) defs.put(u, new Def(i.name, tp, i.x, i.y, i.w, i.h)); }
@@ -632,14 +697,16 @@ final class Tl2ModConv {
             String first = w.getValue().first();
             if (defs.containsKey(w.getKey()) || !iconIsPath(first)) continue;
             String tp = norm(first); byte[] d = src.get(tp); if (d == null) continue;
-            Tex t;
-            try { t = new Tex(tp, d, img); texs.put(tp, t); } catch (IOException | RuntimeException ex) { bad.add(tp); notes.add(tp + ": " + ex.getMessage()); continue; }
+            int[] wh = Tex.dims(tp, d);
+            if (wh != null && (wh[0] > 512 || wh[1] > 512)) { notes.add(first + ": texture " + wh[0] + "x" + wh[1] + " larger than 512x512 skipped"); continue; }
+            Tex t;   // decoded to be sure it decodes (a texture that fails takes no atlas cell), then dropped: its page decodes it again
+            try { t = new Tex(tp, d, img); } catch (IOException | RuntimeException ex) { notes.add(tp + ": " + ex.getMessage()); continue; }
             if (t.w > 512 || t.h > 512) { notes.add(first + ": texture " + t.w + "x" + t.h + " larger than 512x512 skipped"); continue; }
             if (t.w >= 1 && t.h >= 1) defs.put(w.getKey(), new Def(first, tp, 0, 0, t.w, t.h));
         }
         List<Def> items = new ArrayList<>(defs.values());
         items.sort((a, c) -> a.h != c.h ? Integer.compare(c.h, a.h) : up(a.name).compareTo(up(c.name)));
-        List<Gen> out = new ArrayList<>(); if (items.isEmpty()) return out;
+        if (items.isEmpty()) return;
         List<List<int[]>> pages = new ArrayList<>(); List<int[]> cur = new ArrayList<>(); int x = 0, y = 0, rowh = 0;   // {item, x, y}
         for (int i = 0; i < items.size(); i++) {
             Def e = items.get(i); int cw = e.w + 4, ch = e.h + 4;
@@ -648,31 +715,51 @@ final class Tl2ModConv {
             cur.add(new int[] {i, x + 2, y + 2}); x += cw; rowh = Math.max(rowh, ch);
         }
         pages.add(cur);
+        Map<String, Integer> last = new java.util.HashMap<>();   // texture -> the last page that uses it
+        for (int k = 0; k < pages.size(); k++) for (int[] c : pages.get(k)) last.put(items.get(c[0]).tex, k);
+        Map<String, Tex> keep = new java.util.HashMap<>(); java.util.HashSet<String> bad = new java.util.HashSet<>();
+        long kept = 0, budget = Runtime.getRuntime().maxMemory() / 8;
         for (int k = 0; k < pages.size(); k++) {
+            List<int[]> pg = pages.get(k);
             int W = 64, H = 64;
-            for (int[] c : pages.get(k)) { Def e = items.get(c[0]); W = Math.max(W, c[1] + e.w + 2); H = Math.max(H, c[2] + e.h + 2); }
+            for (int[] c : pg) { Def e = items.get(c[0]); W = Math.max(W, c[1] + e.w + 2); H = Math.max(H, c[2] + e.h + 2); }
             W = Integer.highestOneBit(W - 1) << 1; H = Integer.highestOneBit(H - 1) << 1;
-            byte[] page = new byte[4 * W * H]; StringBuilder ents = new StringBuilder();
-            for (int[] c : pages.get(k)) {
-                Def e = items.get(c[0]);
-                if (!texs.containsKey(e.tex) && !bad.contains(e.tex)) {
-                    byte[] d = src.get(e.tex);
-                    try { if (d != null) texs.put(e.tex, new Tex(e.tex, d, img)); else bad.add(e.tex); } catch (IOException | RuntimeException ex) { bad.add(e.tex); notes.add(e.tex + ": " + ex.getMessage()); }
+            byte[] page = new byte[4 * W * H]; boolean[] ok = new boolean[pg.size()];
+            java.util.LinkedHashMap<String, List<Integer>> byTex = new java.util.LinkedHashMap<>();   // this page's cells grouped by texture
+            for (int j = 0; j < pg.size(); j++) byTex.computeIfAbsent(items.get(pg.get(j)[0]).tex, q -> new ArrayList<>()).add(j);
+            for (Map.Entry<String, List<Integer>> g : byTex.entrySet()) {
+                String tp = g.getKey(); Tex t = keep.get(tp);
+                if (t == null && !bad.contains(tp)) {
+                    byte[] d = src.get(tp);
+                    try { if (d != null) t = new Tex(tp, d, img); else bad.add(tp); } catch (IOException | RuntimeException ex) { bad.add(tp); notes.add(tp + ": " + ex.getMessage()); }
+                    d = null;
+                    if (t != null && last.get(tp) > k && kept + t.bytes() <= budget) { keep.put(tp, t); kept += t.bytes(); }
                 }
-                Tex t = texs.get(e.tex);
-                if (t == null) { notes.add(e.name + ": texture " + e.tex + " not in the mod"); continue; }
-                for (int yy = 0; yy < e.h; yy++) for (int xx = 0; xx < e.w; xx++) t.px(e.x + xx, e.y + yy, page, 4 * ((c[2] + yy) * W + c[1] + xx));
-                java.util.TreeSet<String> sp = new java.util.TreeSet<>(want.get(up(e.name))); sp.add(e.name);
+                for (int j : g.getValue()) {
+                    int[] c = pg.get(j); Def e = items.get(c[0]);
+                    if (t == null) { notes.add(e.name + ": texture " + tp + " not in the mod"); continue; }
+                    t.blit(e.x, e.y, e.w, e.h, page, W, c[1], c[2]); ok[j] = true;
+                }
+                t = null;
+            }
+            for (java.util.Iterator<Map.Entry<String, Tex>> it = keep.entrySet().iterator(); it.hasNext(); ) {   // past their last page
+                Map.Entry<String, Tex> q = it.next(); if (last.get(q.getKey()) <= k) { kept -= q.getValue().bytes(); it.remove(); }
+            }
+            StringBuilder ents = new StringBuilder();
+            for (int j = 0; j < pg.size(); j++) {
+                if (!ok[j]) continue;
+                int[] c = pg.get(j); Def e = items.get(c[0]); String u = up(e.name);
+                java.util.TreeSet<String> sp = new java.util.TreeSet<>(want.get(u)); sp.add(e.name);
                 for (String s : sp) ents.append("        <entry name=\"").append(s.replace("&", "&amp;").replace("\"", "&quot;").replace("<", "&lt;").replace(">", "&gt;"))
                     .append("\" x=\"").append(c[1]).append("\" y=\"").append(c[2]).append("\" w=\"").append(e.w).append("\" h=\"").append(e.h).append("\" />\r\n");
-                n[0]++;
+                n[0]++; if (n.length > 2) { if (wantSkill.contains(u)) n[1]++; if (wantItem.contains(u)) n[2]++; }
             }
             String base = String.format(Locale.ROOT, "ZMODICONS_%016X_%d", modid, k);
-            String xml = "\ufeff<?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n<atlas texture=\"" + base + ".DDS\" padding=\"2\">\r\n    <entries>\r\n" + ents + "    </entries>\r\n</atlas>";
-            out.add(new Gen(ATLAS_DIR, base + ".ATLAS", 26, xml.getBytes(StandardCharsets.UTF_8)));
-            out.add(new Gen(ATLAS_DIR, base + ".DDS", 4, xtxBuild(new byte[][] {page}, W, H, RGBA8, -1)));
+            String xml = "﻿<?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n<atlas texture=\"" + base + ".DDS\" padding=\"2\">\r\n    <entries>\r\n" + ents + "    </entries>\r\n</atlas>";
+            sink.put(ATLAS_DIR, base + ".ATLAS", 26, xml.getBytes(StandardCharsets.UTF_8));
+            byte[] dds = xtxBuild(new byte[][] {page}, W, H, RGBA8, -1); page = null;
+            sink.put(ATLAS_DIR, base + ".DDS", 4, dds);
         }
-        return out;
     }
 
     // [TL2] the MAN entries of a .MOD without converting it (the mod overlap report, Tl2Mods.overlaps)
@@ -698,7 +785,16 @@ final class Tl2ModConv {
             File pdir = new File(outDir, "PAKS"); if (!pdir.isDirectory() && !pdir.mkdirs()) throw new IOException("cannot create " + pdir);
             res.pack = packName(slot, info, mod);
             File pak = new File(pdir, res.pack + ".PAK.tmp"), manf = new File(pdir, res.pack + ".PAK.MAN.tmp");
-            List<Entry> out = new ArrayList<>(); long pos = 8, largest = 0; Map<String, byte[]> stf = new java.util.HashMap<>();
+            List<Entry> out = new ArrayList<>(); long pos = 8, largest = 0;
+            // [TL2] side data for the skill-tree table and the icons, bounded (issues #34 / #36): player DATs, UI layouts and imagesets are
+            // remembered by their offset and read again when needed (LazyFiles); of skill / item DATs only the icon names are kept
+            At at = off -> {
+                in.seek(off); byte[] h8 = new byte[8]; in.readFully(h8);
+                long dl = le32(h8, 0) & 0xffffffffL, cl = le32(h8, 4) & 0xffffffffL; byte[] raw = new byte[(int) (cl != 0 ? cl : dl)]; in.readFully(raw);
+                return cl != 0 && cl != dl ? inflate(raw, (int) dl) : raw;
+            };
+            LazyFiles stf = new LazyFiles(at); Map<String, String[]> skillIc = new java.util.HashMap<>(), itemIc = new java.util.HashMap<>();
+            File icf = new File(pdir, res.pack + ".ICONS.tmp");
             try (OutputStream os = new BufferedOutputStream(new FileOutputStream(pak), 1 << 16)) {
                 os.write(new byte[8]);
                 byte[] hdr = new byte[8]; int[] kind = new int[1];
@@ -708,16 +804,19 @@ final class Tl2ModConv {
                     long dl = le32(hdr, 0) & 0xffffffffL, cl = le32(hdr, 4) & 0xffffffffL; int crc = e.crc;
                     byte[] raw = new byte[(int) (cl != 0 ? cl : dl)]; in.readFully(raw); byte[] full = null;
                     String up = up(e.dir + e.name);
-                    if ((up.startsWith("MEDIA/UNITS/PLAYERS/") && up.endsWith(".DAT")) || (up.startsWith("MEDIA/UI/") && up.endsWith(".LAYOUT")) ||
-                        (up.startsWith("MEDIA/SKILLS/") && up.endsWith(".DAT")) || (up.startsWith("MEDIA/UNITS/ITEMS/") && up.endsWith(".DAT")) || up.endsWith(".IMAGESET")) {
-                        try { stf.put(up, cl != 0 && cl != dl ? inflate(raw, (int) dl) : raw); } catch (IOException x) { /* not for the skill-tree table */ }
+                    boolean icd = isSkillDat(up) || isItemDat(up);
+                    if ((up.startsWith("MEDIA/UNITS/PLAYERS/") && up.endsWith(".DAT")) || (up.startsWith("MEDIA/UI/") && up.endsWith(".LAYOUT")) || icd || up.endsWith(".IMAGESET")) {
+                        byte[] plain = null;   // (a file that does not inflate is not for the skill-tree table or the icons)
+                        try { plain = cl != 0 && cl != dl ? inflate(raw, (int) dl) : raw; } catch (IOException x) { /* skipped */ }
+                        if (plain != null && icd) { String[] v = datIcons(up, plain); Map<String, String[]> m = isSkillDat(up) ? skillIc : itemIc; if (v != null) m.put(up, v); else m.remove(up); }
+                        else if (plain != null) stf.off.put(up, info.offData + e.off);
                     }
                     if (isTexture(e.name)) {
                         byte[] plain = cl != 0 && cl != dl ? inflate(raw, (int) dl) : raw;
                         try {
                             byte[] conv = toSwitchTexture(e.name, plain, img, kind); res.textures++;
                             if (conv != null) { full = conv; res.converted++; }
-                        } catch (IOException | RuntimeException x) { res.failed.add(e.dir + e.name + ": " + x.getMessage()); }
+                        } catch (IOException | RuntimeException | OutOfMemoryError x) { res.failed.add(e.dir + e.name + ": " + x.getMessage()); }   // OOM: one huge texture stays PC bytes
                     }
                     if (full != null) { raw = full; dl = cl = full.length; CRC32 c = new CRC32(); c.update(full); crc = (int) c.getValue(); }
                     out.add(new Entry(e.dir, e.name, e.type, pos, dl, crc, e.ft));
@@ -733,32 +832,39 @@ final class Tl2ModConv {
                 }
                 Map<String, Long> texoff = new java.util.HashMap<>();
                 for (Entry e : ents) if (e.type != 7 && e.size != 0 && isTexture(e.name)) texoff.put(up(e.dir + e.name), e.off);
-                TexSource srcTex = pth -> {
-                    Long off = texoff.get(pth); if (off == null) return null;
-                    in.seek(info.offData + off); byte[] h8 = new byte[8]; in.readFully(h8);
-                    long dl = le32(h8, 0) & 0xffffffffL, cl = le32(h8, 4) & 0xffffffffL; byte[] raw = new byte[(int) (cl != 0 ? cl : dl)]; in.readFully(raw);
-                    return cl != 0 && cl != dl ? inflate(raw, (int) dl) : raw;
-                };
+                TexSource srcTex = pth -> { Long off = texoff.get(pth); return off == null ? null : at.at(info.offData + off); };
+                List<String> sets = new ArrayList<>(); for (String p : stf.off.keySet()) if (p.endsWith(".IMAGESET")) sets.add(p);
+                java.util.Collections.sort(sets);
                 // [TL2] icons never cost the pack (issues #34 / #36: a pack that failed here took its classes with it and the game re-saved the
-                // characters as a stock class). Out of memory / a bad texture: skill icons only, then no icons; the pack is written either way.
-                int[] nic = new int[1]; List<Gen> ic;
-                try { ic = iconAtlases(stf, srcTex, info.modid, img, nic, res.iconNotes, true); }
-                catch (IOException | RuntimeException | OutOfMemoryError x) {
-                    res.iconNotes.add("item icons left out: " + x); nic[0] = 0;
-                    try { ic = iconAtlases(stf, srcTex, info.modid, img, nic, res.iconNotes, false); }
-                    catch (IOException | RuntimeException | OutOfMemoryError y) { res.iconNotes.add("skill icons left out: " + y); ic = new ArrayList<>(); nic[0] = 0; }
-                }
-                res.icons = nic[0];
-                if (!ic.isEmpty()) {   // directory records MEDIA/UICONSOLE/ and its ATLASES/ unless the mod has them, then the atlas pages (stored)
-                    java.util.HashSet<String> have = new java.util.HashSet<>(); for (Entry e : ents) if (e.type == 7) have.add(e.dir + e.name);
-                    if (!have.contains("MEDIA/UICONSOLE/")) out.add(new Entry("MEDIA/", "UICONSOLE/", 7, 0, 0, 0, 0));
-                    if (!have.contains("MEDIA/UICONSOLE/ATLASES/")) out.add(new Entry("MEDIA/UICONSOLE/", "ATLASES/", 7, 0, 0, 0, 0));
-                    for (Gen g : ic) {
-                        CRC32 c = new CRC32(); c.update(g.data);
-                        out.add(new Entry(g.dir, g.name, g.type, pos, g.data.length, (int) c.getValue(), 0));
-                        os.write(new Wr().u32(g.data.length).u32(g.data.length).bytes()); os.write(g.data); pos += 8 + g.data.length; largest = Math.max(largest, g.data.length);
+                // characters as a stock class). The pages go to a temporary file as they are built (one page in memory at a time) and are
+                // copied into the pack once all of them are done. Out of memory / a bad texture: skill icons only, then no icons.
+                int[] nic = new int[3]; List<Entry> icEnts = new ArrayList<>(); long icLen = 0;
+                try {
+                    for (int pass = 0; pass < 2; pass++) {
+                        int[] np = new int[3]; icEnts.clear(); long[] rel = {0};
+                        try (OutputStream io = new BufferedOutputStream(new FileOutputStream(icf), 1 << 16)) {
+                            iconAtlases(skillIc.values(), pass == 0 ? itemIc.values() : null, sets, stf::read, srcTex, info.modid, img, np, res.iconNotes, (d, nm, t, b) -> {
+                                CRC32 c = new CRC32(); c.update(b); icEnts.add(new Entry(d, nm, t, rel[0], b.length, (int) c.getValue(), 0));
+                                io.write(new Wr().u32(b.length).u32(b.length).bytes()); io.write(b); rel[0] += 8 + b.length;
+                            });
+                            icLen = rel[0]; nic = np; break;
+                        } catch (IOException | RuntimeException | OutOfMemoryError x) {
+                            res.iconNotes.add((pass == 0 ? "item icons left out: " : "skill icons left out: ") + x); nic = new int[3]; icEnts.clear(); icLen = 0;
+                        }
                     }
-                }
+                    res.icons = nic[0]; res.skillIcons = nic[1]; res.itemIcons = nic[2];
+                    if (!icEnts.isEmpty()) {   // directory records MEDIA/UICONSOLE/ and its ATLASES/ unless the mod has them, then the atlas pages (stored)
+                        java.util.HashSet<String> have = new java.util.HashSet<>(); for (Entry e : ents) if (e.type == 7) have.add(e.dir + e.name);
+                        if (!have.contains("MEDIA/UICONSOLE/")) out.add(new Entry("MEDIA/", "UICONSOLE/", 7, 0, 0, 0, 0));
+                        if (!have.contains("MEDIA/UICONSOLE/ATLASES/")) out.add(new Entry("MEDIA/UICONSOLE/", "ATLASES/", 7, 0, 0, 0, 0));
+                        for (Entry g : icEnts) { out.add(new Entry(g.dir, g.name, g.type, pos + g.off, g.size, g.crc, 0)); largest = Math.max(largest, g.size); }
+                        try (java.io.InputStream is = new java.io.FileInputStream(icf)) {
+                            byte[] buf = new byte[1 << 16]; long left = icLen;
+                            while (left > 0) { int k = is.read(buf, 0, (int) Math.min(buf.length, left)); if (k < 0) throw new IOException("icon pages short"); os.write(buf, 0, k); left -= k; }
+                        }
+                        pos += icLen;
+                    }
+                } finally { icf.delete(); }
             }
             for (String p : info.deletes) {
                 String u = p.replace('\\', '/').toUpperCase(Locale.ROOT); int k = u.lastIndexOf('/');

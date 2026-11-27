@@ -29,7 +29,7 @@ import java.util.Set;
 final class Tl2Mods {
     private Tl2Mods() {}
     static final String PREF = "tl2_mods";
-    static final int CONVERTER_VERSION = 5;   // 2: + MEDIA/PORT/SKILLTREES.TXT (issue #6); 3: + skill icon atlases ZMODICONS_*; 4: skill panes found without the SkillPane<N> name (issue #25); 5: item icons (ICON of MEDIA/UNITS/ITEMS DATs) join the ZMODICONS atlases. Bump when Tl2ModConv's output changes: every pack is converted again
+    static final int CONVERTER_VERSION = 6;   // 2: + MEDIA/PORT/SKILLTREES.TXT (issue #6); 3: + skill icon atlases ZMODICONS_*; 4: skill panes found without the SkillPane<N> name (issue #25); 5: item icons (ICON of MEDIA/UNITS/ITEMS DATs) join the ZMODICONS atlases; 6: icon atlases built one page at a time in bounded memory (issues #34 / #36: big mods such as Classes Reborn Overhaul had fallen back to no icons; same bytes as 5 where 5 worked, the re-conversion brings the icons back). Bump when Tl2ModConv's output changes: every pack is converted again
 
     // [TL2] <game folder>/mods (GameFolder: the internal storage, an SD card or the folder the player chose). The converted packs stay in
     // workDir on internal storage, so no conversion writes reach a card.
@@ -116,8 +116,8 @@ final class Tl2Mods {
             try {
                 Tl2ModConv.Result r = Tl2ModConv.convert(m.file, overlay, i, BITMAPS);
                 next.put(m.file.getName(), new String[] {r.pack, stamp(m.file)}); out.packs++;
-                out.log.add(String.format(Locale.ROOT, "converted %s -> %s: %d files, %d textures (%d converted), %d deleted, %d failed, %d skill-tree classes, %d skill icons, %.1f s",
-                    m.file.getName(), r.pack, r.files, r.textures, r.converted, r.deleted, r.failed.size(), r.skilltrees, r.icons, (System.nanoTime() - t0) / 1e9));
+                out.log.add(String.format(Locale.ROOT, "converted %s -> %s: %d files, %d textures (%d converted), %d deleted, %d failed, %d skill-tree classes, %d icons (%d skill, %d item), %.1f s",
+                    m.file.getName(), r.pack, r.files, r.textures, r.converted, r.deleted, r.failed.size(), r.skilltrees, r.icons, r.skillIcons, r.itemIcons, (System.nanoTime() - t0) / 1e9));
                 for (int k = 0; k < Math.min(20, r.failed.size()); k++) out.log.add("  texture kept as PC bytes: " + r.failed.get(k));
             } catch (IOException | RuntimeException | OutOfMemoryError e) {
                 out.failed.add(m.file.getName() + ": " + e.getMessage()); out.log.add("FAILED " + m.file.getName() + ": " + e);

@@ -17,7 +17,9 @@ final class Tl2ModConvMain {
             } catch (Exception e) { return null; }
         };
         Tl2ModConv.Result r = Tl2ModConv.convert(new File(a[0]), new File(a[1]), Integer.parseInt(a[2]), img);
-        System.out.println(r.pack + ": " + r.files + " files, textures " + r.textures + " (converted " + r.converted + "), deleted " + r.deleted + ", failed " + r.failed.size() + ", skill icons " + r.icons);
+        System.out.println(r.pack + ": " + r.files + " files, textures " + r.textures + " (converted " + r.converted + "), deleted " + r.deleted + ", failed " + r.failed.size() + ", skill icons " + r.icons
+            + " (" + r.skillIcons + " of skills, " + r.itemIcons + " of items)");
         for (String f : r.failed) System.out.println("  failed " + f);
+        for (String f : r.iconNotes) System.out.println("  icon " + f);
     }
 }
