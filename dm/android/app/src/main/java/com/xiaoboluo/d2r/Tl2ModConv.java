@@ -608,10 +608,14 @@ final class Tl2ModConv {
     private static boolean iconIsPath(String v) { String u = up(v); return (v.indexOf('/') >= 0 || v.indexOf('\\') >= 0) && (u.endsWith(".DDS") || u.endsWith(".PNG") || u.endsWith(".TGA")); }
     /** files: UPPER path -> bytes (skill DATs, item DATs, imagesets); an item ICON that is a texture path exports the whole texture (up to 512x512); -> generated files (atlas + texture per page); counts icons in n[0] */
     static List<Gen> iconAtlases(Map<String, byte[]> files, TexSource src, long modid, ImageDecoder img, int[] n, List<String> notes) throws IOException {
+        return iconAtlases(files, src, modid, img, n, notes, true);
+    }
+    /** withItems = false: skill icons only (the fallback when the item icons cannot be built, issues #34 / #36) */
+    static List<Gen> iconAtlases(Map<String, byte[]> files, TexSource src, long modid, ImageDecoder img, int[] n, List<String> notes, boolean withItems) throws IOException {
         java.util.TreeMap<String, java.util.TreeSet<String>> want = new java.util.TreeMap<>();
         for (String p : new java.util.TreeSet<>(files.keySet())) {
             boolean skill = p.startsWith("MEDIA/SKILLS/") && p.endsWith(".DAT");
-            if (!skill && !(p.startsWith("MEDIA/UNITS/ITEMS/") && p.endsWith(".DAT"))) continue;
+            if (!skill && !(withItems && p.startsWith("MEDIA/UNITS/ITEMS/") && p.endsWith(".DAT"))) continue;
             Map<Long, String> t = datTop(files.get(p)); if (t == null) continue;
             for (long k : skill ? K_ICONS : new long[] {K_ITEM_ICON}) { String v = t.get(k); if (v != null && !v.isEmpty()) want.computeIfAbsent(up(v), q -> new java.util.TreeSet<>()).add(v); }
         }
@@ -735,7 +739,16 @@ final class Tl2ModConv {
                     long dl = le32(h8, 0) & 0xffffffffL, cl = le32(h8, 4) & 0xffffffffL; byte[] raw = new byte[(int) (cl != 0 ? cl : dl)]; in.readFully(raw);
                     return cl != 0 && cl != dl ? inflate(raw, (int) dl) : raw;
                 };
-                int[] nic = new int[1]; List<Gen> ic = iconAtlases(stf, srcTex, info.modid, img, nic, res.iconNotes); res.icons = nic[0];
+                // [TL2] icons never cost the pack (issues #34 / #36: a pack that failed here took its classes with it and the game re-saved the
+                // characters as a stock class). Out of memory / a bad texture: skill icons only, then no icons; the pack is written either way.
+                int[] nic = new int[1]; List<Gen> ic;
+                try { ic = iconAtlases(stf, srcTex, info.modid, img, nic, res.iconNotes, true); }
+                catch (IOException | RuntimeException | OutOfMemoryError x) {
+                    res.iconNotes.add("item icons left out: " + x); nic[0] = 0;
+                    try { ic = iconAtlases(stf, srcTex, info.modid, img, nic, res.iconNotes, false); }
+                    catch (IOException | RuntimeException | OutOfMemoryError y) { res.iconNotes.add("skill icons left out: " + y); ic = new ArrayList<>(); nic[0] = 0; }
+                }
+                res.icons = nic[0];
                 if (!ic.isEmpty()) {   // directory records MEDIA/UICONSOLE/ and its ATLASES/ unless the mod has them, then the atlas pages (stored)
                     java.util.HashSet<String> have = new java.util.HashSet<>(); for (Entry e : ents) if (e.type == 7) have.add(e.dir + e.name);
                     if (!have.contains("MEDIA/UICONSOLE/")) out.add(new Entry("MEDIA/", "UICONSOLE/", 7, 0, 0, 0, 0));

@@ -93,11 +93,18 @@ final class Tl2Mods {
                 String tmp = "KEEP_" + i; if (renamePack(paks, e[0], tmp)) keep.put(want, tmp);
             } else todo++;
         }
+        // [TL2] a stale pack (older converter / changed .MOD) of an enabled mod is kept aside as OLD_<i> until its new conversion is written:
+        // if the conversion fails, the old pack comes back instead of the mod vanishing (issues #34 / #36: the mod's classes disappeared and
+        // the game re-saved those characters as a stock class)
+        for (int i = 0; i < on.size(); i++) {
+            Mod m = on.get(i); String[] e = cache.get(m.file.getName());
+            if (e != null && !keep.containsKey(Tl2ModConv.packName(i, m.info, m.file)) && !keep.containsValue("KEEP_" + i)) renamePack(paks, e[0], "OLD_" + i);
+        }
         Set<String> wanted = new HashSet<>();
         for (int i = 0; i < on.size(); i++) wanted.add(Tl2ModConv.packName(i, on.get(i).info, on.get(i).file));
         // 2. everything else in PAKS goes (disabled / removed mods, old names, half-written .tmp files)
         File[] old = paks.listFiles();
-        if (old != null) for (File f : old) { String n = f.getName(); if (!n.startsWith("KEEP_")) { if (f.delete()) out.log.add("removed " + n); } }
+        if (old != null) for (File f : old) { String n = f.getName(); if (!n.startsWith("KEEP_") && !n.startsWith("OLD_")) { if (f.delete()) out.log.add("removed " + n); } }
         for (Map.Entry<String, String> k : keep.entrySet()) renamePack(paks, k.getValue(), k.getKey());
         // 3. convert what changed, in load order
         int done = 0;
@@ -115,10 +122,15 @@ final class Tl2Mods {
             } catch (IOException | RuntimeException | OutOfMemoryError e) {
                 out.failed.add(m.file.getName() + ": " + e.getMessage()); out.log.add("FAILED " + m.file.getName() + ": " + e);
                 new File(paks, want + ".PAK.tmp").delete(); new File(paks, want + ".PAK.MAN.tmp").delete();
+                if (renamePack(paks, "OLD_" + i, want)) {   // the previous conversion stays in use; converted again at the next start
+                    next.put(m.file.getName(), new String[] {want, "retry"}); out.packs++; out.log.add("kept the previous conversion of " + m.file.getName() + " as " + want);
+                }
             }
             done++;
         }
         if (progress != null) progress.step(done, todo, "");
+        File[] left = paks.listFiles();   // previous conversions no longer needed
+        if (left != null) for (File f : left) if (f.getName().startsWith("OLD_")) f.delete();
         writeCache(c, next);
         try {
             if (out.packs > 0) { Os.setenv("DM_TL2_MODS", "1", true); Os.setenv("DM_TL2_MODS_DIR", overlay.getAbsolutePath(), true); }
