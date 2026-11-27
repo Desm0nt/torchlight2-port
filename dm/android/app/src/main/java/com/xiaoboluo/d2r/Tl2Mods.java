@@ -86,18 +86,25 @@ final class Tl2Mods {
         List<Mod> on = new ArrayList<>(); for (Mod m : list(c, p)) if (m.on) { if (m.info != null) on.add(m); else out.failed.add(m.file.getName() + ": " + m.error); }
         // 1. packs to keep under their new names: first to temporary names (two mods may swap places), then to the final ones
         Map<String, String> keep = new HashMap<>();   // final base -> temporary base
+        Map<Integer, String> parked = new HashMap<>(); Set<String> claimed = new HashSet<>();
         int todo = 0;
         for (int i = 0; i < on.size(); i++) {
             Mod m = on.get(i); String want = Tl2ModConv.packName(i, m.info, m.file); String[] e = cache.get(m.file.getName());
             if (e != null && e[1].equals(stamp(m.file)) && new File(paks, e[0] + ".PAK").isFile() && new File(paks, e[0] + ".PAK.MAN").isFile()) {
                 String tmp = "KEEP_" + i; if (renamePack(paks, e[0], tmp)) keep.put(want, tmp);
-            } else todo++;
+            } else {
+                todo++;
+                if (e != null) {
+                    String old = "OLD_" + e[0];
+                    if (hasPack(paks, e[0]) && renamePack(paks, e[0], old) || hasPack(paks, old)) { parked.put(i, old); claimed.add(old); }
+                }
+            }
         }
         Set<String> wanted = new HashSet<>();
         for (int i = 0; i < on.size(); i++) wanted.add(Tl2ModConv.packName(i, on.get(i).info, on.get(i).file));
         // 2. everything else in PAKS goes (disabled / removed mods, old names, half-written .tmp files)
         File[] old = paks.listFiles();
-        if (old != null) for (File f : old) { String n = f.getName(); if (!n.startsWith("KEEP_")) { if (f.delete()) out.log.add("removed " + n); } }
+        if (old != null) for (File f : old) { String n = f.getName(); if (!n.startsWith("KEEP_") && !claimed.contains(n.endsWith(".PAK.MAN") ? n.substring(0, n.length() - 8) : n.endsWith(".PAK") ? n.substring(0, n.length() - 4) : n)) { if (f.delete()) out.log.add("removed " + n); } }
         for (Map.Entry<String, String> k : keep.entrySet()) renamePack(paks, k.getValue(), k.getKey());
         // 3. convert what changed, in load order
         int done = 0;
@@ -113,9 +120,13 @@ final class Tl2Mods {
                     m.file.getName(), r.pack, r.files, r.textures, r.converted, r.deleted, r.failed.size(), r.skilltrees, r.icons, (System.nanoTime() - t0) / 1e9));
                 if (r.iconError != null) out.log.add("  icons skipped: " + r.iconError);
                 for (int k = 0; k < Math.min(20, r.failed.size()); k++) out.log.add("  texture kept as PC bytes: " + r.failed.get(k));
+                String prev = parked.get(i); if (prev != null) { new File(paks, prev + ".PAK").delete(); new File(paks, prev + ".PAK.MAN").delete(); }
             } catch (IOException | RuntimeException | OutOfMemoryError e) {
-                out.failed.add(m.file.getName() + ": " + e.getMessage()); out.log.add("FAILED " + m.file.getName() + ": " + e);
+                out.failed.add(m.file.getName() + ": " + e.getMessage());
                 new File(paks, want + ".PAK.tmp").delete(); new File(paks, want + ".PAK.MAN.tmp").delete();
+                String prev = parked.get(i);
+                if (prev != null && renamePack(paks, prev, want)) { next.put(m.file.getName(), new String[] {want, stamp(m.file)}); out.packs++; out.log.add("FAILED " + m.file.getName() + ": " + e + "; kept the previous pack"); }
+                else out.log.add("FAILED " + m.file.getName() + ": " + e);
             }
             done++;
         }
@@ -129,6 +140,7 @@ final class Tl2Mods {
         return out;
     }
 
+    private static boolean hasPack(File paks, String base) { return new File(paks, base + ".PAK").isFile() && new File(paks, base + ".PAK.MAN").isFile(); }
     private static boolean renamePack(File paks, String from, String to) {
         File a = new File(paks, from + ".PAK"), am = new File(paks, from + ".PAK.MAN"), b = new File(paks, to + ".PAK"), bm = new File(paks, to + ".PAK.MAN");
         if (from.equals(to)) return a.isFile() && am.isFile();
